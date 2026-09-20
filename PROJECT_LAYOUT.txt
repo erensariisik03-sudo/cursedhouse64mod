@@ -1,0 +1,15 @@
+CursedHouseMod-main/
+├── .github/workflows/build.yml   # ARM32 + ARM64 GitHub Actions
+├── build.yml                     # workflow'un kök kopyası
+├── CMakeLists.txt                # ABI'ye göre ARM32 / ARM64 kaynak seçimi
+├── build.sh                      # ./build.sh armeabi-v7a veya ./build.sh arm64-v8a
+├── include/
+│   ├── arm_hook.h                # mevcut ARM32 hook API
+│   └── arm64_hook.h              # yeni AArch64 hook API
+├── src/
+│   ├── main.cpp                  # çalışan ARM32 kaynak
+│   ├── arm_hook.cpp              # ARM32 trampoline
+│   ├── main64.cpp                # yeni ARM64 kaynak
+│   └── arm64_hook.cpp            # AArch64 trampoline
+├── README.md
+└── .gitignore
