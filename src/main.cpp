@@ -263,6 +263,28 @@ static bool InstallArmHook(uintptr_t rva, void* replacement,
 }
 
 // ============================================================
+// TARGETED RICH-TEXT EDITING FLAG
+// ============================================================
+
+// dump.cs: TMP_InputField.m_isRichTextEditingAllowed (bool) at 0x1E6.
+// This changes only the active TMP_InputField instance; m_RichText (0x16D)
+// is deliberately left unchanged.
+static void ForceTMPRichTextEditingAllowed(void* tmpInstance, const char* reason) {
+    if (!tmpInstance) return;
+
+    const uint8_t oldValue = ReadField<uint8_t>(
+        tmpInstance, kTMP_IsRichTextEditingAllowed_FieldOffset);
+    if (oldValue != 1) {
+        const uint8_t enabled = 1;
+        const uintptr_t address = reinterpret_cast<uintptr_t>(tmpInstance)
+                                + kTMP_IsRichTextEditingAllowed_FieldOffset;
+        memcpy(reinterpret_cast<void*>(address), &enabled, sizeof(enabled));
+        LOGI("TMP RICH EDITING ENABLED: field=%p sebep=%s eski=%u yeni=1",
+             tmpInstance, reason ? reason : "?", static_cast<unsigned>(oldValue));
+    }
+}
+
+// ============================================================
 // CHARACTER LIMIT HELPERS - existing behaviour retained
 // ============================================================
 
@@ -280,6 +302,9 @@ static void ForceTMPObjectLimit(void* tmpInstance, const char* reason) {
         LOGI("TMP LIMIT SIFIRLANDI: field=%p sebep=%s eski=%d yeni=0",
              tmpInstance, reason, oldValue);
     }
+
+    // Keep Rich Text editing enabled for the currently processed input field.
+    ForceTMPRichTextEditingAllowed(tmpInstance, reason);
 }
 
 // ============================================================
@@ -389,6 +414,10 @@ static void my_TMP_UpdateStringPositionFromKeyboard(void* instance, void* method
 
     if (!instance) return;
 
+    // Re-assert the test flag after keyboard synchronization in case the
+    // input field changed its internal state during this update.
+    ForceTMPRichTextEditingAllowed(instance, "UpdateStringPositionFromKeyboard sonrasi");
+
     const uintptr_t textObject = ReadField<uintptr_t>(instance, kTMP_Text_FieldOffset);
     const std::string currentText = ReadIl2CppStringAscii(
         reinterpret_cast<void*>(textObject), 120);
@@ -430,10 +459,16 @@ static void my_TMP_SetInputValidator(void* instance, void* value, void* methodIn
 }
 
 static void my_TMP_SetIsRichTextEditingAllowed(void* instance, int value, void* methodInfo) {
-    LOGI("SET isRichTextEditingAllowed field=%p value=%d", instance, value);
+    (void)value;
+    LOGI("SET isRichTextEditingAllowed field=%p istenen=%d -> 1",
+         instance, value);
+
+    // Preserve the original property's side effects, but force this field on.
     if (orig_TMP_SetIsRichTextEditingAllowed)
-        orig_TMP_SetIsRichTextEditingAllowed(instance, value, methodInfo);
-    LogTMPInputState(instance, "set_isRichTextEditingAllowed sonrasi");
+        orig_TMP_SetIsRichTextEditingAllowed(instance, 1, methodInfo);
+
+    ForceTMPRichTextEditingAllowed(instance, "set_isRichTextEditingAllowed");
+    LogTMPInputState(instance, "set_isRichTextEditingAllowed zorlandi");
 }
 
 static void my_TMP_SetRichText(void* instance, int value, void* methodInfo) {
@@ -478,7 +513,7 @@ static std::atomic<uint32_t> g_windowUntil(0);
 static std::atomic<int> g_budget(0);
 static std::atomic<void*> g_lastTextComp(nullptr);
 static int64_t g_t0 = 0;
-static const uint32_t kMaxEvents = 4000;
+static const uint32_t kMaxEvents = 1200; // target-field filtering keeps this comfortably sufficient
 
 static int64_t nowMs() {
     timespec ts{};
@@ -528,6 +563,24 @@ static std::string str(const void* stringObject, int maxChars = 120) {
     }
     if (len > n) out += "...";
     out += "\"";
+    return out;
+}
+
+static std::string utf16Hex(const void* stringObject, int maxChars = 48) {
+    if (!stringObject) return "<null>";
+    const uint8_t* p = static_cast<const uint8_t*>(stringObject);
+    int32_t len = -1;
+    memcpy(&len, p + 8, sizeof(len));
+    if (len < 0 || len > 1000000) return "<badlen>";
+    const char16_t* chars = reinterpret_cast<const char16_t*>(p + 12);
+    const int n = len < maxChars ? len : maxChars;
+    char item[16];
+    std::string out = "UTF16=";
+    for (int i = 0; i < n; ++i) {
+        snprintf(item, sizeof(item), "%s%04X", i ? " " : "", static_cast<unsigned>(chars[i]));
+        out += item;
+    }
+    if (len > n) out += " ...";
     return out;
 }
 
@@ -660,6 +713,8 @@ static void my_SetText(void* self, void* value, int sendCallback, void* mi) {
     void* ret = __builtin_return_address(0);
     const std::string incoming = str(value, 180);
     const std::string before = self ? str(rdPtr(self, kF_Text), 180) : "<null-self>";
+    if (self && (isActiveField(self) || hasSizeTag(incoming) || hasSizeTag(before)))
+        g_lastTextComp.store(rdPtr(self, kF_TextComponent));
     const bool relevant = hasSizeTag(incoming) || hasSizeTag(before) ||
                           lastChar(value) == '>' || lastChar(rdPtr(self, kF_Text)) == '>';
     if (relevant) openWindow(1800, 180);
@@ -678,11 +733,15 @@ static void my_SetText(void* self, void* value, int sendCallback, void* mi) {
 
 static void my_UpdateLabel(void* self, void* mi) {
     void* ret = __builtin_return_address(0);
+    // Bind only the active field (or a field already carrying the test tag)
+    // before UpdateLabel calls TMP_Text.set_text.
     const std::string before = self ? str(rdPtr(self, kF_Text), 180) : "<null-self>";
+    if (self && (isActiveField(self) || hasSizeTag(before)))
+        g_lastTextComp.store(rdPtr(self, kF_TextComponent));
     const bool relevant = hasSizeTag(before) || lastChar(rdPtr(self, kF_Text)) == '>';
     if (relevant) openWindow(1600, 120);
-    if (relevant || windowActive())
-        logEvent("TMP_InputField.UpdateLabel PRE", self, "m_Text=" + before, ret, relevant);
+    if (relevant)
+        logEvent("TMP_InputField.UpdateLabel PRE", self, "m_Text=" + before, ret, true);
     if (orig_UpdateLabel) orig_UpdateLabel(self, mi);
     const std::string after = self ? str(rdPtr(self, kF_Text), 180) : "<null-self>";
     if (relevant || before != after)
@@ -692,10 +751,11 @@ static void my_UpdateLabel(void* self, void* mi) {
 
 static void trackedValueChanged(const char* tag, void* self, void* mi,
                                 Fn_this_mi original, void* ret) {
-    g_lastTextComp.store(rdPtr(self, kF_TextComponent));
     void* beforePtr = rdPtr(self, kF_Text);
     const std::string before = str(beforePtr, 200);
     const bool tagged = hasSizeTag(before) || lastChar(beforePtr) == '>';
+    if (self && (isActiveField(self) || tagged))
+        g_lastTextComp.store(rdPtr(self, kF_TextComponent));
     if (tagged) openWindow(1800, 180);
     if (original) original(self, mi);
     const std::string after = str(rdPtr(self, kF_Text), 200);
@@ -779,21 +839,30 @@ static void my_TSK_set_text(void* self, void* value, void* mi) {
 }
 
 static void my_TMPText_set_text(void* self, void* value, void* mi) {
-    if (windowActive() && takeBudget()) {
+    // Only trace the TMP_Text child belonging to the current TMP_InputField.
+    // The previous build logged every TMP label (e.g. repeated "Size: 40%")
+    // and exhausted the 4000-event limit before the closing-tag test.
+    const bool target = self != nullptr && self == g_lastTextComp.load();
+    const std::string incoming = target ? str(value, 180) : std::string();
+    const bool relevant = target && (hasSizeTag(incoming) || windowActive());
+    if (relevant && takeBudget()) {
         void* ret = __builtin_return_address(0);
-        const char* mark = (self == g_lastTextComp.load()) ? " [GIRIS-KUTUSU-METNI]" : "";
-        logEvent("TMP_Text.set_text", self,
-                 "yeni=" + str(value, 140) + mark, ret);
+        void* previous = rdPtr(self, 0x80); // TMP_Text.m_text from this dump
+        logEvent("TARGET_TMP_Text.set_text", self,
+                 "once=" + str(previous, 180) + " yeni=" + incoming + " " + utf16Hex(value), ret);
     }
     if (orig_TMPText_set_text) orig_TMPText_set_text(self, value, mi);
 }
 
 static void my_TMPText_SetText(void* self, void* value, void* mi) {
-    if (windowActive() && takeBudget()) {
+    const bool target = self != nullptr && self == g_lastTextComp.load();
+    const std::string incoming = target ? str(value, 180) : std::string();
+    const bool relevant = target && (hasSizeTag(incoming) || windowActive());
+    if (relevant && takeBudget()) {
         void* ret = __builtin_return_address(0);
-        const char* mark = (self == g_lastTextComp.load()) ? " [GIRIS-KUTUSU-METNI]" : "";
-        logEvent("TMP_Text.SetText(string)", self,
-                 "yeni=" + str(value, 140) + mark, ret);
+        void* previous = rdPtr(self, 0x80); // TMP_Text.m_text from this dump
+        logEvent("TARGET_TMP_Text.SetText(string)", self,
+                 "once=" + str(previous, 180) + " yeni=" + incoming + " " + utf16Hex(value), ret);
     }
     if (orig_TMPText_SetText) orig_TMPText_SetText(self, value, mi);
 }
@@ -832,7 +901,7 @@ static bool DxInstallDiagHooks() {
     DX_HOOK(kRVA_TMPText_SetText, my_TMPText_SetText, orig_TMPText_SetText,
             "DX TMP_Text::SetText(string)");
 #undef DX_HOOK
-    LOGI("DX: ek teshis kancalari %d/%d basarili", ok, tried);
+    LOGI("DX: ek teshis kancalari %d/%d basarili; yalnizca aktif TMP giris kutusunun TMP_Text ciktisi izleniyor", ok, tried);
     return ok > 0;
 }
 
@@ -848,7 +917,7 @@ static bool InstallHooks() {
         return false;
     }
 
-    LOGI("--- 32-BIT INPUT DIAGNOSTIC KANCALARI KURULUYOR ---");
+    LOGI("--- 32-BIT RICH-TEXT EDITING TEST KANCALARI KURULUYOR ---");
     LOGI("TMP_InputField offsets: limit=0x114 validation=0x108 onValidate=0x138 validator=0x1F0 richText=0x16D richEdit=0x1E6 keyboard=0xB4 text=0x160");
 
     int successCount = 0;
@@ -906,7 +975,8 @@ static bool InstallHooks() {
 
     LOGI("========== KANCA KURULUMU BITTI: %d/%d base kanca basarili ==========",
          successCount, attemptedCount);
-    LOGI("Test: <size=999> yazip > karakterinden sonra 2-3 sn bekle; sonra geri silme/yeni karakter dene. Enter/Done ile isim kaydini da ayri test et.");
+    LOGI("Test: aktif TMP alanda isRichTextEditingAllowed=1 zorlanir; m_RichText degistirilmez.");
+    LOGI("Once <size=40>ABC sonra <size=999>ABC dene; goruntu ve giris metnini karsilastir.");
     LOGI("Logcat filtre: CursedHouseChat");
 
     return successCount > 0;
