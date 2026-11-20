@@ -1,15 +1,16 @@
-# ImGui Unity Klavyesi ve Oyun Panelleri
+# Android Klavyesi, ImGui Kısayolları ve Oyun Panelleri
 
 Unity IL2CPP tabanlı Android oyununa eklenen C++ mod projesi. Çıktı,
 **arm64-v8a** mimarisi için tek bir **libmultiplayermod.so** dosyasıdır.
-Klavye ve paneller ImGui ile OpenGL ES 3 üzerinden çizilir; oyun bağlantıları
+Oyun içi metin girişini cihazın kendi Android klavyesi yapar. Kısayollar ve
+paneller ImGui ile OpenGL ES 3 üzerinden çizilir; oyun bağlantıları
 çalışma anında IL2CPP API ve metadata üzerinden çözülür.
 
 ## Özellikler
 
 | Bölüm | İşlev |
 | --- | --- |
-| Klavye | Türkçe/UTF-8 metin girişi, harf ve sembol sayfaları, imleç hareketi, basılı tutarak silme |
+| Android klavyesi | Cihazın mevcut klavyesiyle yazma, otomatik düzeltme, seçim ve yapıştırma; 1024 Unicode karakter sınırı |
 | Metin araçları | Boyut etiketi, on renk seçeneği, oyunun font/sprite desteğine göre süzülen emoji adayları |
 | Kare kısayolu | Metni `<size=7000>█` ile değiştirip uygun sohbet alanında gönderme |
 | Metin kuralları | Oyun özelindeki iki etiket filtresi ve doğrulanabilen isim uzunluğu kontrolüyle entegrasyon |
@@ -76,10 +77,31 @@ cmake --build build/android --parallel
 
 ### Klavye
 
-Uygun metin alanına dokununca özel klavye açılır. **Boyut** ile sayısal etiket,
-**Renk** ile RGBA etiketi eklenir; **Emoji** desteklenen adayları açar.
-`<`, `>` ve `█` kısayolları araç çubuğundadır. Entegrasyon hazır değilse oyunun
-kendi klavyesi kullanılmaya devam eder.
+Oyun içindeki uygun metin alanına dokununca **Android'in kendi klavyesi** açılır.
+ImGui harf klavyesinin yerine **Boyut, Renk, `<`, `>` ve `█`** kısayolları
+ile **Yapıştır** düğmesi bulunan küçük bir çubuk görünür.
+
+- Android klavyesi normal yazma, otomatik düzeltme, metin seçimi ve gönderme
+  işlemlerini yürütür. Kısayol eklemeleri güncel imleç/seçime uygulanır.
+- **Boyut** sayısal seçiciyi, **Renk** renk listesini açar. Emojiler doğrudan
+  Android klavyesinden girilir; çubukta ayrı Emoji düğmesi yoktur.
+  Yarım bırakılan boyut/renk taslakları oyun alanına gönderilmez.
+- **Küçült** yalnız kısayol çubuğunu küçültür; Android klavyesini kapatmaz.
+  **Kısayollar** düğmesiyle tekrar açılır.
+- Klavye alanı Unity tarafından bildiriliyorsa çubuk klavyenin üstüne yerleşir.
+  Alan bilgisi boş veya kullanılamazsa ekranın üstünde açılır. Cihazdaki klavye
+  yüksekliği ve pencere davranışı ayrıca test edilmelidir.
+- Şifre alanlarında kısayollar devre dışıdır; parola çubukta gösterilmez.
+
+1024 sınırı yalnız ImGui tamponuna bağlı değildir: aktif oyun alanındaki Android
+metni de Unicode karakteri bazında sınırlandırılır. Sınır uygulaması değişiklik ve
+gönderme bildirimlerinden önce yapılır; emoji vekil çiftleri bölünmez. Eski TMP
+UTF-16 sınırı oturum sırasında gevşetilir, alan odaktan çıkınca özgün ayarı geri
+yüklenir. Mevcut iki etiket filtresini kapatan `game_text_rules` entegrasyonu ve
+isim uzunluğu kontrolü korunur; sunucu kuralları ve diğer doğrulamalar korunur.
+
+AI panelinin API anahtarı/kişilik girişleri oyun içi TMP alanı değildir;
+bu iki panel alanında mevcut bağımsız ImGui editörü kullanılmaya devam eder.
 
 ### Kıyafet ve dans
 
@@ -108,7 +130,8 @@ bekleme süresine uyar; kullanıcının yazdığı taslağı ezmez.
 | `.github/workflows/android.yml` | ARM64 derleme ve artifact iş akışı |
 | `CMakeLists.txt`, `exports.map` | Kütüphane hedefleri, ABI denetimi ve sembol sınırı |
 | `include/keyboard_api.h` | Dışarı açılan C API |
-| `src/keyboard_api.cpp`, `src/keyboard_ui.cpp` | Grafik/giriş köprüsü ve arayüz |
+| `src/keyboard_api.cpp`, `src/keyboard_ui.cpp` | Grafik/giriş köprüsü, Android kısayol çubuğu ve bağımsız panel editörü |
+| `src/native_shortcuts.h` | Oturum kimlikli komut kuyruğu, kopyalanmış metin/seçim ve UTF-16/UTF-8 dönüşümü |
 | `src/unity_keyboard.cpp`, `src/il2cpp_runtime.*` | Unity metin alanı ve IL2CPP bağlantısı |
 | `src/game_text_rules.cpp`, `src/username_gate.h`, `src/observer_target.cpp`, `src/hook_veneer.h` | Metin kuralları ve AArch64 native kontrol yardımcıları |
 | `src/cosmetic_*`, `src/wardrobe_bridge.h`, `src/lobby_emotes.*` | Kozmetik, kıyafet ve dans |
@@ -131,7 +154,9 @@ Linux/Bash ve `g++` ile:
 bash tests/run.sh
 ```
 
-Testler metin tamponunu, klavye arayüzünü, başlangıcı, IL2CPP metin kurallarını,
+Testler Android yazımıyla eşzamanlı kısayol eklemeyi, güncel seçim/imleci,
+oturum değişimini, emoji sınırlarını, callback/gönderme öncesi sınırlandırmayı,
+çubuğun beş ekran boyutundaki davranışını, metin tamponunu, başlangıcı, IL2CPP metin kurallarını,
 ARM64 isim kontrolünü ve observer örneklerini, kozmetik/kıyafet, dans ve bot
 mantığını kapsar. Testler host üzerinde çalışır; ARM64 komut örneklerinin
 çözümlenmesi telefonda o komutların çalıştırıldığı anlamına gelmez.
@@ -149,3 +174,6 @@ Windows/ADB ile ilgili tanılama kayıtlarını toplamaya yardımcı olur.
 ImGui lisansı `third_party/imgui/LICENSE.txt`, Dobby lisansı
 `third_party/dobby/LICENSE` içindedir. İç bağımlılıkların lisans bildirimleri de
 korunmuştur. ImGui OpenGL backend'indeki mevcut context kaybı uyarlaması korunur.
+
+Teknik API başvuruları: [Unity TMP_InputField kaynak kodu](https://github.com/Unity-Technologies/uGUI/blob/main/com.unity.ugui/Runtime/TMP/TMP_InputField.cs),
+[Unity TouchScreenKeyboard API kaynak kodu](https://github.com/Unity-Technologies/UnityCsReference/blob/master/Runtime/Export/TouchScreenKeyboard/TouchScreenKeyboard.bindings.cs).

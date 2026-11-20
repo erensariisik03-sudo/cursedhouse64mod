@@ -19,6 +19,7 @@ class Editor {
     }
 public:
     Kind Current() const { return kind_; }
+    const std::string& Tag() const { return tag_; }
     const char* Before() const { return before_.c_str(); }
     bool Active() const { return kind_ != Kind::None; }
     bool HasSize() const { return kind_ == Kind::Size && !value_.empty(); }

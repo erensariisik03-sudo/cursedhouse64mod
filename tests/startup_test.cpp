@@ -53,8 +53,8 @@ int main() {
  setThrow(true); invoke(event(2),reinterpret_cast<void*>(1),nullptr,&error);
  assert(error && !g_ready && domainCalls()==0 && lookupCalls()==0);
  setThrow(false); invoke(event(2),reinterpret_cast<void*>(1),nullptr,&error);
- assert(!error && g_ready && g_install_claimed && domainCalls()>0 && lookupCalls()>0 && hookCount==6);
+ assert(!error && g_ready && g_install_claimed && domainCalls()>0 && lookupCalls()>0 && hookCount==9);
  invoke(event(2),reinterpret_cast<void*>(1),nullptr,&error);
- assert(hookCount==6 && invocations()==6); // one initialization, no recursive invoke
+ assert(hookCount==9 && invocations()==6); // one initialization, no recursive invoke
  std::cout << "Startup regression: no VM access before Unity frame, original result/exception forwarding, one hook installation: PASS\n";
 }

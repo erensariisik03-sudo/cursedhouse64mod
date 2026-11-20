@@ -16,6 +16,9 @@ void TouchUp();
 void SetVisible(bool visible);
 void SetIntegrated(bool value);
 void SetPassword(bool value);
+// TMP fields use Android typing plus a shortcut strip; standalone panel edits
+// retain the existing full ImGui keyboard.
+void SetShortcutsOnly(bool value);
 bool IsVisible();
 void SetText(const char* text);
 bool ReconcileText(const char* expected, const char* actual);

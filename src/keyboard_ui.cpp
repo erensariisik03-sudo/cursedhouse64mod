@@ -1,6 +1,7 @@
 #include "keyboard_ui.h"
 #include "text_buffer.h"
 #include "shortcut_editor.h"
+#include "native_shortcuts.h"
 #include "keyboard_catalog.h"
 #include "chat_shortcut.h"
 #include "lobby_emote_bridge.h"
@@ -23,6 +24,9 @@ char g_text[text_buffer::kCapacity] = "";
 bool g_visible = false, g_integrated = false, g_password = false;
 bool g_shift = false, g_caps = false, g_submit = false;
 bool g_quick_send=false;
+bool g_shortcuts_only=false,g_strip_collapsed=false;
+uint64_t g_native_session=0;
+float g_native_bottom=0;
 bool g_text_dirty = false, g_restore_cursor = false, g_reset_history = true, g_refocus = false;
 int g_cursor = 0, g_anchor = 0;
 int g_rect_count = 0;
@@ -49,15 +53,35 @@ void Dirty() { g_text_dirty = g_restore_cursor = true; }
 void Limit() { g_limit_until = ImGui::GetTime() + 1.0; }
 bool Upper() { return g_caps != g_shift; }
 void CancelShortcut() { InvalidateKeys(); g_shortcut.Cancel(g_text, g_cursor, g_anchor); Dirty(); }
+bool QueueNative(const char* text,bool replace=false,bool quick=false) {
+    return native_shortcuts::Queue(g_native_session,{replace?native_shortcuts::Kind::ReplaceAll:native_shortcuts::Kind::Insert,text,quick});
+}
+bool CommitSize() {
+    const std::string tag=g_shortcut.Tag();
+    if(!g_shortcut.CommitSize(g_cursor,g_anchor))return false;
+    if(g_shortcuts_only&&!QueueNative(tag.c_str()))Limit();
+    Dirty();return true;
+}
+bool PickColor(const char* rgba) {
+    if(!g_shortcut.PickColor(rgba,g_text,g_cursor,g_anchor))return false;
+    if(g_shortcuts_only&&!QueueNative((std::string("<#")+rgba+">").c_str()))Limit();
+    return true;
+}
 void FinishShortcut() {
-    if (g_shortcut.HasSize()) g_shortcut.CommitSize(g_cursor, g_anchor);
-    else if (g_shortcut.Active()) g_shortcut.Cancel(g_text, g_cursor, g_anchor);
+    if(g_shortcut.HasSize())CommitSize();
+    else if(g_shortcut.Active())g_shortcut.Cancel(g_text,g_cursor,g_anchor);
     Dirty();
 }
+void HideEditor() {
+    InvalidateKeys();
+    if(g_shortcuts_only){g_strip_collapsed=true;g_page=Page::Letters;}
+    else g_visible=false;
+}
 void Insert(const char* value) {
-    if (g_shortcut.Active()) FinishShortcut();
-    if (text_buffer::Replace(g_text, g_cursor, g_anchor, value)) Dirty();
-    else if (text_buffer::Count(g_text) >= text_buffer::kLimit) Limit();
+    if(g_shortcut.Active())FinishShortcut();
+    if(g_shortcuts_only){if(!QueueNative(value))Limit();return;}
+    if(text_buffer::Replace(g_text,g_cursor,g_anchor,value))Dirty();
+    else if(text_buffer::Count(g_text)>=text_buffer::kLimit)Limit();
 }
 // Pano metni: satır sonları/sekme boşluğa çevrilir, baştaki/sondaki boşluk atılır,
 // kontrol karakterleri düşer. Sınır (1024) Insert/text_buffer tarafından uygulanır.
@@ -111,7 +135,10 @@ void Character(const char* value, const Layout& l, float units = 1.0f) {
     const bool block = std::strcmp(value, u8"█") == 0;
     if(block)ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(0,0,0,0));
     ActionKey(value,Width(l,units),l.height,[value,block]{
-        if(block){keyboard_ui::SetText(chat_shortcut::kPayload);g_quick_send=true;}
+        if(block){
+            if(g_shortcuts_only){if(!QueueNative(chat_shortcut::kPayload,true,true))Limit();}
+            else {keyboard_ui::SetText(chat_shortcut::kPayload);g_quick_send=true;}
+        }
         else Insert(CurrentLetter(value));
         g_shift=false;
     });
@@ -177,7 +204,7 @@ bool ComposerKeyboard() {
     io.InputQueueCharacters.resize(0);
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { CancelShortcut(); return true; }
     if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
-        if (g_shortcut.CommitSize(g_cursor,g_anchor)) Dirty();
+        if (CommitSize()) Dirty();
         return true;
     }
     return false;
@@ -215,6 +242,15 @@ void Preview(bool composer_key) {
     ImGui::TextColored(g_limit_until>ImGui::GetTime()?ImVec4(1,0.4f,0.3f,1):ImVec4(0.53f,0.65f,0.7f,1),"%s",count);
 }
 void Toolbar(Layout l) {
+    if(g_shortcuts_only) {
+        ActionKey("Boyut",Width(l,3),l.height,[]{BeginShortcut(shortcut_editor::Kind::Size);},g_shortcut.Current()==shortcut_editor::Kind::Size);
+        ImGui::SameLine();
+        ActionKey("Renk",Width(l,3),l.height,[]{BeginShortcut(shortcut_editor::Kind::Color);},g_shortcut.Current()==shortcut_editor::Kind::Color);
+        ImGui::SameLine();Character("<",l,1.5f);
+        ImGui::SameLine();Character(">",l,1.5f);
+        ImGui::SameLine();Character(u8"█",l,3);
+        return;
+    }
     ActionKey("Boyut",Width(l,2.4f),l.height,[]{BeginShortcut(shortcut_editor::Kind::Size);},g_shortcut.Current()==shortcut_editor::Kind::Size);
     ImGui::SameLine();
     ActionKey("Renk",Width(l,2.4f),l.height,[]{BeginShortcut(shortcut_editor::Kind::Color);},g_shortcut.Current()==shortcut_editor::Kind::Color);
@@ -234,7 +270,7 @@ void Footer(const Layout& l) {
     ImGui::SameLine(); ActionKey(u8"Yapıştır",Width(l,1.4f),l.height,[]{Paste();});
     ImGui::SameLine(); Character(".",l,0.6f);
     ImGui::SameLine(); ActionKey("Enter",Width(l,1.9f),l.height,[]{g_submit=true;});
-    ImGui::SameLine(); ActionKey("Gizle",Width(l,1.3f),l.height,[]{FinishShortcut();g_visible=false;InvalidateKeys();});
+    ImGui::SameLine(); ActionKey("Gizle",Width(l,1.3f),l.height,[]{FinishShortcut();HideEditor();});
     ImGui::PopID();
 }
 struct Letter { const char* lower; const char* upper; };
@@ -299,10 +335,10 @@ void SizePad(const Layout& l,float y) {
     ActionKey("Delete",Width(l,3),l.height,[]{if(g_shortcut.SizeBackspace(g_text,g_cursor,g_anchor))Dirty();},false,true);
     ImGui::SameLine();
     ImGui::BeginDisabled(!g_shortcut.HasSize());
-    ActionKey("Tamam",Width(l,3),l.height,[]{if(g_shortcut.CommitSize(g_cursor,g_anchor))Dirty();InvalidateKeys();});
+    ActionKey("Tamam",Width(l,3),l.height,[]{if(CommitSize())Dirty();InvalidateKeys();});
     ImGui::EndDisabled();
     ImGui::SameLine(); ActionKey(u8"Vazgeç",Width(l,3),l.height,[]{CancelShortcut();});
-    ImGui::SameLine(); ActionKey("Gizle",Width(l,3),l.height,[]{FinishShortcut();g_visible=false;InvalidateKeys();});
+    ImGui::SameLine(); ActionKey("Gizle",Width(l,3),l.height,[]{FinishShortcut();HideEditor();});
 }
 float Hex(char c) { return static_cast<float>(c<='9'?c-'0':c-'A'+10)/15.0f; }
 void Colors(const Layout& l,float y) {
@@ -318,14 +354,14 @@ void Colors(const Layout& l,float y) {
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(color.x*0.8f+0.2f,color.y*0.8f+0.2f,color.z*0.8f+0.2f,1));
             ImGui::PushStyleColor(ImGuiCol_Text,luminance>0.179f?ImVec4(0.02f,0.03f,0.04f,1):ImVec4(1,1,1,1));
             ActionKey(c.name,Width(l,2.4f),l.height,[rgba=c.rgba]{
-                if(g_shortcut.PickColor(rgba,g_text,g_cursor,g_anchor)) { g_page=Page::Letters; Dirty();InvalidateKeys(); } else Limit();
+                if(PickColor(rgba)) { g_page=Page::Letters; Dirty();InvalidateKeys(); } else Limit();
             });
             ImGui::PopStyleColor(3);
         }
     }
     RowAt(y,2,l);
     ActionKey(u8"Vazgeç",Width(l,6),l.height,[]{CancelShortcut();});
-    ImGui::SameLine(); ActionKey("Gizle",Width(l,6),l.height,[]{CancelShortcut();g_visible=false;});
+    ImGui::SameLine(); ActionKey("Gizle",Width(l,6),l.height,[]{CancelShortcut();HideEditor();});
 }
 void Emojis(const Layout& l,float y,float width) {
     std::vector<int> supported;
@@ -404,6 +440,61 @@ void DrawKeyboard(const ImGuiIO& io) {
     else Letters(l,y);
     ImGui::End();
     ImGui::PopStyleColor(4);
+}
+void DrawShortcutStrip(const ImGuiIO& io) {
+    const auto state=native_shortcuts::Read();
+    if(!state.active||state.session!=g_native_session)return;
+    g_native_bottom=state.bottom;
+    if(!g_shortcut.Active()) {
+        const auto clean=text_buffer::Clean(state.text.c_str());
+        std::memcpy(g_text,clean.c_str(),clean.size()+1);
+        g_cursor=state.cursor;g_anchor=state.anchor;
+    }
+    if(state.limited)Limit();
+    const auto& style=ImGui::GetStyle();
+    const float width=io.DisplaySize.x*.98f;
+    const float available=g_native_bottom>0?io.DisplaySize.y*g_native_bottom:io.DisplaySize.y*.45f;
+    const bool expanded=g_shortcut.Active();
+    const float gap=style.ItemSpacing.y;
+    // Tiny landscape viewports retain touch-sized controls and scroll popup
+    // contents instead of clipping controls behind the Android keyboard.
+    const float key_height=std::clamp(io.DisplaySize.y*.055f,24.f,48.f);
+    const int rows=g_strip_collapsed?1:(expanded?5:2);
+    const float desired=2*style.WindowPadding.y+rows*key_height+(rows-1)*gap;
+    const float height=std::min(desired,std::max(40.f,available-8.f));
+    const float y=g_native_bottom>0?std::max(0.f,available-height-4.f):4.f;
+    ImGui::SetNextWindowPos(ImVec2((io.DisplaySize.x-width)*.5f,y),ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(width,height),ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(.82f);
+    const auto flags=ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|
+        ImGuiWindowFlags_NoFocusOnAppearing;
+    if(!ImGui::Begin("##native_shortcuts",nullptr,flags)){ImGui::End();return;}
+    RecordWindow();
+    const float content=ImGui::GetContentRegionAvail().x;
+    Layout l{std::max(1.f,(content-style.ItemSpacing.x*11)/12.f),style.ItemSpacing.x,key_height};
+    if(g_strip_collapsed) {
+        ActionKey(u8"Kısayollar",content,key_height,[]{g_strip_collapsed=false;InvalidateKeys();});
+    } else {
+        ImGui::BeginDisabled(g_password);
+        ImGui::PushID("native_toolbar");Toolbar(l);ImGui::PopID();
+        ImGui::EndDisabled();
+        if(g_shortcut.Active()){
+            ImGui::TextUnformatted(g_shortcut.Tag().c_str());
+            const float body=ImGui::GetCursorPosY();
+            if(g_shortcut.Current()==shortcut_editor::Kind::Size)SizePad(l,body);
+            else if(g_shortcut.Current()==shortcut_editor::Kind::Color)Colors(l,body);
+
+        } else {
+            const float action_width=std::min(content*.3f,150.f);
+            ImGui::BeginDisabled(g_password);
+            ActionKey(u8"Yapıştır",action_width,key_height,[]{Paste();});
+            ImGui::EndDisabled();ImGui::SameLine();
+            ActionKey(u8"Küçült",action_width,key_height,[]{HideEditor();});ImGui::SameLine();
+            ImGui::TextColored(g_limit_until>ImGui::GetTime()?ImVec4(1,.4f,.3f,1):ImVec4(.7f,.8f,.8f,1),
+                               "%zu/1024",text_buffer::Count(state.text.c_str()));
+        }
+    }
+    ImGui::End();
 }
 bool g_hub_open=false;
 int g_hub_tab=0; // 0 = AI, 1 = Kıyafet, 2 = Oyun
@@ -685,6 +776,11 @@ void SetPasteProvider(PasteProvider provider) { g_paste=provider; }
 void SetVisible(bool value) { if(value!=g_visible){g_rect_count=0;InvalidateKeys();}g_visible=value;if(value)Dirty(); }
 void SetIntegrated(bool value) { g_integrated=value; }
 void SetPassword(bool value) { g_password=value; }
+void SetShortcutsOnly(bool value) {
+    g_shortcuts_only=value;g_strip_collapsed=false;
+    g_native_session=value?native_shortcuts::Read().session:0;
+    InvalidateKeys();g_rect_count=0;
+}
 bool IsVisible() { return g_visible; }
 void SetText(const char* text) {
     g_shortcut.Drop();
@@ -735,7 +831,7 @@ void Draw() {
     g_rect_count=0;
     const auto& io=ImGui::GetIO();
     if(io.DisplaySize.x<=0||io.DisplaySize.y<=0) return;
-    if(g_visible) DrawKeyboard(io);
+    if(g_visible) {if(g_shortcuts_only)DrawShortcutStrip(io);else DrawKeyboard(io);}
     else if(g_integrated){DrawHub(io);DrawAutoJoin(io);}
     else DrawShowButton(io);
 }

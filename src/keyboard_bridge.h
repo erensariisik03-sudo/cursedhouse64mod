@@ -4,9 +4,11 @@
 namespace keyboard_bridge {
 void SurfaceFrame(int width, int height);
 bool RenderReady();
+// Open the shortcut strip for the active native TMP/Android editing session.
 void Open(const char* text, bool password);
 void Close();
-// Native panel text field (no TMP field). PollNative returns false when not active.
+// Standalone panel text field (no TMP field): legacy ImGui editor fallback.
+// PollNative returns false when not active.
 void OpenNative(const char* text, bool password);
 bool PollNative(char* text, size_t capacity, bool& submit, bool& visible);
 void CloseNative();

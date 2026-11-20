@@ -12,6 +12,7 @@
 #include "auto_join.h"
 #include "chat_bot_http.h"
 #include "chat_shortcut.h"
+#include "native_shortcuts.h"
 #include "dobby.h"
 #include <EGL/egl.h>
 #include <android/log.h>
@@ -43,26 +44,38 @@ bool g_original_hide = false, g_limit_relaxed = false;
 int g_original_limit = 0;
 game_text_rules::Status g_rules{};
 std::string g_applied;
+uint64_t g_shortcuts_session=0;
+bool g_normalizing=false;
 Object* g_quick_target=nullptr;
 using Unary = void (*)(Object*, const Method*);
 using Event = void (*)(Object*, Object*, const Method*);
 Unary g_activate = nullptr, g_update = nullptr, g_disable = nullptr;
+Unary g_late = nullptr, g_changed = nullptr, g_submit_callback = nullptr;
 Event g_deselect = nullptr;
 using Swap = EGLBoolean (*)(EGLDisplay, EGLSurface);
 Swap g_swap = nullptr;
 struct Methods {
-    const Method *activate{}, *update{}, *deselect{}, *disable{};
+    const Method *activate{}, *update{}, *deselect{}, *disable{}, *late{}, *changed{};
     const Method *text{}, *setText{}, *hide{}, *setHide{}, *focused{}, *readOnly{}, *interactable{};
     const Method *inputType{}, *deactivate{}, *submit{}, *alive{}, *limit{}, *setLimit{};
     const Method *screenW{}, *screenH{}, *currentEventSystem{};
     const Method *touchCurrent{}, *primaryTouch{}, *touchPosition{}, *touchPress{}, *pressed{}, *readControl{};
     const Method *legacyPosition{}, *legacyPress{};
     const Method *messageQueue{}, *findChat{}, *arrayLength{}, *arrayItem{}, *active{}, *chatSend{};
+    const Method *selectionAnchor{}, *selectionFocus{}, *setSelectionAnchor{}, *setSelectionFocus{};
+    const Method *keyboard{}, *keyboardSelection{}, *setKeyboardSelection{}, *canGetSelection{}, *canSetSelection{}, *keyboardArea{};
     Class* chatClass{};
     Field *chatInput{}, *chatAllowed{};
 } m;
 
 Object* Target() { return g_target ? g_api.gchandle_get_target(g_target) : nullptr; }
+struct ScopedRoot {
+    Handle handle;
+    explicit ScopedRoot(Object* object):handle(object?g_api.gchandle_new(object,false):0){}
+    ~ScopedRoot(){if(handle)g_api.gchandle_free(handle);}
+    Object* Get()const{return handle?g_api.gchandle_get_target(handle):nullptr;}
+    ScopedRoot(const ScopedRoot&)=delete;
+};
 bool Alive(Object* object) {
     if (!object) return false;
     void* args[] = {object};
@@ -83,6 +96,7 @@ void End() {
     const bool original = g_original_hide, relaxed = g_limit_relaxed;
     const int old_limit = g_original_limit; g_limit_relaxed = false;
     g_target = 0; ++g_generation; g_editing = false; g_applied.clear();
+    native_shortcuts::End(g_shortcuts_session);g_shortcuts_session=0;
     keyboard_bridge::Close();
     if (Alive(object)) {
         if (relaxed) SetLimit(object, old_limit);
@@ -93,12 +107,91 @@ void End() {
 std::string ReadText(Object* object, bool* ok = nullptr) {
     return g_api.Utf8(reinterpret_cast<String*>(g_api.Call(m.text, object, nullptr, ok)));
 }
+struct Selection { int cursor=0,anchor=0; };
+struct NativeRange { int start,length; };
+Selection ReadSelection(Object* object,const std::string& text) {
+    const int end=native_shortcuts::ToUnits(text,static_cast<int>(text.size()));
+    int cursor=g_api.Value<int>(m.selectionFocus,object,end);
+    int anchor=g_api.Value<int>(m.selectionAnchor,object,cursor);
+    ScopedRoot keyboard(g_api.Call(m.keyboard,object));
+    if(keyboard.Get()&&g_api.Value<bool>(m.canGetSelection,keyboard.Get())) {
+        bool ok=false;auto* range=g_api.Call(m.keyboardSelection,keyboard.Get(),nullptr,&ok);
+        if(ok&&range){const auto r=*static_cast<NativeRange*>(g_api.object_unbox(range));
+            if(r.start>=0&&r.length>=0&&r.start<=end&&r.length<=end-r.start){anchor=r.start;cursor=r.start+r.length;}}
+    }
+    return {native_shortcuts::ToBytes(text,std::clamp(cursor,0,end)),
+            native_shortcuts::ToBytes(text,std::clamp(anchor,0,end))};
+}
+void SetSelection(Object* object,const std::string& text,Selection selection) {
+    int cursor=native_shortcuts::ToUnits(text,selection.cursor);
+    int anchor=native_shortcuts::ToUnits(text,selection.anchor);
+    void* a[]={&anchor};void* c[]={&cursor};
+    g_api.Call(m.setSelectionAnchor,object,a);g_api.Call(m.setSelectionFocus,object,c);
+    ScopedRoot keyboard(g_api.Call(m.keyboard,object));
+    if(keyboard.Get()&&g_api.Value<bool>(m.canSetSelection,keyboard.Get())) {
+        NativeRange range{std::min(anchor,cursor),std::max(anchor,cursor)-std::min(anchor,cursor)};
+        void* args[]={&range};g_api.Call(m.setKeyboardSelection,keyboard.Get(),args);
+    }
+}
+float NativeBottom() {
+    const int height=g_api.Value<int>(m.screenH);
+    bool ok=false;auto* box=g_api.Call(m.keyboardArea,nullptr,nullptr,&ok);
+    if(!ok||!box||height<=0)return 0;
+    struct Rect { float x,y,width,height; };
+    const auto r=*static_cast<Rect*>(g_api.object_unbox(box));
+    // Some Android players return an empty keyboard area or resize the whole
+    // render surface. Use a top-anchored strip when the reported area is unusable.
+    if(r.height<=0||r.y<0||r.y+r.height>=height)return 0;
+    return std::clamp(1.f-(r.y+r.height)/height,0.f,1.f);
+}
+bool Normalize(Object* object) {
+    if(g_normalizing)return true;
+    bool ok=false;const auto before=ReadText(object,&ok);
+    if(!ok)return false;
+    const auto clean=text_buffer::Clean(before.c_str());
+    if(clean==before)return true;
+    const uint64_t generation=g_generation;
+    const auto selection=ReadSelection(object,before);
+    struct Guard { Guard(){g_normalizing=true;}~Guard(){g_normalizing=false;} } guard;
+    ScopedRoot text(reinterpret_cast<Object*>(g_api.string_new(clean.c_str())));
+    if(!text.Get())return false;
+    void* args[]={text.Get()};g_api.Call(m.setText,object,args,&ok);
+    if(generation!=g_generation)return false;
+    if(!ok)return false;
+    const auto actual=ReadText(object,&ok);
+    if(!ok||actual!=clean)return false;
+    SetSelection(object,actual,selection);
+    return generation==g_generation;
+}
+void Changed(Object* self,const Method* method) {
+    // Native TMP polling can notify listeners before LateUpdate returns. Clamp
+    // before forwarding those listeners, including the game's tag-filter path.
+    if(Target()==self) {
+        if(g_normalizing)return; // the correcting setter must not notify twice
+        if(!Normalize(self)){if(Target()==self)End();return;}
+    }
+    g_changed(self,method);
+}
+void Submit(Object* self,const Method* method) {
+    if(Target()==self&&!Normalize(self)){if(Target()==self)End();return;}
+    g_submit_callback(self,method);
+}
+void PublishEditor(Object* object,bool limited=false) {
+    bool ok=false;const auto text=ReadText(object,&ok);
+    if(!ok){End();return;}
+    const uint64_t generation=g_generation;
+    const auto selection=ReadSelection(object,text);
+    const float bottom=NativeBottom();
+    if(generation!=g_generation)return;
+    g_applied=text;
+    native_shortcuts::Publish(g_shortcuts_session,text,selection.cursor,selection.anchor,bottom,limited);
+}
 void Activate(Object* self, const Method* method) {
-    if (!g_ready.load(std::memory_order_acquire) || !keyboard_bridge::RenderReady() || !g_input_ok.load() ||
+    if (!g_ready.load(std::memory_order_acquire) ||
         g_api.Value<bool>(m.readOnly, self, true) || !g_api.Value<bool>(m.interactable, self, false)) {
         g_activate(self, method); return;
     }
-    if (Target() == self) { SetHide(self, true); g_activate(self, method); return; }
+    if (Target() == self) { SetHide(self, false); g_activate(self, method); return; }
     if (g_target) End();
     bool ok = false;
     auto* boxed = g_api.Call(m.hide, self, nullptr, &ok);
@@ -109,19 +202,20 @@ void Activate(Object* self, const Method* method) {
     const int original_limit = *static_cast<int*>(g_api.object_unbox(boxed_limit));
     const Handle handle = g_api.gchandle_new(self, false);
     if (!handle) { g_activate(self, method); return; }
-    if (!SetHide(self, true)) { g_api.gchandle_free(handle); g_activate(self, method); return; }
-    g_original_hide = original; g_original_limit = original_limit; g_limit_relaxed = true; g_target = handle;
-    const uint64_t generation = ++g_generation;
-    // TMP counts UTF-16 units. The custom buffer is the sole 1024-scalar editor
-    // limit, so disable only this active field's built-in limit until blur.
-    if (!SetLimit(self, 0)) { End(); g_activate(self, method); return; }
-    g_activate(self, method);
-    if (generation != g_generation) return;
-    if (!g_api.Value<bool>(m.focused, self, false)) { End(); return; }
-    g_applied = ReadText(self);
-    keyboard_bridge::Open(g_applied.c_str(), g_api.Value<int>(m.inputType, self) == 2);
-    g_editing = true;
-    LOGI("Custom editor opened; limit=1024 Unicode characters");
+    g_original_hide=original;g_original_limit=original_limit;g_limit_relaxed=true;g_target=handle;
+    const uint64_t generation=++g_generation;
+    // Let TMP open the real device keyboard. Both native and TMP UTF-16 caps
+    // are relaxed before Open; callbacks enforce 1024 Unicode scalars instead.
+    if(!SetHide(self,false)||!SetLimit(self,0)){End();g_activate(self,method);return;}
+    g_activate(self,method);
+    if(generation!=g_generation)return;
+    if(!g_api.Value<bool>(m.focused,self,false)||!Normalize(self)){if(generation==g_generation)End();return;}
+    g_shortcuts_session=native_shortcuts::Begin();
+    PublishEditor(self);
+    if(generation!=g_generation)return;
+    keyboard_bridge::Open(g_applied.c_str(),g_api.Value<int>(m.inputType,self)==2);
+    g_editing=true;
+    LOGI("Android IME + shortcut strip opened; limit=1024 Unicode characters");
 }
 void Deselect(Object* self, Object* event, const Method* method) {
     g_deselect(self, event, method);
@@ -165,13 +259,6 @@ bool ReadPointer(float& x, float& y, bool& down) {
     }
     return false;
 }
-struct ScopedRoot {
-    Handle handle;
-    explicit ScopedRoot(Object* object):handle(object?g_api.gchandle_new(object,false):0){}
-    ~ScopedRoot(){if(handle)g_api.gchandle_free(handle);}
-    Object* Get()const{return handle?g_api.gchandle_get_target(handle):nullptr;}
-    ScopedRoot(const ScopedRoot&)=delete;
-};
 // Resolve the owner by its actual inputField reference, never by UI text/RVA.
 Object* ChatOwner(Object* input) {
     if(!m.chatClass||!m.chatInput||!m.chatAllowed||!m.chatSend||!m.findChat||!m.arrayLength||!m.arrayItem||!m.active||
@@ -234,7 +321,7 @@ bool QuickSend(Object* object,uint64_t generation) {
     g_applied=actual;
     keyboard_bridge::ReconcileText(chat_shortcut::kPayload,actual.c_str());
     if(!g_api.Value<bool>(m.focused,object)&&generation==g_generation){
-        SetHide(object,true);
+        SetHide(object,false);
         if(generation==g_generation)g_activate(object,m.activate);
     }
     if(generation==g_generation&&!g_api.Value<bool>(m.focused,object))End();
@@ -242,43 +329,51 @@ bool QuickSend(Object* object,uint64_t generation) {
     return true;
 }
 void PumpEditor() {
-    Object* object = Target(); if (!g_target) return;
-    if (!Alive(object) || !g_api.Value<bool>(m.focused, object)) { End(); return; }
-    const uint64_t generation = g_generation;
-    if (g_api.Value<int>(m.limit, object, -1) != 0 && !SetLimit(object, 0)) { End(); return; }
-    if (generation != g_generation) return;
-    if (keyboard_bridge::ConsumeEmojiRequest()) {
-        bool query_ok = false;
-        const uint64_t mask = emoji_support::Probe(g_api, object, query_ok);
-        if (generation != g_generation) return;
-        keyboard_bridge::SetEmojiSupport(mask, query_ok);
-    }
-    std::array<char, text_buffer::kCapacity> buffer{};
-    bool submit = false, visible = true, quick_send=false;
-    keyboard_bridge::Snapshot(buffer.data(), buffer.size(), submit, visible,quick_send);
-    if(quick_send&&visible&&!submit&&QuickSend(object,generation))return;
+    Object* object=Target();if(!g_target)return;
+    if(!Alive(object)||!g_api.Value<bool>(m.focused,object)){End();return;}
+    const uint64_t generation=g_generation;
+    if(g_api.Value<int>(m.limit,object,-1)!=0&&!SetLimit(object,0)){End();return;}
     if(generation!=g_generation)return;
-    // Direct assignment deliberately bypasses Append()/Validate() and the field's keyboard rules.
-    if (g_applied != buffer.data()) {
-        auto* text = g_api.string_new(buffer.data());
-        void* args[] = {text}; bool ok = false;
-        g_api.Call(m.setText, object, args, &ok);
-        if (generation != g_generation) return; // onValueChanged may change scenes/focus
-        if (!ok) { End(); return; }
-        bool read_ok = false;
-        const std::string actual = ReadText(object, &read_ok);
-        if (generation != g_generation) return;
-        if (!read_ok) { End(); return; }
-        if (actual != buffer.data()) keyboard_bridge::ReconcileText(buffer.data(), actual.c_str());
-        g_applied = actual;
+    if(!Normalize(object)){if(generation==g_generation)End();return;}
+    bool limited=false;
+    const auto commands=native_shortcuts::Take(g_shortcuts_session);
+    for(const auto& command:commands) {
+        // Read after TMP has consumed the latest Android edit. Apply an operation
+        // to the current selection, never a full renderer snapshot of old text.
+        bool ok=false;const auto current=ReadText(object,&ok);
+        if(generation!=g_generation)return;
+        if(!ok){End();return;}
+        auto selection=ReadSelection(object,current);
+        if(generation!=g_generation)return;
+        std::array<char,text_buffer::kCapacity> buffer{};
+        std::memcpy(buffer.data(),current.c_str(),current.size()+1);
+        if(command.kind==native_shortcuts::Kind::ReplaceAll){selection.anchor=0;selection.cursor=static_cast<int>(current.size());}
+        const int lo=std::min(selection.cursor,selection.anchor),hi=std::max(selection.cursor,selection.anchor);
+        const auto candidate=current.substr(0,lo)+command.text+current.substr(hi);
+        if(text_buffer::Count(candidate.c_str())>text_buffer::kLimit){limited=true;continue;}
+        if(candidate!=current) {
+            text_buffer::Replace(buffer.data(),selection.cursor,selection.anchor,command.text.c_str());
+            ScopedRoot text(reinterpret_cast<Object*>(g_api.string_new(buffer.data())));
+            if(!text.Get())continue;
+            void* args[]={text.Get()};g_api.Call(m.setText,object,args,&ok);
+            if(generation!=g_generation)return;
+            if(!ok){End();return;}
+            const auto actual=ReadText(object,&ok);
+            if(generation!=g_generation)return;
+            if(!ok){End();return;}
+            if(actual==buffer.data())SetSelection(object,actual,selection);
+            if(generation!=g_generation)return;
+        }
+        if(command.quick_send)QuickSend(object,generation);
+        if(generation!=g_generation)return;
     }
-    if (submit || !visible) {
-        if (submit) g_api.Call(m.submit, object);
-        if (generation != g_generation) return;
-        bool clearSelection = false; void* args[] = {&clearSelection};
-        g_api.Call(m.deactivate, object, args);
-        if (generation == g_generation) End();
-    }
+    PublishEditor(object,limited);
+}
+void LateUpdate(Object* self,const Method* method) {
+    g_late(self,method);
+    // The original LateUpdate polls native text, suggestions, selection and IME
+    // composition. Commands run afterwards so fast Android typing wins first.
+    if(g_ready.load(std::memory_order_acquire)&&Target()==self)PumpEditor();
 }
 void Update(Object* self, const Method* method) {
     if (!g_ready.load(std::memory_order_acquire)) { g_update(self, method); return; }
@@ -292,10 +387,9 @@ void Update(Object* self, const Method* method) {
     if (valid) captured = keyboard_bridge::Pointer(x / width, 1.0f - y / height, down);
     else {
         keyboard_bridge::Pointer(0, 0, false);
-        if (g_target) End();
+        // Losing touch/render readiness must not close the native keyboard.
     }
-    if (g_target && !keyboard_bridge::RenderReady()) End();
-    PumpEditor();
+
     // Pause scene discovery/mutations while Photon suspends its message queue
     // for a scene load. Release UI roots but retain the native desired strings.
     const bool loading=m.messageQueue&&!g_api.Value<bool>(m.messageQueue,nullptr,true);
@@ -321,6 +415,7 @@ bool Resolve() {
     auto* system = g_api.Find("UnityEngine.EventSystems", "EventSystem");
     if (!field || !system) return false;
     auto fm = [&](const char* name, int count = 0) { return g_api.FindMethod(field, name, count); };
+    m.late=fm("LateUpdate");m.changed=fm("SendOnValueChanged");
     m.activate = fm("ActivateInputFieldInternal"); m.deselect = fm("OnDeselect", 1); m.disable = fm("OnDisable");
     m.update = g_api.FindMethod(system, "Update", 0);
     m.currentEventSystem = g_api.FindMethod(system, "get_current", 0);
@@ -329,6 +424,13 @@ bool Resolve() {
     m.hide = fm("get_shouldHideSoftKeyboard"); m.setHide = fm("set_shouldHideSoftKeyboard", 1);
     m.focused = fm("get_isFocused"); m.readOnly = fm("get_readOnly"); m.interactable = fm("IsInteractable");
     m.inputType = fm("get_inputType"); m.deactivate = fm("DeactivateInputField", 1); m.submit = fm("SendOnSubmit");
+    m.selectionAnchor=fm("get_selectionStringAnchorPosition");m.selectionFocus=fm("get_selectionStringFocusPosition");
+    m.setSelectionAnchor=fm("set_selectionStringAnchorPosition",1);m.setSelectionFocus=fm("set_selectionStringFocusPosition",1);
+    m.keyboard=fm("get_touchScreenKeyboard");
+    auto* native=g_api.Find("UnityEngine","TouchScreenKeyboard");
+    m.keyboardSelection=g_api.FindMethod(native,"get_selection",0);m.setKeyboardSelection=g_api.FindMethod(native,"set_selection",1);
+    m.canGetSelection=g_api.FindMethod(native,"get_canGetSelection",0);m.canSetSelection=g_api.FindMethod(native,"get_canSetSelection",0);
+    m.keyboardArea=g_api.FindMethod(native,"get_area",0);
     auto* screen = g_api.Find("UnityEngine", "Screen");
     m.screenW = g_api.FindMethod(screen, "get_width", 0); m.screenH = g_api.FindMethod(screen, "get_height", 0);
     m.alive = g_api.FindMethod(g_api.Find("UnityEngine", "Object"), "op_Implicit", 1);
@@ -356,7 +458,7 @@ bool Resolve() {
         m.chatInput=g_api.class_get_field_from_name(m.chatClass,"inputField");
         m.chatAllowed=g_api.class_get_field_from_name(m.chatClass,"canSendMessage");
     }
-    const Method* required[] = {m.activate, m.deselect, m.disable, m.update, m.currentEventSystem,
+    const Method* required[] = {m.late,m.changed,m.activate, m.deselect, m.disable, m.update, m.currentEventSystem,
         m.text, m.setText, m.hide, m.setHide, m.focused, m.readOnly, m.interactable,
         m.inputType, m.deactivate, m.submit, m.limit, m.setLimit, m.screenW, m.screenH, m.alive};
     for (const auto* entry : required) if (!entry || !Entry(entry)) return false;
@@ -383,12 +485,15 @@ void InstallFromUnityFrame() {
         Hook(Entry(m.update), reinterpret_cast<void*>(Update), g_update, "EventSystem.Update") &&
         Hook(Entry(m.deselect), reinterpret_cast<void*>(Deselect), g_deselect, "TMP.OnDeselect") &&
         Hook(Entry(m.disable), reinterpret_cast<void*>(Disable), g_disable, "TMP.OnDisable") &&
+        Hook(Entry(m.changed), reinterpret_cast<void*>(Changed), g_changed, "TMP.SendOnValueChanged") &&
+        Hook(Entry(m.submit), reinterpret_cast<void*>(Submit), g_submit_callback, "TMP.SendOnSubmit") &&
+        Hook(Entry(m.late), reinterpret_cast<void*>(LateUpdate), g_late, "TMP.LateUpdate") &&
         Hook(Entry(m.activate), reinterpret_cast<void*>(Activate), g_activate, "TMP.ActivateInputFieldInternal");
     if (ready) g_rules = game_text_rules::Install(g_api);
     if (ready) auto_join::Install(g_api); // dolu odaya otomatik katılma (JoinRoom adını ve 'Game full' hatasını izler)
     if (ready) ad_block::Install(g_api); // banner/geçiş reklamı engeli (ödüllü reklamlara dokunmaz)
     g_ready.store(ready, std::memory_order_release);
-    LOGI("v19 Integration %s; custom editor requires active GLES renderer and working Unity input", ready ? "ready" : "disabled");
+    LOGI("v19 Integration %s; native keyboard active; shortcut strip uses GLES and Unity touch input", ready ? "ready" : "disabled");
 }
 bool IsUnityFrameMessage(const Method* method) {
     const char* name = g_api.method_get_name(method);

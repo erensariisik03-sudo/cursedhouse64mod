@@ -16,7 +16,7 @@ SPECS={
  ('','ChatManager'):({'SendMessage':0},['inputField','canSendMessage']),
  ('','TMPInputFieldTagFilter'):({},['qfy']),('','TMPTextTagFilter'):({},['qfz']),
  ('<PrivateImplementationDetails>{B6FBF95C-D343-4B5E-9090-977A04841BC0}','a'):({'dms':0,'dmt':0},[]),
- ('TMPro','TMP_InputField'):({'ActivateInputFieldInternal':0,'OnDeselect':1,'OnDisable':0,'get_text':0,'set_text':1,'get_shouldHideSoftKeyboard':0,'set_shouldHideSoftKeyboard':1,'get_isFocused':0,'get_readOnly':0,'IsInteractable':0,'get_inputType':0,'DeactivateInputField':1,'SendOnSubmit':0,'get_characterLimit':0,'set_characterLimit':1},[]),
+ ('TMPro','TMP_InputField'):({'LateUpdate':0,'SendOnValueChanged':0,'ActivateInputFieldInternal':0,'OnDeselect':1,'OnDisable':0,'get_text':0,'set_text':1,'get_shouldHideSoftKeyboard':0,'set_shouldHideSoftKeyboard':1,'get_isFocused':0,'get_readOnly':0,'IsInteractable':0,'get_inputType':0,'DeactivateInputField':1,'SendOnSubmit':0,'get_characterLimit':0,'set_characterLimit':1},[]),
  ('UnityEngine.EventSystems','EventSystem'):({'Update':0,'get_current':0},[]),
  ('UnityEngine','Object'):({'op_Implicit':1,'FindObjectsByType':3},[]),
  ('UnityEngine','Behaviour'):({'get_isActiveAndEnabled':0},[]),

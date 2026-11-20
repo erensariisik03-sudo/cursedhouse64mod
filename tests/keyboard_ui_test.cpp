@@ -4,6 +4,7 @@
 #include "lobby_emote_bridge.h"
 #include "auto_join_bridge.h"
 #include "text_buffer.h"
+#include "native_shortcuts.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include <cassert>
@@ -200,6 +201,41 @@ int main() {
     Direct("Vazgeç");assert(auto_join_bridge::Take().cancel);
     auto_join_bridge::Publish({});Frame();Frame();assert(!items.count("Vazgeç"));
   }
+  // Hybrid mode renders only shortcuts; device text stays authoritative and
+  // buttons queue operations, never the stale copy displayed by a previous frame.
+  const auto session=native_shortcuts::Begin();
+  native_shortcuts::Publish(session,"Android draft",13,13,.625f);
+  keyboard_ui::ResetTransientState();keyboard_ui::SetShortcutsOnly(true);
+  keyboard_ui::SetVisible(true);Frame();Frame();Frame();
+  assert(items.count("Boyut")&&items.count("Renk")&&!items.count("Emoji")&&!items.count("q")&&!items.count("##keyboard_text"));
+  auto* strip=ImGui::FindWindowByName("##native_shortcuts");
+  assert(strip&&strip->Pos.y>=0&&strip->Pos.y+strip->Size.y<=size.y*.625f);
+  Direct("<");Direct(">");
+  auto commands=native_shortcuts::Take(session);
+  assert(commands.size()==2&&commands[0].text=="<"&&commands[1].text==">");
+  assert(native_shortcuts::Read().text=="Android draft");
+  Direct("Boyut");Frame();Direct("1");Direct("2");Frame();
+  assert(native_shortcuts::Take(session).empty()); // unfinished tags never leak
+  native_shortcuts::Publish(session,"newer Android word",18,18,.625f);
+  Frame();Direct("Tamam");Frame();
+  commands=native_shortcuts::Take(session);
+  assert(commands.size()==1&&commands[0].text=="<size=12>"&&commands[0].kind==native_shortcuts::Kind::Insert);
+  assert(native_shortcuts::Read().text=="newer Android word");
+  Direct("Renk");Frame();Direct(u8"Kırmızı");Frame();
+  commands=native_shortcuts::Take(session);assert(commands.size()==1&&commands[0].text=="<#F00F>");
+  Direct("Renk");Frame();Direct(u8"Vazgeç");Frame();assert(native_shortcuts::Take(session).empty());
+  Direct(u8"█");
+  commands=native_shortcuts::Take(session);
+  assert(commands.size()==1&&commands[0].kind==native_shortcuts::Kind::ReplaceAll&&commands[0].quick_send&&commands[0].text==chat_shortcut::kPayload);
+  Frame();Direct(u8"Küçült");Frame();
+  assert(keyboard_ui::IsVisible()&&items.count(u8"Kısayollar")&&!items.count("Boyut"));
+  Direct(u8"Kısayollar");Frame();assert(items.count("Boyut"));
+  keyboard_ui::SetPassword(true);Frame();
+  const auto disabled=items.at("<").GetCenter();assert(!keyboard_ui::TouchDown(disabled.x,disabled.y));
+  assert(native_shortcuts::Take(session).empty());keyboard_ui::SetPassword(false);
+  native_shortcuts::Publish(session,"draft",5,5,0);Frame();
+  assert(ImGui::FindWindowByName("##native_shortcuts")->Pos.y==4.f);
+  native_shortcuts::End(session);keyboard_ui::SetShortcutsOnly(false);keyboard_ui::SetVisible(false);
   // Context/device recreation can request pixels again after the CPU copy was freed.
   io.Fonts->GetTexDataAsRGBA32(&pixels,&w,&h);assert(pixels&&w>0&&h>0);Frame();
   ImGui::DestroyContext();

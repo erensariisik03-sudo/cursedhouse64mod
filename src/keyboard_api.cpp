@@ -4,6 +4,7 @@
 #include "text_buffer.h"
 #include "chat_bot_http.h"
 #include "keyboard_catalog.h"
+#include "native_shortcuts.h"
 #include "imgui.h"
 #include "backends/imgui_impl_opengl3.h"
 #include <EGL/egl.h>
@@ -162,6 +163,7 @@ void Open(const char* text, bool password) {
     std::lock_guard<std::mutex> lock(g_mutex);
     keyboard_ui::ResetTransientState();
     g_native=false;
+    keyboard_ui::SetShortcutsOnly(true);
     keyboard_ui::SetIntegrated(true); keyboard_ui::SetPassword(password);
     keyboard_ui::SetText(text); keyboard_ui::SetVisible(true);
 }
@@ -170,6 +172,7 @@ void Open(const char* text, bool password) {
 void OpenNative(const char* text, bool password) {
     std::lock_guard<std::mutex> lock(g_mutex);
     keyboard_ui::ResetTransientState();
+    keyboard_ui::SetShortcutsOnly(false);
     keyboard_ui::SetIntegrated(true); keyboard_ui::SetPassword(password);
     keyboard_ui::SetText(text); keyboard_ui::SetVisible(true);
     g_native=true;
@@ -185,6 +188,7 @@ void CloseNative() {
     std::lock_guard<std::mutex> lock(g_mutex);
     if(!g_native)return;
     g_native=false;
+    keyboard_ui::SetShortcutsOnly(false);
     keyboard_ui::SetVisible(false); keyboard_ui::SetText("");
     keyboard_ui::SetPassword(false); keyboard_ui::ConsumeSubmit();
     keyboard_ui::ConsumeQuickSend();
@@ -206,6 +210,7 @@ void ReconcileText(const char* expected, const char* actual) {
 void Close() {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_native=false;
+    keyboard_ui::SetShortcutsOnly(false);
     keyboard_ui::SetVisible(false); keyboard_ui::SetText("");
     keyboard_ui::SetPassword(false); keyboard_ui::ConsumeSubmit();
     keyboard_ui::ConsumeQuickSend();
@@ -247,10 +252,17 @@ void mm_shutdown() {
 }
 void mm_set_visible(bool value) { std::lock_guard<std::mutex> lock(g_mutex); keyboard_ui::SetVisible(value); }
 bool mm_is_visible() { std::lock_guard<std::mutex> lock(g_mutex); return keyboard_ui::IsVisible(); }
-void mm_set_text(const char* text) { std::lock_guard<std::mutex> lock(g_mutex); keyboard_ui::SetText(text); }
+void mm_set_text(const char* text) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const auto state=native_shortcuts::Read();
+    if(state.active&&!g_native)native_shortcuts::Queue(state.session,{native_shortcuts::Kind::ReplaceAll,text?text:""});
+    else keyboard_ui::SetText(text);
+}
 const char* mm_get_text() {
     thread_local std::string snapshot;
-    std::lock_guard<std::mutex> lock(g_mutex); snapshot = keyboard_ui::GetText(); return snapshot.c_str();
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const auto state=native_shortcuts::Read();
+    snapshot=state.active&&!g_native?state.text:keyboard_ui::GetText();return snapshot.c_str();
 }
 int32_t mm_consume_submit() { std::lock_guard<std::mutex> lock(g_mutex); return keyboard_ui::ConsumeSubmit(); }
 }
