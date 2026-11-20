@@ -117,11 +117,54 @@ hedefini bekler; hedef hazır değilse işlem devre dışı kalır.
 3. Yanıtlanacak oyuncuyu seç; istersen **Kişilik düzenle** ile talimat ekle.
 4. Botu aç. Yalnız açıldıktan sonraki yeni mesajlara yanıt verir.
 
-Anahtar yalnız bellekte tutulur, oyunu kapatınca silinir. İstekler arka planda
+Mevcut ayar sistemi API anahtarını ve bot tercihlerini uygulamanın özel
+`files/gmm_ai.cfg` dosyasında saklar; anahtar loglanmaz. İstekler arka planda
 Android `HttpURLConnection` ile gönderilir; APK'da `INTERNET` izni gerekir.
 Seçilen oyuncunun mesajları ve sohbet bağlamı Gemini'ye gönderilir. Yanıtlar
 etiket karakterlerinden temizlenir ve 180 karakterle sınırlanır. Gönderim oyunun
 bekleme süresine uyar; kullanıcının yazdığı taslağı ezmez.
+
+### Hazır yanıtlar ve isim hatırlatması
+
+**Ada göre süz** açıkken oyun adının yanında cümlede ayrı sözcük olarak geçen
+`zeka`, `yapay` ve `yapayzeka` da bota hitap sayılır. Büyük/küçük harf fark etmez;
+`yapay zeka` yazımı da çalışır. `zekalı` gibi kelimelerin içinden eşleşme yapılmaz.
+
+
+- `merhaba`, `mrb`, `slm`, `selam`, `sa`, `nasılsın`, `nasılsınız`, `naber` ve
+  yaygın kısa selamlaşma birleşimleri AI'ye gönderilmeden yerel yanıt alır.
+  Aynı oyuncuya bu tür yanıtlar en sık 30 saniyede bir verilir.
+- Selamlaşmanın yanında gerçek bir soru varsa soru korunur: örneğin
+  `Bot merhaba, oyun nasıl oynanır?` hazır selam yanıtına dönüştürülmez.
+- Kahkaha/random süzgeci korunur. Model `SKIP`, `Ad: SKIP` veya `Ad, SKIP`
+  döndürürse mesaj sessizce elenir; kontrol işareti sohbet satırına veya yanıt
+  hafızasına eklenmez. Gönderim sınırında her parça tekrar kontrol edilir.
+- Bot açık, **Ada göre süz** açık ve odada başka oyuncu varken ilk isim
+  hatırlatması 15 saniye sonra, devamı iki dakikada bir hazırlanır:
+  `Soru için adımı ("BotAdı") veya zeka, yapay, yapayzeka yazıp sorunuzu ekleyin.`
+  Metin gerçek oyun adını kullanır; bu mesaj için AI isteği yapılmaz.
+- Normal yanıtlar ve bekleyen sorular hatırlatmadan önce gelir. Hatırlatma da
+  oyunun sohbet bekleme süresine, metin alanının odağına ve taslak korumasına
+  uyar. Gönderilemeyen hatırlatma 20 saniyede bırakılır; mesajlar biriktirilmez.
+- Bot/isim süzgeci kapatılınca, odadan çıkınca veya ad değişince eski hatırlatma
+  iptal edilir. Eski bot oturumundan tamamlanan AI yanıtı da gönderilmez.
+
+### Yerel küfür uyarısı
+
+Bot açıkken açıkça bota yöneltilen belirli küfürler yerel kelime/ifade kurallarıyla
+saptanır. Bu mesajlar AI'ye gönderilmez; **iki sabit, sert uyarı** normal yanıtların
+önüne alınır. İlk uyarı uygun ilk sohbet anında, ikincisi oyunun bekleme süresi
+izin verince gönderilir. Küfürle karşılık verilmez.
+
+`lan`, `amk`, `aq`, sıradan argo ve hakaret kelimeleri bu sabit küfür kuralını
+tetiklemez; mevcut isim/oyuncu süzgecinden geçiyorsa normal AI akışına bırakılır.
+Başka oyuncuya yöneltilen sözler ve kelimenin anlamını soran/aktaran cümleler için
+sabit uyarı verilmez. Bu yapı sınırlı bir yerel sözlüktür; her yazım hilesini ya da
+bağlamı anladığı varsayılmaz.
+
+Aynı oyuncuya yeni uyarı çifti en sık **60 saniyede bir**, genel olarak en sık
+**10 saniyede bir** hazırlanır. Bekleyen uyarı çifti varken yeni çift eklenmez.
+Taslak/odak koruması, sohbet bekleme süresi ve zaman aşımı bu mesajlarda da geçerlidir.
 
 ## Kaynak düzeni
 
@@ -136,7 +179,7 @@ bekleme süresine uyar; kullanıcının yazdığı taslağı ezmez.
 | `src/game_text_rules.cpp`, `src/username_gate.h`, `src/observer_target.cpp`, `src/hook_veneer.h` | Metin kuralları ve AArch64 native kontrol yardımcıları |
 | `src/cosmetic_*`, `src/wardrobe_bridge.h`, `src/lobby_emotes.*` | Kozmetik, kıyafet ve dans |
 | `src/chat_bot*`, `src/ad_block.*`, `src/auto_join*` | AI, reklam ve oda bağlantısı |
-| `tests/` | Host testleri, sahte oyun API'leri ve ARM64 native örnekleri |
+| `tests/` | Host testleri, sahte oyun API'leri, botun HTTP/gönderim akışı ve ARM64 native örnekleri |
 | `tools/` | Dump/metadata inceleme ve PowerShell log toplama araçları |
 | `previews/` | Arayüz örnek görselleri |
 | `third_party/` | ImGui, Dobby ve bunların lisansları |

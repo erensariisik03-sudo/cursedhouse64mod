@@ -543,7 +543,7 @@ void BotBody(const ImGuiIO& io,float key_height,float content,float max_height){
                     len_active=ImGui::IsItemActive();
                 }
                 ImGui::PushID("bot_strict");
-                ActionKey(s.strict?"Ada göre süz: AÇIK (adımla yazanlar)":"Ada göre süz: kapalı (hepsi)",content,key_height,[]{chat_bot_bridge::ToggleStrict();InvalidateKeys();},s.strict);
+                ActionKey(s.strict?"Ada göre süz: AÇIK (adım / yapay zeka)":"Ada göre süz: kapalı (hepsi)",content,key_height,[]{chat_bot_bridge::ToggleStrict();InvalidateKeys();},s.strict);
                 ImGui::PopID();
                 ImGui::PushID("bot_all");
                 ActionKey(s.all?"Herkes AÇIK":"Herkes kapalı (seçili kişiler)",content,key_height,[]{chat_bot_bridge::ToggleAll();InvalidateKeys();},s.all);

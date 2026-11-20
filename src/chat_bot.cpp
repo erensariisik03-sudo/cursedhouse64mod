@@ -21,10 +21,10 @@ namespace chat_bot {
 namespace {
 using namespace il2cpp;
 using chat_bot_bridge::Edit;
-constexpr size_t kReplyScalars = 600;  // toplam cevap sınırı
 constexpr size_t kChunkScalars = 200;  // tek sohbet satırı: bundan uzunsa cümle sonunda bölünür (satırlar üst üste binmesin)
-constexpr size_t kMaxChunks = 2;
 constexpr double kChunkGap = 1.2;
+constexpr double kWarningSenderGap=60.0,kWarningGlobalGap=10.0;
+constexpr double kSmallTalkGap = 30.0; // yerel selam yanıtıyla sohbeti doldurma
 constexpr double kPerSenderGap = 6.0;  // aynı kişiden en sık 6 sn'de bir mesaj işlenir
 constexpr double kConversationWindow = 45.0; // adımızla konuşan kişinin devam mesajları bu süre cevaplanır
 constexpr double kSideTalkWindow = 40.0;     // başkasına yazan/yazılan kişinin mesajları bu süre cevaplanmaz
@@ -61,7 +61,32 @@ class Controller {
     std::deque<std::string> outbox, recent_sent; // gönderilecek parçalar; kendi yolladıklarımız (yankı koruması)
     bool enabled = false, baseline = false;
     Edit editing = Edit::None;
-    std::string issue, own_name;
+    std::string issue, own_name, request_sender, reminder_name;
+    chat_bot_core::NameReminder reminder;
+    uintptr_t active_room=0,reminder_room=0;
+    bool outbox_reminder=false;
+    uint64_t reply_generation=0,request_generation=0;
+    std::unordered_map<std::string,double> last_smalltalk,last_warning;
+    size_t warning_chunks=0;double next_warning=0;
+    void DropOutbox(){outbox.clear();warning_chunks=0;outbox_reminder=false;reminder_name.clear();reminder_room=0;}
+    void InvalidateReplies(){++reply_generation;pending.clear();DropOutbox();}
+
+
+    void WarnProfanity(const std::string& sender) {
+        pending.erase(std::remove_if(pending.begin(),pending.end(),[&](const Pending& p){return p.name==sender;}),pending.end());
+        if(engine.Busy()&&request_sender==sender&&request_generation==reply_generation){
+            ++reply_generation;
+            if(!history.empty()&&!history.back().model)history.pop_back();
+        }
+        const auto previous=last_warning.find(sender);
+        if(warning_chunks||now_<next_warning||(previous!=last_warning.end()&&now_-previous->second<kWarningSenderGap))return;
+        if(outbox_reminder)DropOutbox();
+        const auto warnings=chat_bot_core::ProfanityWarnings(sender);
+        for(auto it=warnings.rbegin();it!=warnings.rend();++it)outbox.push_front(*it);
+        warning_chunks=warnings.size();outbox_since=now_;
+        last_warning[sender]=now_;next_warning=now_+kWarningGlobalGap;
+        Status(u8"AI | Yerel küfür uyarısı hazır; AI isteği yapılmadı.");
+    }
 
     std::string ConfigPath() {
         std::ifstream cmd("/proc/self/cmdline", std::ios::binary);
@@ -164,7 +189,7 @@ class Controller {
         snap.players = names;
         if (enabled && !all && !selected.empty()) {
             const bool any = std::any_of(selected.begin(), selected.end(), [&](const std::string& n) { return std::find(names.begin(), names.end(), n) != names.end(); });
-            if (!any) { enabled = false; pending.clear(); Status(u8"AI | Seçilen oyuncuların hiçbiri odada değil; bot kapatıldı."); }
+            if (!any) { enabled = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Seçilen oyuncuların hiçbiri odada değil; bot kapatıldı."); }
         }
     }
     void Status(const std::string& s) { snap.status = s; }
@@ -206,30 +231,38 @@ class Controller {
                 if (std::find(recent_sent.begin(), recent_sent.end(), *msg) != recent_sent.end()) break; // yankı koruması
                 // Gereksiz istek göndermemek için yerel süzgeçler (AI'ya gitmeden):
                 if (chat_bot_core::IsNoise(*msg)) { snap.last_in = u8"(anlamsız/kahkaha; atlandı)"; break; }
-                auto& last = last_accept[name];
-                if (now_ - last < kPerSenderGap) break;                       // aynı kişi art arda yazıyorsa sıklığı sınırla
-                if (chat_bot_core::IsSalam(*msg)) {
-                    last = now_;
-                    pending.push_back({name, name + u8", aleyküm selam ve rahmetullahi ve berekatuhu.", true});
-                    while (pending.size() > 6) pending.pop_front();
+                const bool mentions_me=chat_bot_core::MentionsBot(*msg,own_name);
+                std::vector<std::string> others;
+                for(const auto& p:snap.players)if(p!=name)others.push_back(p);
+                if(!mentions_me&&chat_bot_core::AddressedToOther(*msg,others,own_name)){
+                    talking[name]=now_+kSideTalkWindow;
+                    for(const auto& o:others)if(chat_bot_core::AddressedToOther(*msg,{o},own_name))talking[o]=now_+kSideTalkWindow;
+                    snap.last_in=u8"(başkasına yazılmış; atlandı)";break;
+                }
+                const auto eng=engaged.find(name);
+                const bool in_conversation=eng!=engaged.end()&&now_<eng->second;
+                if(chat_bot_core::DirectedProfanity(*msg,own_name,others,in_conversation)){
+                    WarnProfanity(name);break;
+                }
+                // A complete hello/how-are-you phrase is handled locally even
+                // without a name mention. A greeting plus a real question is not.
+                const auto smalltalk=chat_bot_core::SmallTalkReply(*msg,name,own_name,mode);
+                if(smalltalk){
+                    const auto previous=last_smalltalk.find(name);
+                    if(previous!=last_smalltalk.end()&&now_-previous->second<kSmallTalkGap)break;
+                    last_smalltalk[name]=now_;
+                    pending.push_back({name,*smalltalk,true});
+                    while(pending.size()>6)pending.pop_front();
+                    if(mentions_me)engaged[name]=now_+kConversationWindow;
                     break;
                 }
-                const bool mentions_me = !own_name.empty() && chat_bot_core::MentionsName(*msg, own_name);
-                const auto eng = engaged.find(name);
-                const bool in_conversation = eng != engaged.end() && now_ < eng->second; // az önce bize yazdı/cevap verdik
-                if (strict && !own_name.empty() && !mentions_me && !in_conversation) { snap.last_in = u8"(adımla gelmedi; atlandı)"; break; }
-                if (mentions_me) engaged[name] = now_ + kConversationWindow;
-                std::vector<std::string> others;
-                for (const auto& p : snap.players) if (p != name) others.push_back(p);
-                if (!mentions_me && chat_bot_core::AddressedToOther(*msg, others, own_name)) {
-                    // İki oyuncu birbirine yazıyor: ikisini de bir süre "başkalarıyla konuşuyor" say.
-                    talking[name] = now_ + kSideTalkWindow;
-                    for (const auto& o : others) if (chat_bot_core::AddressedToOther(*msg, {o}, own_name)) talking[o] = now_ + kSideTalkWindow;
-                    snap.last_in = u8"(başkasına yazılmış; atlandı)"; break;
-                }
+                const auto previous=last_accept.find(name);
+                if(previous!=last_accept.end()&&now_-previous->second<kPerSenderGap)break;
+                if(strict&&!mentions_me&&!in_conversation){snap.last_in=u8"(adımla gelmedi; atlandı)";break;}
+                if(mentions_me)engaged[name]=now_+kConversationWindow;
                 const auto side = talking.find(name);
                 if (!mentions_me && !in_conversation && side != talking.end() && now_ < side->second) { snap.last_in = u8"(başkalarıyla konuşuyor; atlandı)"; break; }
-                last = now_;
+                last_accept[name] = now_;
                 // Aynı kişinin bekleyen eski mesajı varsa yenisiyle değiştir (kuyruk şişmesin).
                 bool merged = false;
                 for (auto& q : pending) if (!q.canned && q.name == name) { q.text = chat_bot_core::PrefixScalars(*msg, 400); merged = true; break; }
@@ -249,7 +282,14 @@ class Controller {
     }
     // true: işlem bitti (gönderildi ya da vazgeçildi); false: sonra tekrar dene.
     bool TrySend(double now) {
-        if (now - outbox_since > kOutboxTimeout) { Status(u8"AI | Cevap gönderilemedi (sohbet beklemede/odakta)."); outbox.clear(); return false; }
+        // Last defence: no control marker can be sent even if a future caller
+        // accidentally puts one into the outbox.
+        while(!outbox.empty()&&chat_bot_core::IsSkipReply(outbox.front(),request_sender))outbox.pop_front();
+        if(outbox.empty()){DropOutbox();return false;}
+        if(outbox_reminder&&(!enabled||!strict||own_name!=reminder_name||active_room!=reminder_room)){
+            DropOutbox();return false;
+        }
+        if (now - outbox_since > kOutboxTimeout) { Status(u8"AI | Cevap gönderilemedi (sohbet beklemede/odakta)."); DropOutbox(); return false; }
         Root owner(api, ChatOwner()); if (!owner.Get()) return false;
         bool allowed = false; api.field_get_value(owner.Get(), allowed_field, &allowed);
         if (!allowed) return false; // oyunun kendi bekleme süresi
@@ -300,19 +340,19 @@ class Controller {
         if (c.select) {
             const auto it = std::find(selected.begin(), selected.end(), c.name);
             if (it == selected.end()) selected.push_back(c.name); else selected.erase(it);
-            pending.clear(); baseline = false; if (enabled) Status(u8"AI | Kişi seçimi değişti.");
+            InvalidateReplies(); baseline = false; if (enabled) Status(u8"AI | Kişi seçimi değişti.");
         }
-        if (c.toggle_all) { all = !all; SaveConfig(); pending.clear(); baseline = false; Status(all ? u8"AI | Odadaki herkese cevap verilecek." : u8"AI | Yalnız seçili kişilere cevap verilecek."); }
-        if (c.toggle_strict) { strict = !strict; SaveConfig(); pending.clear(); Status(strict ? u8"AI | Yalnız adımla yazılanlara cevap verilecek." : u8"AI | Tüm mesajlara cevap verilecek."); }
+        if (c.toggle_all) { all = !all; SaveConfig(); InvalidateReplies(); baseline = false; Status(all ? u8"AI | Odadaki herkese cevap verilecek." : u8"AI | Yalnız seçili kişilere cevap verilecek."); }
+        if (c.toggle_strict) { strict = !strict; SaveConfig(); InvalidateReplies(); reminder.Reset(); Status(strict ? u8"AI | Yalnız adımla yazılanlara cevap verilecek." : u8"AI | Tüm mesajlara cevap verilecek."); }
         if (c.set_words) { words = chat_bot_core::ClampWords(c.words); SaveConfig(); }
-        if (c.set_mode) { mode = c.mode; if (mode == chat_bot_core::kPersonaCount && custom.empty()) mode = 0; SaveConfig(); history.clear(); Status(std::string(u8"AI | Kişilik: ") + chat_bot_core::PersonaName(mode) + u8"."); }
+        if (c.set_mode) { mode = c.mode; if (mode == chat_bot_core::kPersonaCount && custom.empty()) mode = 0; SaveConfig(); InvalidateReplies(); history.clear(); Status(std::string(u8"AI | Kişilik: ") + chat_bot_core::PersonaName(mode) + u8"."); }
         if (c.toggle) {
-            if (enabled) { enabled = false; pending.clear(); outbox.clear(); Status(u8"AI | Bot kapalı."); }
+            if (enabled) { enabled = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Bot kapalı."); }
             else if (key.empty()) Status(u8"AI | Önce API anahtarını gir.");
             else if (!all && selected.empty()) Status(u8"AI | Önce kişi seç ya da \"Herkes\"i aç.");
-            else { enabled = true; baseline = false; pending.clear(); outbox.clear(); Status(u8"AI | Bot açık; yeni mesajlar bekleniyor."); }
+            else { enabled = true; baseline = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Bot açık; yeni mesajlar bekleniyor."); }
         }
-        if (c.reset_memory) { history.clear(); Status(u8"AI | Hafıza sıfırlandı."); }
+        if (c.reset_memory) { InvalidateReplies(); history.clear(); Status(u8"AI | Hafıza sıfırlandı."); }
         if (c.refresh) next_players = 0;
         if (c.edit != Edit::None) BeginEdit(c.edit);
     }
@@ -338,34 +378,66 @@ public:
         if (!ok || !running || !*static_cast<bool*>(api.object_unbox(running))) { return; } // sahne yükleniyor
         Commands(); PollEdit();
         Root current_room(api, api.Call(room));
-        if (!current_room.Get()) { snap.players.clear(); if (enabled) { enabled = false; pending.clear(); Status(u8"AI | Odadan çıkıldı; bot kapatıldı."); } Publish(); return; }
+        if(!current_room.Get()){
+            snap.players.clear();reminder.Reset();active_room=0;
+            if(enabled){enabled=false;InvalidateReplies();Status(u8"AI | Odadan çıkıldı; bot kapatıldı.");}
+            else DropOutbox();
+            Publish();return;
+        }
+        // Numeric identity only; the object is rooted for this tick and this
+        // saved value is never dereferenced or sent across threads.
+        const auto room_id=reinterpret_cast<uintptr_t>(current_room.Get());
+        if(active_room&&active_room!=room_id){
+            InvalidateReplies();reminder.Reset();baseline=false;seen.clear();
+            engaged.clear();talking.clear();last_accept.clear();last_smalltalk.clear();last_warning.clear();next_warning=0;history.clear();
+        }
+        active_room=room_id;
         if (now >= next_players) { next_players = now + 1.0; Players(); }
+        reminder.Update(now,enabled,strict,active_room,own_name,!snap.players.empty());
+        if(outbox_reminder&&(!enabled||!strict||reminder_name!=own_name||reminder_room!=active_room||snap.players.empty()))DropOutbox();
         if (enabled) {
             if (!baseline) { if (Scan(true)) baseline = true; }
             else Scan(false);
             chat_bot_engine::Result r;
             if (engine.Poll(r)) {
-                if (r.ok) {
-                    if (chat_bot_core::IsSkipReply(chat_bot_core::CleanReply(r.text, kReplyScalars))) {
-                        if (!history.empty() && !history.back().model) history.pop_back(); // cevaplanmayan mesajı hafızadan çıkar
-                        Status(u8"AI | Mesaj bana değil; atlandı."); next_request = now + 1.0; Publish(); return;
+                if(request_generation!=reply_generation){Status(u8"AI | Eski oturumun yanıtı atlandı.");}
+                else if (r.ok) {
+                    const auto whole=chat_bot_core::PrepareReply(r.text,static_cast<size_t>(words),request_sender);
+                    if(whole.empty()){
+                        if(!history.empty()&&!history.back().model)history.pop_back();
+                        Status(u8"AI | Yanıt gerekmiyor; sessizce atlandı.");next_request=now+1.0;
+                    }else{
+                        if(outbox_reminder)DropOutbox();
+                        for(auto& piece:chat_bot_core::SplitChunks(whole,kChunkScalars,MaxChunks()))outbox.push_back(piece);
+                        history.push_back({true,whole});chat_bot_core::TrimHistory(history,12);outbox_since=now;
+                        Status(u8"AI | Cevap hazır ("+r.model+").");
                     }
-                    const std::string whole = chat_bot_core::LimitWords(chat_bot_core::CleanReply(r.text, static_cast<size_t>(words) * 9), static_cast<size_t>(words));
-                    for (auto& piece : chat_bot_core::SplitChunks(whole, kChunkScalars, MaxChunks())) outbox.push_back(piece);
-                    if (outbox.empty()) Status(u8"AI | Cevap boş kaldı.");
-                    else { history.push_back({true, whole}); chat_bot_core::TrimHistory(history, 12); outbox_since = now; Status(u8"AI | Cevap hazır (" + r.model + ")."); }
                 } else if (r.empty) { Status(u8"AI | Model cevap vermedi (süzgeç/boş); mesaj atlandı."); next_request = now + kMinGap; }
                 else { Status(u8"AI | Tüm modeller hata verdi (HTTP " + std::to_string(r.code) + u8"). Anahtarı/ağı kontrol et."); next_request = now + 8; }
             }
-            if (!outbox.empty() && now >= gap_until && TrySend(now)) outbox.pop_front();
-            else if (!outbox.empty() && now - outbox_since > kOutboxTimeout) { outbox.clear(); } // TrySend zaten durum yazdı
-            if (!engine.Busy() && outbox.empty() && !pending.empty() && now >= next_request && !key.empty()) {
+            if(outbox_reminder&&(!pending.empty()||engine.Busy()))DropOutbox();
+            if (!outbox.empty() && now >= gap_until && TrySend(now)) {
+                outbox.pop_front();if(warning_chunks)--warning_chunks;
+                if(outbox.empty())outbox_reminder=false;
+            }
+            else if (!outbox.empty() && now - outbox_since > kOutboxTimeout) { DropOutbox(); } // TrySend zaten durum yazdı
+            if (outbox.empty() && !pending.empty() && now >= next_request) {
                 if (pending.front().canned) { // selam: AI'ya gitmeden hazır cevap
                     outbox.push_back(pending.front().text); pending.pop_front(); outbox_since = now; Status(u8"AI | Selam cevabı hazır.");
-                } else {
+                } else if(!engine.Busy()&&!key.empty()) {
+                    request_sender=pending.front().name;request_generation=reply_generation;
                     history.push_back({false, pending.front().name + ": " + pending.front().text}); pending.pop_front();
                     chat_bot_core::TrimHistory(history, 16);
                     if (engine.Submit(System(), history, key)) Status(u8"AI | Düşünüyor...");
+                }
+            }
+            // No API call: the hint goes through exactly the same cooldown,
+            // input-focus/draft and timeout checks as an ordinary chat reply.
+            if(baseline&&reminder.Due(now)&&outbox.empty()&&pending.empty()&&!engine.Busy()&&now>=gap_until&&now>=next_request){
+                const auto text=chat_bot_core::NameReminderText(own_name);
+                if(!text.empty()){
+                    outbox.push_back(text);outbox_reminder=true;reminder_name=own_name;reminder_room=active_room;
+                    outbox_since=now;reminder.Queued(now);
                 }
             }
         }

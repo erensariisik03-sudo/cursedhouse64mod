@@ -228,7 +228,7 @@ inline std::string BuildSystem(int mode, const std::string& custom, size_t max_w
     const bool compact = max_words <= 60;
     std::string s;
     s += u8"Bir oyunun oda sohbetindesin ve odadaki oyunculara yapay zekâ olarak cevap veriyorsun. ";
-    s += u8"Birden fazla oyuncu sana yazabilir; her satır 'Ad: mesaj' biçiminde gelir. Cevabına yazan kişinin adıyla başla. ";
+    s += u8"Birden fazla oyuncu sana yazabilir; her satır 'Ad: mesaj' biçiminde gelir. Normal cevapta yazan kişinin adıyla başla; cevap vermeyeceksen ad ekleme. ";
     s += u8"Türkçe yaz. Uzunluk kuralı: selam ve sıradan sohbette tek kısa cümle yaz (en çok 15 kelime); ";
     s += u8"yalnızca gerçek bir soru ya da açıklama gerekiyorsa ";
     if (compact) s += u8"2-3 cümle yaz. Hiçbir durumda " + std::to_string(max_words) + u8" kelimeyi aşma. ";
@@ -238,7 +238,8 @@ inline std::string BuildSystem(int mode, const std::string& custom, size_t max_w
                  : u8"Cevap tam bir cümleyle bitmeli; yarım bırakma. ";
     s += u8"Biçimlendirme, etiket, madde işareti veya emoji kullanma. ";
     s += u8"Oyuncular senin yapay zekâ olduğunu yeni fark edip şaşırabilir ('oha nasıl oluyor', 'bu bot mu' gibi); bunu gizleme, kısaca ve dürüstçe açıkla. ";
-    s += u8"İki oyuncu birbiriyle konuşuyor ve mesaj sana yönelik değilse ya da anlamsızsa, yalnızca SKIP yaz. ";
+    s += u8"Oyuncular sana oyun adının yanında zeka, yapay veya yapayzeka diye seslenebilir; bu hitapları sana yöneltilmiş kabul et. ";
+    s += u8"İki oyuncu birbiriyle konuşuyor ve mesaj sana yönelik değilse ya da anlamsızsa, yalnızca SKIP yaz; bu bir iç kontrol işaretidir, yanına ad, açıklama ya da başka kelime ekleme. ";
     s += (mode >= 0 && mode < kPersonaCount) ? PersonaBody(mode) : (custom.empty() ? PersonaBody(0) : custom.c_str());
     return s;
 }
@@ -372,11 +373,151 @@ inline bool MentionsName(const std::string& msg, const std::string& name) {
     }
     return false;
 }
-// Model "SKIP" yazarsa mesaj bize değildir; sohbete gönderilmez.
-inline bool IsSkipReply(const std::string& reply) {
-    std::string letters; for (unsigned char c : Fold(reply)) if (IsAsciiLetter(c)) letters += static_cast<char>(c);
-    return letters == "skip";
+// Extra ways to address the bot. Whole folded words prevent matches inside
+// unrelated words such as "zekalı", "yapaylık" or "yapayzekanın".
+inline bool BotAlias(const std::string& token) {
+    return token=="zeka"||token=="yapay"||token=="yapayzeka";
 }
+inline bool MentionsBot(const std::string& message,const std::string& name) {
+    if(MentionsName(message,name))return true;
+    for(const auto& token:FoldedTokens(message))if(BotAlias(token))return true;
+    return false;
+}
+// SKIP is a control marker, including Turkish casing, Markdown wrappers and
+// the accidental "Player: SKIP" / "Player, SKIP" prefix encouraged by old prompts.
+inline bool IsSkipReply(const std::string& reply,const std::string& recipient={}) {
+    const std::string plain=Trim(Fold(StripTags(reply)));
+    auto marker=[](const std::string& value){
+        std::string letters;
+        for(unsigned char c:value){
+            if(c>='0'&&c<='9')return false;
+            if(IsAsciiLetter(c))letters+=static_cast<char>(c);
+        }
+        return letters=="skip";
+    };
+    if(marker(plain))return true;
+    const size_t separator=plain.find_last_of(":,\n");
+    if(separator!=std::string::npos&&marker(plain.substr(separator+1)))return true;
+    const auto name=Trim(Fold(StripTags(recipient)));
+    if(!name.empty()&&NameAt(plain,0,name)&&marker(plain.substr(name.size())))return true;
+    return false;
+}
+// All model text goes through this gate BEFORE splitting/history and is checked
+// again at the actual send boundary. A model control response never becomes chat.
+inline std::string PrepareReply(const std::string& raw,size_t words,const std::string& recipient={}) {
+    const auto clean=CleanReply(raw,words*9);
+    if(IsSkipReply(raw,recipient)||IsSkipReply(clean,recipient)||IsNoise(clean))return {};
+    const auto reply=LimitWords(clean,words);
+    return IsSkipReply(reply,recipient)?std::string():reply;
+}
+// Only complete small-talk phrases qualify. An added real question keeps the
+// whole message for AI ("merhaba, bu oyun nasıl oynanır?" must not be swallowed).
+inline std::optional<std::string> SmallTalkReply(const std::string& message,const std::string& sender,
+                                                 const std::string& self={},int mode=0) {
+    auto tokens=FoldedTokens(message);
+    const auto own=FoldedTokens(self);
+    if(!own.empty()) {
+        auto remove_edge=[&](const std::vector<std::string>& name){
+            if(name.empty()||tokens.size()<name.size())return;
+            if(std::equal(name.begin(),name.end(),tokens.begin()))tokens.erase(tokens.begin(),tokens.begin()+name.size());
+            else if(std::equal(name.rbegin(),name.rend(),tokens.rbegin()))tokens.resize(tokens.size()-name.size());
+        };
+        remove_edge(own);
+        for(const auto& part:own)if(part.size()>=3)remove_edge({part});
+    }
+    while(!tokens.empty()){
+        if(BotAlias(tokens.front()))tokens.erase(tokens.begin());
+        else if(BotAlias(tokens.back()))tokens.pop_back();
+        else break;
+    }
+    bool hello=false,salam=false,how=false;
+    std::string day;
+    auto collapse=[](const std::string& word){std::string out;for(char c:word)if(out.empty()||out.back()!=c)out+=c;return out;};
+    for(size_t i=0;i<tokens.size();++i) {
+        const auto t=collapse(tokens[i]);
+        if(i+1<tokens.size()&&((t=="s"&&tokens[i+1]=="a")||
+            ((t=="selamun"||t=="selam"||t=="slm")&&tokens[i+1]=="aleykum")||
+            (t=="aleykum"&&tokens[i+1]=="selam"))){salam=true;++i;continue;}
+        if(t=="merhaba"||t=="mrb"||t=="mrhb"||t=="selam"||t=="slm"||t=="hello"||t=="hi"){hello=true;continue;}
+        if(t=="sa"||t=="sea"||t=="as"||t=="selamunaleykum"||t=="selamnaleykum"||t=="aleykumselam"){salam=true;continue;}
+        if(t=="nasilsin"||t=="nasilsiniz"||t=="naber"||t=="nbr"||t=="nabersiniz"){how=true;continue;}
+        if(t=="ne"&&i+1<tokens.size()&&tokens[i+1]=="haber"){how=true;++i;continue;}
+        if(t=="gunaydin"){hello=true;day=u8"günaydın";continue;}
+        if(t=="iyi"&&i+1<tokens.size()){
+            const auto& n=tokens[i+1];
+            if(n=="aksamlar"||n=="geceler"||n=="gunler"){
+                hello=true;day=n=="aksamlar"?u8"iyi akşamlar":n=="geceler"?u8"iyi geceler":u8"iyi günler";++i;continue;
+            }
+        }
+        bool filler=false;
+        for(const char* word:{"herkese","herkes","arkadaslar","beyler","millet","kanka","kankalar","hocam","dostum","dostlar","abi","abla","bot","hey","hepinize","bugun"})if(t==word){filler=true;break;}
+        if(!filler)return std::nullopt;
+    }
+    if(!hello&&!salam&&!how)return std::nullopt;
+    const auto name=CleanReply(StripTags(sender),40);
+    const std::string prefix=name.empty()?std::string():name+", ";
+    if(how)return prefix+u8"iyiyim, teşekkür ederim. Siz nasılsınız?";
+    if(salam)return prefix+(mode==2?u8"aleyküm selam ve rahmetullahi ve berekatuhu.":u8"aleyküm selam.");
+    return prefix+(day.empty()?std::string(u8"merhaba!"):day+"!");
+}
+// Deliberately narrow local rule: explicit profanity + a clear bot target.
+// Slang/ordinary insults and quoted/reported language are left to the AI path.
+inline bool DirectedProfanity(const std::string& message,const std::string& self,
+                               const std::vector<std::string>& others={},bool in_conversation=false) {
+    const auto tokens=FoldedTokens(message);
+    const bool mentions=MentionsBot(message,self);
+    if(!mentions&&AddressedToOther(message,others,self))return false;
+    bool pronoun=false,explicit_word=false,direct_command=false;
+    for(size_t i=0;i<tokens.size();++i){
+        const auto& word=tokens[i];
+        for(const char* report:{"kelimesi","kelimesinin","anlami","anlama","dedi","dediler","demis","demisler","yazdi","yazmis","kufretti"})
+            if(word==report)return false;
+        if(word=="ne"&&i+1<tokens.size()&&tokens[i+1]=="demek")return false;
+        if(word=="sen"||word=="seni"||word=="sana"||word=="senin")pronoun=true;
+        for(const char* profanity:{"siktir","siktirgit","sikeyim","sikiyim","sikerim","siktim","siktigim","siktimin","sikik","sikiksin",
+                                   "siksin","siksinler","sikicem","sikecem","sikecegim","orospu","orospusun","orospuoglu","orospucocugu",
+                                   "yarrak","yarragim","yarragimi","yarragimin","yarraksin","picsin"})
+            if(word==profanity)explicit_word=true;
+        if(word=="siktir"||word=="siktirgit")direct_command=true;
+        if((word=="amina"||word=="amini")&&i+1<tokens.size())
+            for(const char* verb:{"koyayim","koyim","koyarim","koydum","koydugum"})if(tokens[i+1]==verb)explicit_word=true;
+    }
+    // ASCII "pic" can also mean a picture; accept it only with a direct pronoun.
+    // Written Turkish piç is unambiguous in a clearly directed message.
+    if(pronoun&&std::find(tokens.begin(),tokens.end(),"pic")!=tokens.end())explicit_word=true;
+    if(message.find(u8"piç")!=std::string::npos||message.find(u8"PİÇ")!=std::string::npos||message.find(u8"Piç")!=std::string::npos)explicit_word=true;
+    return explicit_word&&(mentions||(in_conversation&&(pronoun||direct_command)));
+}
+inline std::vector<std::string> ProfanityWarnings(const std::string& sender) {
+    const auto name=CleanReply(StripTags(sender),40);
+    const auto prefix=name.empty()?std::string():name+", ";
+    return {prefix+u8"bana küfür etme. Bu üslup kabul edilemez; saygılı konuş.",
+            prefix+u8"soru soracaksan düzgünce yaz. Hakaret ederek yanıt alamazsın."};
+}
+inline std::string NameReminderText(const std::string& name) {
+    const auto plain=Trim(StripTags(name));
+    std::string hint;
+    if(ScalarCount(plain)<=80&&CleanReply(plain,80)==plain)hint=plain;
+    else for(const auto& part:FoldedTokens(plain))if(part.size()>=3&&part.size()<=80){hint=part;break;}
+    if(hint.empty())return {};
+    return u8"Soru için adımı (\""+hint+u8"\") veya zeka, yapay, yapayzeka yazıp sorunuzu ekleyin.";
+}
+// Monotonic, room/name-scoped clock. No audience or no strict filtering => no
+// reminder. Queue attempts are spaced, so cooldown/focus cannot cause a burst.
+class NameReminder {
+    uintptr_t room_=0;
+    std::string name_;
+    double next_=0;
+public:
+    static constexpr double kFirstDelay=15,kInterval=120;
+    void Reset(){room_=0;name_.clear();next_=0;}
+    void Update(double now,bool enabled,bool strict,uintptr_t room,const std::string& name,bool audience) {
+        if(!enabled||!strict||!room||!audience||NameReminderText(name).empty()){Reset();return;}
+        if(room_!=room||name_!=name){room_=room;name_=name;next_=now+kFirstDelay;}
+    }
+    bool Due(double now)const{return room_&&now>=next_;}
+    void Queued(double now){next_=now+kInterval;}
+};
 
 // ---- Kalıcı ayar (API anahtarı vb.): "ad=değer" satırları; \n ve \\ kaçışlı ------------------
 struct Config { std::string key, custom; int mode = 0; bool all = false; bool strict = true; int words = kMinWords; };

@@ -52,6 +52,9 @@ build/tests/arm64_native_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I tests/stubs -I src \
     tests/lobby_emotes_test.cpp src/lobby_emotes.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/lobby_emotes_test
 build/tests/lobby_emotes_test
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -I tests/stubs -I src -pthread \
+    tests/chat_bot_runtime_test.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/chat_bot_runtime_test
+build/tests/chat_bot_runtime_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src -pthread \
     tests/chat_bot_test.cpp -o build/tests/chat_bot_test
 build/tests/chat_bot_test

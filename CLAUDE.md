@@ -17,8 +17,8 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   İmleç/seçimde UTF-16 ve UTF-8 dönüşümünü doğru yapın.
 - Klavye entegrasyonu hazır değilse oyunun kendi klavyesini açık bırakın.
   Aktif metin alanının ayarlarını oturum bitince geri yükleyin.
-- Metin, parola, sohbet içeriği veya API anahtarını loglamayın. API anahtarı
-  yalnız bellekte kalır ve HTTP başlığında gönderilir.
+- Metin, parola, sohbet içeriği veya API anahtarını loglamayın. Mevcut özel
+  ayar dosyasını koruyun; ağ isteğinde anahtar HTTP başlığında gönderilir.
 - Native isim kontrolünde özgün alt sınırı koruyun; belirsiz komut örüntülerini
   reddedin. Observer yalnız AArch64 doğrudan tail branch zincirini izler;
   komşu API girişleri üzerine yazmayı reddeder.
@@ -29,3 +29,8 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   mevcut context kaybı uzantısını koruyun.
 - İlgili değişiklikleri tests/run.sh ile doğrulayın. Host testleri, Android
   derlemesi ve cihaz testinin sonuçlarını ayrı belirtin.
+
+- SKIP yalnız iç kontrol işaretidir; model yanıtını parçalamadan ve sohbete
+  göndermeden önce eleyin. Hazır selamları AI'ye göndermeyin, gerçek soruyu
+  selam eşleştirmesiyle yutmayın. İsim hatırlatmaları yalnız bot/isim süzgeci
+  açıkken çalışır; normal yanıtlar, taslaklar ve oyun bekleme süresi önceliklidir.

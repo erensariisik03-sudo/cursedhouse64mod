@@ -159,6 +159,50 @@ int main() {
         assert(BuildSystem(0, "", 120).find("en çok 120 kelime") != std::string::npos && BuildSystem(0, "", 120).find("yaklaşık 90 kelime") != std::string::npos && BuildSystem(2, "", 120).find("kısa kesme") != std::string::npos);
         assert(BuildSystem(2, "").find("bilen birine sor") != std::string::npos && BuildSystem(2, "").find("son çare") != std::string::npos && BuildSystem(2, "").find("bilen bir hocaya") == std::string::npos);
     }
+    for(const char* message:{"zeka bir sorum var", "yapay bunu açıkla", "yapayzeka neden böyle", "yapay zeka merhaba", "ZEKA 2+2 kaç", "<b>YapayZeka</b>, nasılsın?"})
+        assert(MentionsBot(message,"Bot"));
+    for(const char* message:{"zekalı insan", "yapaylık var", "yapayzekanın cevabı", "altzeka", "sıradan soru"})
+        assert(!MentionsBot(message,"Bot"));
+    assert(MentionsBot("zeka bir soru","")&&MentionsBot("Bot bir soru","Bot"));
+    assert(SmallTalkReply("yapay zeka merhaba","Ali","Bot"));
+    assert(SmallTalkReply("merhaba yapay zeka","Ali","Bot"));
+    assert(DirectedProfanity("yapayzeka seni sikeyim","Bot",{},false));
+    // Control output stays internal, including name-prefixed and Turkish forms.
+    for(const char* skip:{"SKIP","skıp",u8"SKİP","**SKIP**","[SKIP]","Ali: SKIP","Ali, skip.","Ali SKIP","<b>SKIP</b>"}){
+        assert(IsSkipReply(skip,"Ali"));assert(PrepareReply(skip,45,"Ali").empty());
+    }
+    assert(PrepareReply("asdfasdfasdf",45,"Ali").empty());
+    assert(!PrepareReply("Ali, Skipper geldi.",45,"Ali").empty());
+    assert(!PrepareReply("Ali, skip tuşu sonraki bölüme geçer.",45,"Ali").empty());
+    for(const char* greeting:{"merhaba","MERHABAAA!!!","slm","selam","sa","S.A.","nasılsınız","nasilsin","selam nasılsınız arkadaşlar", "Bot nasılsın?", "@Bot slm", "merhaba Bot", "selamun aleyküm", "slm aleyküm", "iyi akşamlar", "günaydın"}){
+        const auto local=SmallTalkReply(greeting,"Ali","Bot");assert(local&&!local->empty());
+    }
+    assert(SmallTalkReply("sa","Ali","Bot",2)->find("rahmetullahi")!=std::string::npos);
+    for(const char* question:{"merhaba, oyun nasıl oynanır?", "sa 2+2 kaç", "nasılsın ve dünya neden yuvarlak", "Bot selam, güneş kaç derece", "merhaba hava bugün nasıl", "selamun aleykum bu oyun nasıl oynanır", "nasilsiniz bu iş nasıl yapılır"})
+        assert(!SmallTalkReply(question,"Ali","Bot"));
+    for(const char* insult:{"Bot seni sikeyim","Bot siktir git","Bot orospu çocuğu","Bot sen piçsin","Bot amına koyayım"})
+        assert(DirectedProfanity(insult,"Bot",{"Ali"},false));
+    assert(DirectedProfanity("seni sikeyim","Bot",{"Ali"},true));
+    for(const char* slang:{"Bot lan nasılsın","Bot amk oyun açılmıyor","Bot aq","Bot salak mısın","Bot mal","Bot sikayetim var", "Bot sıkıldım"})
+        assert(!DirectedProfanity(slang,"Bot",{"Ali"},true));
+    assert(!DirectedProfanity("Ali seni sikeyim","Bot",{"Ali"},true));
+    assert(!DirectedProfanity("Bot siktir kelimesi ne demek","Bot",{},true));
+    assert(!DirectedProfanity("Bot bana orospu dedi","Bot",{},true));
+    assert(!DirectedProfanity("seni sikeyim","Bot",{},false));
+    assert(ProfanityWarnings("Ali").size()==2);
+    assert(!NameReminderText("<color=red>Bot</color>").empty());
+    assert(NameReminderText("").empty());
+    NameReminder clock;
+    clock.Update(100,true,true,1,"Bot",true);assert(!clock.Due(114.99)&&clock.Due(115));
+    clock.Queued(115);assert(!clock.Due(234.99)&&clock.Due(235));
+    clock.Update(236,true,false,1,"Bot",true);assert(!clock.Due(10000));
+    clock.Update(240,true,true,1,"Bot",true);assert(!clock.Due(254)&&clock.Due(255));
+    clock.Update(255,true,true,2,"Bot",true);assert(!clock.Due(269)&&clock.Due(270));
+    clock.Update(270,true,true,2,"YeniBot",true);assert(!clock.Due(284)&&clock.Due(285));
+    clock.Update(285,true,true,2,"YeniBot",false);assert(!clock.Due(10000));
+    clock.Update(300,false,true,2,"YeniBot",true);assert(!clock.Due(10000));
+    clock.Update(301,true,true,0,"YeniBot",true);assert(!clock.Due(10000));
+    clock.Update(302,true,true,2,"",true);assert(!clock.Due(10000));
     // Kalıcı ayar
     {
         Config c; c.key = "AIza\\x"; c.mode = 2; c.all = true; c.custom = "satır1\nsatır2";
