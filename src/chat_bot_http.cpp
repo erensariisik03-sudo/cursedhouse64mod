@@ -1,0 +1,169 @@
+#include "chat_bot_http.h"
+#include <jni.h>
+#include <dlfcn.h>
+#include <android/log.h>
+#include <atomic>
+#include <vector>
+
+// HTTPS, Android'in kendi java.net.HttpURLConnection sınıfıyla JNI üzerinden yapılır:
+// native TLS/sertifika yığını eklemek gerekmez. Yalnız arka plan thread'inde çalışır;
+// Unity/IL2CPP nesnelerine dokunmaz. Gövde, anahtar ve yanıt loglanmaz.
+namespace chat_bot_http {
+namespace {
+std::atomic<JavaVM*> g_vm{nullptr};
+JavaVM* FindVM() {
+    if (auto* vm = g_vm.load()) return vm;
+    using Get = jint (*)(JavaVM**, jsize, jsize*);
+    for (const char* lib : {static_cast<const char*>(nullptr), "libnativehelper.so", "libart.so"}) {
+        void* handle = lib ? dlopen(lib, RTLD_NOW | RTLD_NOLOAD) : RTLD_DEFAULT;
+        if (!handle) continue;
+        auto get = reinterpret_cast<Get>(dlsym(handle, "JNI_GetCreatedJavaVMs"));
+        JavaVM* vm = nullptr; jsize n = 0;
+        if (get && get(&vm, 1, &n) == JNI_OK && n > 0 && vm) { g_vm = vm; return vm; }
+    }
+    return nullptr;
+}
+// Android NDK AttachCurrentThread(JNIEnv**, void*) ister; masaüstü JDK başlığı void** ister.
+template<class V> auto AttachImpl(V* vm, JNIEnv** env, int) -> decltype(vm->AttachCurrentThread(env, nullptr)) { return vm->AttachCurrentThread(env, nullptr); }
+template<class V> jint AttachImpl(V* vm, JNIEnv** env, long) { return vm->AttachCurrentThread(reinterpret_cast<void**>(env), nullptr); }
+struct Attach {
+    JavaVM* vm; JNIEnv* env = nullptr; bool attached = false;
+    explicit Attach(JavaVM* v) : vm(v) {
+        if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK) return;
+        if (AttachImpl(vm, &env, 0) == JNI_OK) attached = true; else env = nullptr;
+    }
+    ~Attach() { if (attached) vm->DetachCurrentThread(); }
+};
+bool Bad(JNIEnv* env) { if (env->ExceptionCheck()) { env->ExceptionClear(); return true; } return false; }
+}
+void SetVM(JavaVM* vm) { g_vm = vm; }
+
+bool ReadClipboard(std::string& out) {
+    out.clear();
+    JavaVM* vm = FindVM();
+    if (!vm) return false;
+    Attach thread(vm);
+    JNIEnv* env = thread.env;
+    if (!env || env->PushLocalFrame(24) != 0) return false;
+    struct Frame { JNIEnv* e; ~Frame() { e->PopLocalFrame(nullptr); } } frame{env};
+    jclass at = env->FindClass("android/app/ActivityThread");
+    jclass ctx_cls = env->FindClass("android/content/Context");
+    jclass cm_cls = env->FindClass("android/content/ClipboardManager");
+    jclass cd_cls = env->FindClass("android/content/ClipData");
+    jclass item_cls = env->FindClass("android/content/ClipData$Item");
+    jclass cs_cls = env->FindClass("java/lang/CharSequence");
+    if (Bad(env) || !at || !ctx_cls || !cm_cls || !cd_cls || !item_cls || !cs_cls) return false;
+    jmethodID current = env->GetStaticMethodID(at, "currentApplication", "()Landroid/app/Application;");
+    jmethodID service = env->GetMethodID(ctx_cls, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+    jmethodID primary = env->GetMethodID(cm_cls, "getPrimaryClip", "()Landroid/content/ClipData;");
+    jmethodID count = env->GetMethodID(cd_cls, "getItemCount", "()I");
+    jmethodID item_at = env->GetMethodID(cd_cls, "getItemAt", "(I)Landroid/content/ClipData$Item;");
+    jmethodID coerce = env->GetMethodID(item_cls, "coerceToText", "(Landroid/content/Context;)Ljava/lang/CharSequence;");
+    jmethodID to_string = env->GetMethodID(cs_cls, "toString", "()Ljava/lang/String;");
+    if (Bad(env) || !current || !service || !primary || !count || !item_at || !coerce || !to_string) return false;
+    jobject app = env->CallStaticObjectMethod(at, current);
+    if (Bad(env) || !app) return false;
+    jobject manager = env->CallObjectMethod(app, service, env->NewStringUTF("clipboard"));
+    if (Bad(env) || !manager) return false;
+    jobject clip = env->CallObjectMethod(manager, primary);
+    if (Bad(env) || !clip || env->CallIntMethod(clip, count) < 1 || Bad(env)) return false;
+    jobject item = env->CallObjectMethod(clip, item_at, 0);
+    if (Bad(env) || !item) return false;
+    jobject text = env->CallObjectMethod(item, coerce, app);
+    if (Bad(env) || !text) return false;
+    jstring str = static_cast<jstring>(env->CallObjectMethod(text, to_string));
+    if (Bad(env) || !str) return false;
+    const jsize n = env->GetStringLength(str);
+    const jchar* chars = n > 0 ? env->GetStringChars(str, nullptr) : nullptr;
+    if (n > 0 && !chars) return false;
+    for (jsize i = 0; i < n && out.size() < 8192; ++i) { // UTF-16 -> standart UTF-8 (vekil çiftler dahil)
+        uint32_t cp = chars[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < n && chars[i + 1] >= 0xDC00 && chars[i + 1] <= 0xDFFF) cp = 0x10000 + ((cp - 0xD800) << 10) + (chars[++i] - 0xDC00);
+        else if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFD;
+        if (cp < 0x80) out += static_cast<char>(cp);
+        else if (cp < 0x800) { out += static_cast<char>(0xC0 | (cp >> 6)); out += static_cast<char>(0x80 | (cp & 63)); }
+        else if (cp < 0x10000) { out += static_cast<char>(0xE0 | (cp >> 12)); out += static_cast<char>(0x80 | ((cp >> 6) & 63)); out += static_cast<char>(0x80 | (cp & 63)); }
+        else { out += static_cast<char>(0xF0 | (cp >> 18)); out += static_cast<char>(0x80 | ((cp >> 12) & 63)); out += static_cast<char>(0x80 | ((cp >> 6) & 63)); out += static_cast<char>(0x80 | (cp & 63)); }
+    }
+    if (chars) env->ReleaseStringChars(str, chars);
+    return true;
+}
+
+bool Post(const std::string& url, const std::string& key, const std::string& body, int& code, std::string& response) {
+    code = 0; response.clear();
+    JavaVM* vm = FindVM();
+    if (!vm) return false;
+    Attach thread(vm);
+    JNIEnv* env = thread.env;
+    if (!env || env->PushLocalFrame(32) != 0) return false;
+    struct Frame { JNIEnv* e; ~Frame() { e->PopLocalFrame(nullptr); } } frame{env};
+    jclass url_cls = env->FindClass("java/net/URL");
+    jclass http_cls = env->FindClass("java/net/HttpURLConnection");
+    jclass out_cls = env->FindClass("java/io/OutputStream");
+    jclass in_cls = env->FindClass("java/io/InputStream");
+    if (Bad(env) || !url_cls || !http_cls || !out_cls || !in_cls) return false;
+    jmethodID url_new = env->GetMethodID(url_cls, "<init>", "(Ljava/lang/String;)V");
+    jmethodID open = env->GetMethodID(url_cls, "openConnection", "()Ljava/net/URLConnection;");
+    jmethodID set_method = env->GetMethodID(http_cls, "setRequestMethod", "(Ljava/lang/String;)V");
+    jmethodID set_prop = env->GetMethodID(http_cls, "setRequestProperty", "(Ljava/lang/String;Ljava/lang/String;)V");
+    jmethodID set_ct = env->GetMethodID(http_cls, "setConnectTimeout", "(I)V");
+    jmethodID set_rt = env->GetMethodID(http_cls, "setReadTimeout", "(I)V");
+    jmethodID set_out = env->GetMethodID(http_cls, "setDoOutput", "(Z)V");
+    jmethodID get_out = env->GetMethodID(http_cls, "getOutputStream", "()Ljava/io/OutputStream;");
+    jmethodID get_code = env->GetMethodID(http_cls, "getResponseCode", "()I");
+    jmethodID get_in = env->GetMethodID(http_cls, "getInputStream", "()Ljava/io/InputStream;");
+    jmethodID get_err = env->GetMethodID(http_cls, "getErrorStream", "()Ljava/io/InputStream;");
+    jmethodID disconnect = env->GetMethodID(http_cls, "disconnect", "()V");
+    jmethodID write = env->GetMethodID(out_cls, "write", "([B)V");
+    jmethodID out_close = env->GetMethodID(out_cls, "close", "()V");
+    jmethodID read = env->GetMethodID(in_cls, "read", "([B)I");
+    jmethodID in_close = env->GetMethodID(in_cls, "close", "()V");
+    if (Bad(env) || !url_new || !open || !set_method || !set_prop || !set_ct || !set_rt || !set_out || !get_out ||
+        !get_code || !get_in || !get_err || !disconnect || !write || !out_close || !read || !in_close) return false;
+
+    jstring jurl = env->NewStringUTF(url.c_str());
+    jobject u = jurl ? env->NewObject(url_cls, url_new, jurl) : nullptr;
+    if (Bad(env) || !u) return false;
+    jobject conn = env->CallObjectMethod(u, open);
+    if (Bad(env) || !conn) return false;
+    auto str = [&](const char* s) { return env->NewStringUTF(s); };
+    env->CallVoidMethod(conn, set_method, str("POST"));
+    env->CallVoidMethod(conn, set_prop, str("Content-Type"), str("application/json; charset=utf-8"));
+    env->CallVoidMethod(conn, set_prop, str("x-goog-api-key"), str(key.c_str()));
+    env->CallVoidMethod(conn, set_ct, 8000);
+    env->CallVoidMethod(conn, set_rt, 25000);
+    env->CallVoidMethod(conn, set_out, JNI_TRUE);
+    if (Bad(env)) return false;
+
+    bool ok = false;
+    jobject os = env->CallObjectMethod(conn, get_out);
+    if (!Bad(env) && os) {
+        jbyteArray arr = env->NewByteArray(static_cast<jsize>(body.size()));
+        if (arr) {
+            env->SetByteArrayRegion(arr, 0, static_cast<jsize>(body.size()), reinterpret_cast<const jbyte*>(body.data()));
+            env->CallVoidMethod(os, write, arr);
+            ok = !Bad(env);
+        }
+        env->CallVoidMethod(os, out_close); Bad(env);
+    }
+    if (!ok) { env->CallVoidMethod(conn, disconnect); Bad(env); return false; }
+
+    code = env->CallIntMethod(conn, get_code);
+    if (Bad(env)) { code = 0; env->CallVoidMethod(conn, disconnect); Bad(env); return false; }
+    jobject is = env->CallObjectMethod(conn, code >= 400 ? get_err : get_in);
+    if (Bad(env)) is = nullptr;
+    if (is) {
+        jbyteArray buffer = env->NewByteArray(4096);
+        std::vector<jbyte> chunk(4096);
+        while (buffer && response.size() < (1u << 20)) {
+            const jint n = env->CallIntMethod(is, read, buffer);
+            if (Bad(env) || n <= 0) break;
+            env->GetByteArrayRegion(buffer, 0, n, chunk.data());
+            response.append(reinterpret_cast<const char*>(chunk.data()), static_cast<size_t>(n));
+        }
+        env->CallVoidMethod(is, in_close); Bad(env);
+    }
+    env->CallVoidMethod(conn, disconnect); Bad(env);
+    return true;
+}
+}

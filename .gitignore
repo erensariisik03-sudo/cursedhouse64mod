@@ -1,7 +1,8 @@
-build/
-dist/
-.gradle/
-.idea/
-.vscode/
-*.o
+/build/
+/.cxx/
+/.idea/
+/.vscode/
+reference/dump.cs
 *.so
+*.o
+*.zip
