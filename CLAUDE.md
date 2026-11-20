@@ -27,8 +27,9 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
 - Oyun panelinin devre dışı kontrolleri yalnız arayüz taslağıdır.
 - Dobby bu paket için uyarlanmıştır. Bağımlılık lisanslarını ve ImGui'nin
   mevcut context kaybı uzantısını koruyun.
-- İlgili değişiklikleri tests/run.sh ile doğrulayın. Host testleri, Android
-  derlemesi ve cihaz testinin sonuçlarını ayrı belirtin.
+- Kullanıcı açıkça istemedikçe yerel build veya C++ test derlemesi çalıştırmayın.
+  Eko modda ilgili kaynakları kontrol edip ZIP sağlayın; derleme GitHub
+  üzerinden kullanıcı tarafından yapılır. Yapılmayan doğrulamayı yapılmış göstermeyin.
 
 - SKIP yalnız iç kontrol işaretidir; model yanıtını parçalamadan ve sohbete
   göndermeden önce eleyin. Hazır selamları AI'ye göndermeyin, gerçek soruyu

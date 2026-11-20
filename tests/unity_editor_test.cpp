@@ -3,8 +3,7 @@
 #include <cassert>
 #include <iostream>
 #include <map>
-#include <codecvt>
-#include <locale>
+#include "utf_conversion.h"
 namespace il2cpp { struct String { std::u16string value; }; }
 namespace {
 enum Tag : uintptr_t { Text=1,SetText,Hide,SetHideTag,Focused,ReadOnly,Interactable,InputType,Deactivate,SubmitTag,AliveTag,Limit,SetLimitTag,FindChat,ArrayLength,ArrayItem,Active,ChatSend,SelectionAnchor,SelectionFocus,SetAnchor,SetFocus,Keyboard,CanGetSelection,CanSetSelection,KeyboardSelection,SetKeyboardSelection,ScreenHeight,KeyboardArea };
@@ -21,11 +20,10 @@ int changes=0,notifications=0,submits=0,chat_sends=0,opened_limit=-1;
 std::string sent,notified;
 Object *chat=reinterpret_cast<Object*>(0x100),*reflection=reinterpret_cast<Object*>(0x200),*array=reinterpret_cast<Object*>(0x300),*keyboard=reinterpret_cast<Object*>(0x400);
 std::map<Handle,Object*> roots;Handle next_root=0;
-std::wstring_convert<std::codecvt_utf8_utf16<char16_t>,char16_t> utf;
 String returned;
 Object* Box(bool value){static bool box;box=value;return reinterpret_cast<Object*>(&box);}
 Object* Box(int value){static int box;box=value;return reinterpret_cast<Object*>(&box);}
-String* NewString(const char* text){static String s;s.value=utf.from_bytes(text);return &s;}
+String* NewString(const char* text){static String s;s.value=test_utf::FromUtf8(text);return &s;}
 int32_t Length(String* s){return static_cast<int32_t>(s->value.size());}
 const uint16_t* Chars(String* s){return reinterpret_cast<const uint16_t*>(s->value.data());}
 Object* Self(){return reinterpret_cast<Object*>(&editor);}
@@ -44,10 +42,10 @@ void OriginalLate(Object*,const Method*){
 Object* FakeInvoke(const Method* method,void*,void** args,Object** error){
  *error=nullptr;
  switch(static_cast<Tag>(reinterpret_cast<uintptr_t>(method))){
- case Text:returned.value=utf.from_bytes(editor.text);return reinterpret_cast<Object*>(&returned);
+ case Text:returned.value=test_utf::FromUtf8(editor.text);return reinterpret_cast<Object*>(&returned);
  case SetText:{
   if(fail_set){fail_set=false;*error=chat;return nullptr;}
-  auto* s=static_cast<String*>(args[0]);editor.text=utf.to_bytes(s->value);++changes;
+  auto* s=static_cast<String*>(args[0]);editor.text=test_utf::ToUtf8(s->value);++changes;
   if(rewrite){const auto at=editor.text.find("<size=32>");if(at!=std::string::npos)editor.text.erase(at,9);}
   editor.ime=editor.text;Changed(Self(),nullptr);return nullptr;
  }
@@ -103,7 +101,7 @@ void Reset(){
 }
 void NativeType(const std::string& text,int cursor=-1,int anchor=-1){
  editor.ime=text;editor.pending_native=true;
- editor.cursor=cursor<0?static_cast<int>(utf.from_bytes(text).size()):cursor;
+ editor.cursor=cursor<0?static_cast<int>(test_utf::FromUtf8(text).size()):cursor;
  editor.anchor=anchor<0?editor.cursor:anchor;
 }
 void Queue(const char* text,bool all=false,bool quick=false){

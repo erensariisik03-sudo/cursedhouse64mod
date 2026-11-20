@@ -1,9 +1,8 @@
 #include "chat_bot.h"
 #include <cassert>
-#include <codecvt>
+#include "utf_conversion.h"
 #include <condition_variable>
 #include <iostream>
-#include <locale>
 #include <map>
 #include <memory>
 #include <vector>
@@ -20,7 +19,6 @@ using namespace il2cpp;
 namespace {
 struct Fake;
 Fake* fake;
-std::wstring_convert<std::codecvt_utf8_utf16<char16_t>,char16_t> utf;
 std::atomic<int> http_calls{0};
 std::mutex http_mutex;std::condition_variable http_cv;bool hold_http=false;
 std::string http_reply="Ali, bu gerçek bir cevap.";
@@ -33,7 +31,7 @@ struct Fake {
  bool allowed=true,focused=false,panel=false;std::string own="Bot";
  Class* C(const std::string& ns,const std::string& name){auto& c=classes[{ns,name}];if(!c){c=std::make_unique<Class>();c->ns=ns;c->name=name;}return c.get();}
  Object* O(Class* c){auto o=std::make_unique<Object>();o->klass=c;auto* p=o.get();objects.push_back(std::move(o));return p;}
- Object* S(const std::string& s){auto* o=O(strings);o->text=utf.from_bytes(s);return o;}
+ Object* S(const std::string& s){auto* o=O(strings);o->text=test_utf::FromUtf8(s);return o;}
  Object* B(bool b){auto* o=O(C("System","Boolean"));o->flag=b;return o;}
  Object* I(int n){auto* o=O(C("System","Int32"));o->number=n;return o;}
  Fake(){
@@ -84,11 +82,11 @@ Object* Invoke(const Method* m,void* self,void** args,Object** error){
  if(name=="get_PlayerListOthers"){auto* list=fake->O(fake->arrays);list->items=fake->others;return list;}
  if(name=="get_NickName")return o?o:fake->S(fake->own);
  if(name=="get_isFocused")return fake->B(fake->focused);
- if(name=="get_text")return fake->S(utf.to_bytes(o->text));
+ if(name=="get_text")return fake->S(test_utf::ToUtf8(o->text));
  if(name=="set_text"){o->text=static_cast<Object*>(args[0])->text;return nullptr;}
  if(name=="SendMessage"){
   assert(fake->allowed&&!fake->focused);
-  const auto text=utf.to_bytes(fake->input->text);assert(!chat_bot_core::IsSkipReply(text,"Ali"));
+  const auto text=test_utf::ToUtf8(fake->input->text);assert(!chat_bot_core::IsSkipReply(text,"Ali"));
   fake->sent.push_back(text);fake->input->text.clear();return nullptr;
  }
  assert(false&&"Unexpected managed call");return nullptr;
