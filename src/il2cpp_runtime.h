@@ -38,6 +38,7 @@ struct Api {
     Class* (*class_get_nested_types)(Class*, void**);
     // Optional, read-only discovery for the game cosmetic catalogue.
     void (*field_get_value)(Object*, Field*, void*);
+    void (*field_set_value)(Object*, Field*, void*); // optional, scoped status-stream permission
     const Type* (*class_get_type)(Class*);
     Object* (*type_get_object)(const Type*);
     const Type* (*field_get_type)(Field*);

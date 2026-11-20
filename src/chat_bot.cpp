@@ -1,6 +1,7 @@
 #include "chat_bot.h"
 #include "chat_bot_bridge.h"
 #include "chat_bot_core.h"
+#include "chat_bot_fx.h"
 #include "chat_bot_engine.h"
 #include "chat_bot_http.h"
 #include "keyboard_bridge.h"
@@ -86,6 +87,71 @@ class Controller {
         warning_chunks=warnings.size();outbox_since=now_;
         last_warning[sender]=now_;next_warning=now_+kWarningGlobalGap;
         Status(u8"AI | Yerel küfür uyarısı hazır; AI isteği yapılmadı.");
+    }
+
+    std::deque<std::string> status_lines;
+    double status_next=0,status_deadline=0;
+    uintptr_t status_room=0;
+    uint64_t status_revision=0;
+    std::string status_model;
+    void ClearStatus(){++status_revision;status_lines.clear();status_room=0;}
+    void QueueStatus(chat_bot_fx::Event event,const std::string& detail={}) {
+        ++status_revision;
+        const auto lines=chat_bot_fx::Lines(event,detail,enabled);
+        status_lines.assign(lines.begin(),lines.end()); // latest event replaces unfinished animation
+        status_next=now_;status_deadline=now_+chat_bot_fx::kTimeout;status_room=active_room;
+    }
+    bool SendStatusLine(const std::string& line) {
+        Root owner(api,ChatOwner());if(!owner.Get())return false;
+        Object* field=nullptr;api.field_get_value(owner.Get(),input_field,&field);
+        Root input(api,field);if(!input.Get()||!IsAlive(input.Get()))return false;
+        bool ok=false;auto* focused=api.Call(input_focused,input.Get(),nullptr,&ok);
+        if(!ok||!focused||*static_cast<bool*>(api.object_unbox(focused)))return false;
+        if(!chat_bot_core::Trim(ReadString(input_text,input.Get(),ok)).empty()||!ok)return false;
+        bool allowed=false;api.field_get_value(owner.Get(),allowed_field,&allowed);
+        if(!allowed&&!api.field_set_value)return false; // old runtimes retain ordinary cooldown
+        Root text(api,reinterpret_cast<Object*>(api.string_new(line.c_str())));
+        if(!text.Get())return false;
+        void* args[]={text.Get()};api.Call(input_set,input.Get(),args,&ok);
+        if(!ok)return false;
+        const auto applied=ReadString(input_text,input.Get(),ok);
+        if(!ok||applied!=line)return false;
+        // This guard exists only around this one status SendMessage call. No
+        // timer is disabled and normal replies never receive an override.
+        bool sent=false;
+        {
+            struct Permission {
+                const Api& api;Object* owner;Field* field;bool old,changed=false;
+                Permission(const Api& a,Object* o,Field* f,bool before):api(a),owner(o),field(f),old(before){
+                    if(!old&&api.field_set_value){changed=true;bool yes=true;api.field_set_value(owner,field,&yes);}
+                }
+                ~Permission(){if(changed)api.field_set_value(owner,field,&old);}
+            } permission(api,owner.Get(),allowed_field,allowed);
+            bool permitted=false;api.field_get_value(owner.Get(),allowed_field,&permitted);
+            if(permitted)api.Call(send,owner.Get(),nullptr,&sent);
+        }
+        bool read_ok=false;const auto after=ReadString(input_text,input.Get(),read_ok);
+        if(read_ok&&after==line){
+            Root empty(api,reinterpret_cast<Object*>(api.string_new("")));void* reset[]={empty.Get()};
+            if(empty.Get())api.Call(input_set,input.Get(),reset);return false;
+        }
+        if(!sent||!read_ok)return false;
+        recent_sent.push_back(chat_bot_core::StripTags(line));while(recent_sent.size()>12)recent_sent.pop_front();
+        return true;
+    }
+    void PumpStatus(double now) {
+        if(status_lines.empty())return;
+        if(now>status_deadline){ClearStatus();return;}
+        if(now<status_next)return;
+        if(!api.Value<bool>(queue,nullptr,false))return;
+        Root current(api,api.Call(room));
+        const auto id=reinterpret_cast<uintptr_t>(current.Get());
+        if(!id||(status_room&&status_room!=id)){ClearStatus();return;}
+        status_room=id;status_next=now+chat_bot_fx::kInterval;
+        const auto revision=status_revision;const std::string line=status_lines.front();
+        if(SendStatusLine(line)&&revision==status_revision){
+            status_lines.pop_front();gap_until=now+kMinGap;
+        }
     }
 
     std::string ConfigPath() {
@@ -330,7 +396,7 @@ class Controller {
         if (submit) {
             const std::string value = chat_bot_core::Trim(buffer.data());
             if (editing == Edit::Key) { key = value; SaveConfig(); Status(key.empty() ? u8"AI | Anahtar silindi." : u8"AI | Anahtar kaydedildi (cihazda kalıcı)."); }
-            else { custom = value; mode = value.empty() ? 0 : chat_bot_core::kPersonaCount; SaveConfig(); history.clear(); Status(u8"AI | Özel kişilik kaydedildi, hafıza sıfırlandı."); }
+            else { custom = value; mode = value.empty() ? 0 : chat_bot_core::kPersonaCount; SaveConfig(); InvalidateReplies(); history.clear(); QueueStatus(chat_bot_fx::Event::Profile,chat_bot_core::PersonaName(mode));Status(u8"AI | Özel kişilik kaydedildi, hafıza sıfırlandı."); }
             editing = Edit::None; keyboard_bridge::CloseNative();
         } else if (!visible) { editing = Edit::None; keyboard_bridge::CloseNative(); Status(u8"AI | Düzenleme iptal."); }
     }
@@ -345,12 +411,12 @@ class Controller {
         if (c.toggle_all) { all = !all; SaveConfig(); InvalidateReplies(); baseline = false; Status(all ? u8"AI | Odadaki herkese cevap verilecek." : u8"AI | Yalnız seçili kişilere cevap verilecek."); }
         if (c.toggle_strict) { strict = !strict; SaveConfig(); InvalidateReplies(); reminder.Reset(); Status(strict ? u8"AI | Yalnız adımla yazılanlara cevap verilecek." : u8"AI | Tüm mesajlara cevap verilecek."); }
         if (c.set_words) { words = chat_bot_core::ClampWords(c.words); SaveConfig(); }
-        if (c.set_mode) { mode = c.mode; if (mode == chat_bot_core::kPersonaCount && custom.empty()) mode = 0; SaveConfig(); InvalidateReplies(); history.clear(); Status(std::string(u8"AI | Kişilik: ") + chat_bot_core::PersonaName(mode) + u8"."); }
+        if (c.set_mode) { const int previous=mode;mode = c.mode; if (mode == chat_bot_core::kPersonaCount && custom.empty()) mode = 0; SaveConfig(); InvalidateReplies(); history.clear(); Status(std::string(u8"AI | Kişilik: ") + chat_bot_core::PersonaName(mode) + u8"."); if(mode!=previous)QueueStatus(chat_bot_fx::Event::Profile,chat_bot_core::PersonaName(mode)); }
         if (c.toggle) {
-            if (enabled) { enabled = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Bot kapalı."); }
+            if (enabled) { enabled = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Bot kapalı."); QueueStatus(chat_bot_fx::Event::Stop); }
             else if (key.empty()) Status(u8"AI | Önce API anahtarını gir.");
             else if (!all && selected.empty()) Status(u8"AI | Önce kişi seç ya da \"Herkes\"i aç.");
-            else { enabled = true; baseline = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Bot açık; yeni mesajlar bekleniyor."); }
+            else { enabled = true; baseline = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Bot açık; yeni mesajlar bekleniyor."); status_model=engine.Model();QueueStatus(chat_bot_fx::Event::Start,status_model); }
         }
         if (c.reset_memory) { InvalidateReplies(); history.clear(); Status(u8"AI | Hafıza sıfırlandı."); }
         if (c.refresh) next_players = 0;
@@ -366,7 +432,7 @@ public:
     void Tick(double now) {
         if (disabled) return;
         if (start == 0) { start = now + 4; next = start; }
-        if (now < next) return;
+        if (now < next) { if(initialized)PumpStatus(now);return; }
         next = now + 0.25; now_ = now;
         if (!initialized) {
             initialized = true;
@@ -379,6 +445,7 @@ public:
         Commands(); PollEdit();
         Root current_room(api, api.Call(room));
         if(!current_room.Get()){
+            ClearStatus();
             snap.players.clear();reminder.Reset();active_room=0;
             if(enabled){enabled=false;InvalidateReplies();Status(u8"AI | Odadan çıkıldı; bot kapatıldı.");}
             else DropOutbox();
@@ -388,6 +455,7 @@ public:
         // saved value is never dereferenced or sent across threads.
         const auto room_id=reinterpret_cast<uintptr_t>(current_room.Get());
         if(active_room&&active_room!=room_id){
+            ClearStatus();
             InvalidateReplies();reminder.Reset();baseline=false;seen.clear();
             engaged.clear();talking.clear();last_accept.clear();last_smalltalk.clear();last_warning.clear();next_warning=0;history.clear();
         }
@@ -402,6 +470,7 @@ public:
             if (engine.Poll(r)) {
                 if(request_generation!=reply_generation){Status(u8"AI | Eski oturumun yanıtı atlandı.");}
                 else if (r.ok) {
+                    if(r.model!=status_model){status_model=r.model;QueueStatus(chat_bot_fx::Event::Model,status_model);}
                     const auto whole=chat_bot_core::PrepareReply(r.text,static_cast<size_t>(words),request_sender);
                     if(whole.empty()){
                         if(!history.empty()&&!history.back().model)history.pop_back();
@@ -416,12 +485,12 @@ public:
                 else { Status(u8"AI | Tüm modeller hata verdi (HTTP " + std::to_string(r.code) + u8"). Anahtarı/ağı kontrol et."); next_request = now + 8; }
             }
             if(outbox_reminder&&(!pending.empty()||engine.Busy()))DropOutbox();
-            if (!outbox.empty() && now >= gap_until && TrySend(now)) {
+            if (status_lines.empty() && !outbox.empty() && now >= gap_until && TrySend(now)) {
                 outbox.pop_front();if(warning_chunks)--warning_chunks;
                 if(outbox.empty())outbox_reminder=false;
             }
             else if (!outbox.empty() && now - outbox_since > kOutboxTimeout) { DropOutbox(); } // TrySend zaten durum yazdı
-            if (outbox.empty() && !pending.empty() && now >= next_request) {
+            if (status_lines.empty() && outbox.empty() && !pending.empty() && now >= next_request) {
                 if (pending.front().canned) { // selam: AI'ya gitmeden hazır cevap
                     outbox.push_back(pending.front().text); pending.pop_front(); outbox_since = now; Status(u8"AI | Selam cevabı hazır.");
                 } else if(!engine.Busy()&&!key.empty()) {
@@ -441,6 +510,7 @@ public:
                 }
             }
         }
+        PumpStatus(now); // also runs after the bot has been switched OFF
         Publish();
     }
 };

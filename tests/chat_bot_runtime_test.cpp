@@ -60,6 +60,9 @@ void ReadField(Object* o,Field* field,void* out){
  else if(field->name=="canSendMessage")*static_cast<bool*>(out)=fake->allowed;
  else assert(false);
 }
+void WriteField(Object* o,Field* field,void* value){
+ assert(o==fake->manager&&field->name=="canSendMessage");fake->allowed=*static_cast<bool*>(value);
+}
 String* StringNew(const char* s){return reinterpret_cast<String*>(fake->S(s));}
 int32_t StringLength(String* s){return static_cast<int32_t>(s->text.size());}
 const uint16_t* StringChars(String* s){return reinterpret_cast<const uint16_t*>(s->text.data());}
@@ -93,14 +96,17 @@ Object* Invoke(const Method* m,void* self,void** args,Object** error){
 }
 Api MakeApi(){Api a{};a.domain_get=DomainGet;a.domain_get_assemblies=Assemblies;a.assembly_get_image=ImageGet;a.class_from_name=ClassGet;
  a.class_get_method_from_name=MethodGet;a.class_get_parent=Parent;a.class_get_field_from_name=FieldGet;a.class_get_type=ClassType;a.type_get_object=TypeObject;
- a.gchandle_new=MakeRoot;a.gchandle_get_target=GetRoot;a.gchandle_free=FreeRoot;a.field_get_value=ReadField;
+ a.gchandle_new=MakeRoot;a.gchandle_get_target=GetRoot;a.gchandle_free=FreeRoot;a.field_get_value=ReadField;a.field_set_value=WriteField;
  a.runtime_invoke=Invoke;a.object_unbox=Unbox;a.string_new=StringNew;a.string_length=StringLength;a.string_chars=StringChars;return a;}
 void Response(const std::string& text){std::lock_guard<std::mutex> l(http_mutex);http_reply=text;}
 struct Harness {
  Fake f;Api api;chat_bot::Controller bot;double now=104.5;
  Harness():api(MakeApi()),bot(api){bot.Tick(100);chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Key);bot.Tick(104);
   assert(chat_bot_bridge::Read().chat_ready&&chat_bot_bridge::Read().has_key);
-  chat_bot_bridge::ToggleAll();chat_bot_bridge::Toggle();bot.Tick(now);assert(chat_bot_bridge::Read().enabled);}
+  chat_bot_bridge::ToggleAll();chat_bot_bridge::Toggle();bot.Tick(now);assert(chat_bot_bridge::Read().enabled);
+  // Finish the initial status animation before testing unrelated reply counts.
+  for(int i=0;i<12;++i){now+=.2;bot.Tick(now);}
+  now+=3;bot.Tick(now);f.sent.clear();}
  void Tick(double at){now=at;bot.Tick(now);assert(f.roots.empty());}
  void Step(){Tick(now+.5);}
  void Message(const std::string& s){f.Message(s);Step();}
@@ -150,6 +156,14 @@ int main(){
   for(const char* text:{"zeka neden böyle", "yapay bunu açıkla", "YAPAYZEKA bir soru soruyorum"}){
    h.Tick(h.now+7);h.Message(text);h.Drain();h.Step();assert(http_calls==++expected);
   }
+ }
+ {Harness h;
+  h.f.allowed=false;chat_bot_bridge::SetMode(1);const double begin=h.now;
+  for(int i=1;i<=18;++i)h.Tick(begin+i*.2);
+  assert(h.f.sent.size()==5&&!h.f.allowed&&http_calls==0); // one frame + four profile lines
+  h.f.sent.clear();chat_bot_bridge::Toggle();h.Step();
+  const double stop=h.now;for(int i=1;i<=18;++i)h.Tick(stop+i*.2);
+  assert(!chat_bot_bridge::Read().enabled&&h.f.sent.size()==6&&!h.f.allowed);
  }
  {Harness h;chat_bot_bridge::ToggleStrict();h.Step();
   for(const char* control:{"SKIP","Ali: SKIP","Ali, **SKIP**","Ali SKIP",u8"SKİP"}){

@@ -166,6 +166,25 @@ Aynı oyuncuya yeni uyarı çifti en sık **60 saniyede bir**, genel olarak en s
 **10 saniyede bir** hazırlanır. Bekleyen uyarı çifti varken yeni çift eklenmez.
 Taslak/odak koruması, sohbet bekleme süresi ve zaman aşımı bu mesajlarda da geçerlidir.
 
+### Açılış/kapanış ve model durum akışı
+
+Bot açılırken, kapatılırken, kişilik değiştirilirken ve başarılı yanıtta gerçek
+model değiştiğinde oyun sohbetine kısa bir kod/durum animasyonu hazırlanır.
+İlk satır mevcut büyük kare kısayolunu `<#888F>` ile griye boyar; ardından açık
+renkli `AI::BOOT`, `AI::LINK`, `AI::ROUTE`, `AI::READY` benzeri satırlar akar.
+Bu satırlar görsel durum metinleridir; AI isteği üretmez.
+
+Akış **saniyede en çok 6 satır**, olay başına **5–7 satır** ile sınırlıdır.
+Sadece bu satırın `ChatManager.SendMessage` çağrısı sırasında yerel
+`canSendMessage` bayrağı gerekirse geçici açılır; önceki kapalı değer çağrı
+bitince geri yüklenir. Normal yanıtlar aynı yetkiyi kullanmaz. Sunucunun kendi
+sınırı varsa bu kod onu değiştirmez. Gerekli IL2CPP yazma API'si yoksa olağan
+bekleme süresi geçerlidir.
+
+Oyuncu yazarken/taslak varken gönderim bekler. Akış beş saniyede tamamlanamazsa
+kalanı iptal edilir; yeni olay eskisinin yerine geçer ve odadan çıkınca temizlenir.
+Kapatma animasyonu, AI kapandıktan sonra da tamamlanabilir.
+
 ## Kaynak düzeni
 
 | Konum | İçerik |

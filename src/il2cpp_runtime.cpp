@@ -16,7 +16,7 @@ bool Api::Load(void* library) {
     OPTIONAL(class_get_field_from_name) OPTIONAL(field_static_get_value)
     OPTIONAL(field_static_set_value) OPTIONAL(runtime_class_init) OPTIONAL(object_new)
     OPTIONAL(class_get_nested_types)
-    OPTIONAL(field_get_value) OPTIONAL(class_get_type) OPTIONAL(type_get_object)
+    OPTIONAL(field_get_value) OPTIONAL(field_set_value) OPTIONAL(class_get_type) OPTIONAL(type_get_object)
     OPTIONAL(field_get_type) OPTIONAL(class_from_type)
 #undef OPTIONAL
     return true;

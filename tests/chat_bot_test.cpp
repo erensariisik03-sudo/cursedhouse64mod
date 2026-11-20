@@ -1,4 +1,5 @@
 #include "chat_bot_engine.h"
+#include "chat_bot_fx.h"
 #include <cassert>
 #include <chrono>
 #include <iostream>
@@ -203,6 +204,11 @@ int main() {
     clock.Update(300,false,true,2,"YeniBot",true);assert(!clock.Due(10000));
     clock.Update(301,true,true,0,"YeniBot",true);assert(!clock.Due(10000));
     clock.Update(302,true,true,2,"",true);assert(!clock.Due(10000));
+    for(auto event:{chat_bot_fx::Event::Start,chat_bot_fx::Event::Stop,chat_bot_fx::Event::Profile,chat_bot_fx::Event::Model}){
+        const auto lines=chat_bot_fx::Lines(event,"test-model",true);
+        assert(lines.size()>=5&&lines.size()<=8&&lines.front()==std::string("<#888F>")+chat_shortcut::kPayload);
+        for(const auto& line:lines)assert(ScalarCount(line)<=200);
+    }
     // Kalıcı ayar
     {
         Config c; c.key = "AIza\\x"; c.mode = 2; c.all = true; c.custom = "satır1\nsatır2";

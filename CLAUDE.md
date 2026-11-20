@@ -35,3 +35,7 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   göndermeden önce eleyin. Hazır selamları AI'ye göndermeyin, gerçek soruyu
   selam eşleştirmesiyle yutmayın. İsim hatırlatmaları yalnız bot/isim süzgeci
   açıkken çalışır; normal yanıtlar, taslaklar ve oyun bekleme süresi önceliklidir.
+
+- Kullanıcının istediği durum animasyonunda yalnız tek SendMessage çağrısı
+  çevresinde canSendMessage için kapsamlı geri-yükleme koruması kullanılır.
+  Normal sohbetin kontrolünü kaldırmayın; olay akışını 6 satır/sn ve 5 sn ile sınırlayın.
