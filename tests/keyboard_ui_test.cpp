@@ -3,6 +3,7 @@
 #include "chat_shortcut.h"
 #include "lobby_emote_bridge.h"
 #include "auto_join_bridge.h"
+#include "gameplay_bridge.h"
 #include "text_buffer.h"
 #include "native_shortcuts.h"
 #include "imgui.h"
@@ -186,6 +187,19 @@ int main() {
   for(auto label:{"Eşya spawn","Düşman durdur","Düşman öldür","God Mode"})assert(items.count(label));
   Direct("Eşya spawn");Frame();Frame();
   assert(items.count("Seçili eşyayı önüme oluştur")&&!items.count("Düşman durdur"));
+  { // The action stays visible above an overflowing catalogue on every tested screen.
+    gameplay_bridge::Snapshot ready;ready.context=42;ready.ready=ready.spawn_ready=true;ready.status="Hazır.";
+    for(int i=1;i<=20;++i)ready.items.push_back({i,"Prefab "+std::to_string(i)});
+    gameplay_bridge::Publish(ready);Frame();Frame();Frame();
+    assert(items.count("Seçili eşyayı önüme oluştur"));
+    const auto action=items.at("Seçili eşyayı önüme oluştur");
+    const auto* hub=ImGui::FindWindowByName("##hub");
+    assert(action.Min.y>=hub->ClipRect.Min.y&&action.Max.y<=hub->ClipRect.Max.y);
+    Direct("Seçili eşyayı önüme oluştur");
+    const auto pending=gameplay_bridge::Take();
+    assert(pending.size()==1&&pending.front().kind==gameplay_bridge::Kind::Spawn&&pending.front().context==42&&pending.front().item==1);
+    gameplay_bridge::Publish({});Frame();Frame();
+  }
   Direct(u8"← Bölümlere dön");Frame();Frame();
   Direct("AI");Frame();Frame();
   keyboard_ui::SetVisible(true);Frame();assert(!items.count("##hub_btn")&&!items.count("AI")&&items.count("q"));

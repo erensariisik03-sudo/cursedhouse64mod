@@ -585,16 +585,22 @@ void GameplaySectionBody(float key_height,float content){
     case 0:{
         static int selected=0;
         if(!s.items.empty()&&std::none_of(s.items.begin(),s.items.end(),[&](const auto& v){return v.id==selected;}))selected=s.items.front().id;
-        ImGui::TextWrapped("Oluşturulabilir eşya: %d",static_cast<int>(s.items.size()));
         ImGui::BeginDisabled(!s.spawn_ready);
-        ImGui::BeginChild("##game_items",ImVec2(0,key_height*4),false);
-        for(const auto& item:s.items){
-            ImGui::PushID(item.id);
-            ActionKey(item.name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[id=item.id]{selected=id;InvalidateKeys();},item.id==selected);
-            ImGui::PopID();
-        }
-        ImGui::EndChild();
+        // Keep the action above the scrolling catalogue, including on short
+        // landscape screens. An empty catalogue must not reserve four rows.
         ActionKey("Seçili eşyayı önüme oluştur",content,key_height,[queue,context=s.context,id=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::Spawn,context};c.item=id;queue(c);});
+        ImGui::TextWrapped("Oluşturulabilir eşya: %d",static_cast<int>(s.items.size()));
+        if(!s.items.empty()){
+            const float list_height=std::min(key_height*4,std::max(key_height,ImGui::GetContentRegionAvail().y-ImGui::GetStyle().ItemSpacing.y));
+            if(ImGui::BeginChild("##game_items",ImVec2(0,list_height),false)){
+                for(const auto& item:s.items){
+                    ImGui::PushID(item.id);
+                    ActionKey(item.name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[id=item.id]{selected=id;InvalidateKeys();},item.id==selected);
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndChild();
+        }
         ImGui::EndDisabled();
         ImGui::TextWrapped("Eşya önüne bırakılır; ardından normal şekilde alabilirsin. İki oluşturma arasında bir saniye beklenir.");
         break;
