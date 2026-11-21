@@ -173,7 +173,19 @@ olay için farklı, **tamamen kurgusal Linux terminali** satırları hazırlanı
 Gerçek oyun sınıfları, API isimleri, sağlayıcı veya gerçek model kimliği gösterilmez.
 Son satır herkesin anlayacağı biçimde `AI AKTİF`, `MODEL: İMAM`, `AI KAPANDI`
 veya `AI MODELİ GÜNCELLENDİ` der. İlk satır mevcut büyük kare kısayolunu
-`<#888F>` ile griye boyar. Akış saniyede en çok 6, olay başına 5–7 satırdır.
+`<#888F>` ile griye boyar. Açılış 24, kapanış/kişilik/model geçişleri 18 satırdır;
+akış saniyede en çok 6 satır gönderir. Açılışta kurgusal bir konsol servisinin
+hazırlanması, CMake/Ninja derleme çıktıları ve servis başlatma adımları görünür.
+Komutlar yalnız dekoratif metindir; cihazda çalıştırılmaz.
+
+Bu gösteri mesajları hazırlanırken oyunun isim okuyucusu yalnız eşzamanlı sohbet
+gönderimi süresince `System` döndürür. Kalıcı oyuncu adı veya Photon oyuncu
+özellikleri değiştirilmez; normal sohbet ve AI cevapları kendi adını kullanır.
+Referans ARM64 gönderim akışında ad, UTF-8 sohbet yükü hazırlanırken okunur.
+Bu bağlantı kurulamazsa terminal mesajları atlanır, normal adla gönderilmez.
+`System` bir sohbet görüntü adıdır; ağdaki Photon gönderen/aktör kimliği değişmez
+ve sunucu mesajın hangi oyuncudan geldiğini görebilir. Cihazdaki ve diğer
+istemcideki görünüm derleme sonrasında ayrıca doğrulanmalıdır.
 
 Yerel bekleme izni artık bütün `ChatManager.SendMessage` çağrılarına uygulanır:
 normal gönder düğmesi, kare kısayolu ve AI gönderimleri aynı genel kancadan geçer.

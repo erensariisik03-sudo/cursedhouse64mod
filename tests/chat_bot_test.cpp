@@ -206,7 +206,8 @@ int main() {
     clock.Update(302,true,true,2,"",true);assert(!clock.Due(10000));
     for(auto event:{chat_bot_fx::Event::Start,chat_bot_fx::Event::Stop,chat_bot_fx::Event::Profile,chat_bot_fx::Event::Model}){
         const auto lines=chat_bot_fx::Lines(event,"test-model",true);
-        assert(lines.size()>=5&&lines.size()<=8&&lines.front()==std::string("<#888F>")+chat_shortcut::kPayload);
+        assert(lines.size()>=18&&lines.size()<=24&&lines.front()==std::string("<#888F>")+chat_shortcut::kPayload);
+        assert((lines.size()-1)*chat_bot_fx::kInterval<chat_bot_fx::kTimeout);
         for(const auto& line:lines)assert(ScalarCount(line)<=200);
     }
     for(auto event:{chat_bot_fx::Event::Start,chat_bot_fx::Event::Stop,chat_bot_fx::Event::Model}){

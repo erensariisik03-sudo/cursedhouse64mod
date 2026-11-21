@@ -53,6 +53,8 @@ using Event = void (*)(Object*, Object*, const Method*);
 Unary g_activate = nullptr, g_update = nullptr, g_disable = nullptr;
 Unary g_late = nullptr, g_changed = nullptr, g_submit_callback = nullptr;
 Unary g_chat_send = nullptr;
+using NickGetter = String* (*)(const Method*);
+NickGetter g_chat_nick = nullptr;
 Event g_deselect = nullptr;
 using Swap = EGLBoolean (*)(EGLDisplay, EGLSurface);
 Swap g_swap = nullptr;
@@ -63,7 +65,7 @@ struct Methods {
     const Method *screenW{}, *screenH{}, *currentEventSystem{};
     const Method *touchCurrent{}, *primaryTouch{}, *touchPosition{}, *touchPress{}, *pressed{}, *readControl{};
     const Method *legacyPosition{}, *legacyPress{};
-    const Method *messageQueue{}, *findChat{}, *arrayLength{}, *arrayItem{}, *active{}, *chatSend{};
+    const Method *messageQueue{}, *findChat{}, *arrayLength{}, *arrayItem{}, *active{}, *chatSend{}, *chatNick{};
     const Method *selectionAnchor{}, *selectionFocus{}, *setSelectionAnchor{}, *setSelectionFocus{};
     const Method *keyboard{}, *keyboardSelection{}, *setKeyboardSelection{}, *canGetSelection{}, *canSetSelection{}, *keyboardArea{};
     Class* chatClass{};
@@ -286,7 +288,15 @@ Object* ChatOwner(Object* input) {
     }
     return chosen;
 }
+String* ChatNick(const Method* method) {
+    if(chat_send_gate::active_status_alias){
+        // A missing alias must never fall back to exposing the normal nickname.
+        return reinterpret_cast<String*>(g_api.gchandle_get_target(chat_send_gate::active_status_alias));
+    }
+    return g_chat_nick(method);
+}
 void SendChat(Object* self,const Method* method) {
+    chat_send_gate::StatusSend display;
     if(!self||!m.chatAllowed||!g_api.field_get_value||!g_api.field_set_value){g_chat_send(self,method);return;}
     ScopedRoot owner(self);
     if(!owner.Get()){g_chat_send(self,method);return;}
@@ -464,6 +474,7 @@ bool Resolve() {
     m.messageQueue=method("Photon.Pun","PhotonNetwork","get_IsMessageQueueRunning");
     m.chatClass=g_api.Find("","ChatManager");
     m.chatSend=g_api.FindMethod(m.chatClass,"SendMessage",0);
+    m.chatNick=method("Photon.Pun","PhotonNetwork","get_NickName");
     // Unique three-argument overload; avoid the generic bool overload sharing
     // FindObjectsOfType's name/arity, and avoid sorting the result.
     m.findChat=method("UnityEngine","Object","FindObjectsByType",3);
@@ -508,6 +519,10 @@ void InstallFromUnityFrame() {
     if(ready&&m.chatSend&&m.chatAllowed&&g_api.field_set_value){
         const bool installed=Hook(Entry(m.chatSend),reinterpret_cast<void*>(SendChat),g_chat_send,"ChatManager.SendMessage");
         chat_send_gate::ready.store(installed,std::memory_order_release);
+        if(installed&&m.chatNick){
+            const bool alias=Hook(Entry(m.chatNick),reinterpret_cast<void*>(ChatNick),g_chat_nick,"PhotonNetwork.get_NickName status alias");
+            chat_send_gate::status_alias_ready.store(alias,std::memory_order_release);
+        }
     }
     if (ready) g_rules = game_text_rules::Install(g_api);
     if (ready) auto_join::Install(g_api); // dolu odaya otomatik katılma (JoinRoom adını ve 'Game full' hatasını izler)

@@ -98,11 +98,15 @@ class Controller {
     void ClearStatus(){++status_revision;status_lines.clear();status_room=0;}
     void QueueStatus(chat_bot_fx::Event event,const std::string& detail={}) {
         ++status_revision;
+        if(!chat_send_gate::status_alias_ready.load(std::memory_order_acquire)){
+            ClearStatus();Status(u8"AI | System sohbet etiketi hazır değil; terminal gösterimi atlandı.");return;
+        }
         const auto lines=chat_bot_fx::Lines(event,detail,enabled);
         status_lines.assign(lines.begin(),lines.end()); // latest event replaces unfinished animation
         status_next=now_;status_deadline=now_+chat_bot_fx::kTimeout;status_room=active_room;
     }
     bool SendStatusLine(const std::string& line) {
+        if(!chat_send_gate::status_alias_ready.load(std::memory_order_acquire))return false;
         Root owner(api,ChatOwner());if(!owner.Get())return false;
         Object* field=nullptr;api.field_get_value(owner.Get(),input_field,&field);
         Root input(api,field);if(!input.Get()||!IsAlive(input.Get()))return false;
@@ -111,6 +115,8 @@ class Controller {
         if(!chat_bot_core::Trim(ReadString(input_text,input.Get(),ok)).empty()||!ok)return false;
         bool allowed=false;api.field_get_value(owner.Get(),allowed_field,&allowed);
         if(!allowed&&!api.field_set_value)return false; // old runtimes retain ordinary cooldown
+        Root alias(api,reinterpret_cast<Object*>(api.string_new("System")));
+        if(!alias.Get())return false;
         Root text(api,reinterpret_cast<Object*>(api.string_new(line.c_str())));
         if(!text.Get())return false;
         void* args[]={text.Get()};api.Call(input_set,input.Get(),args,&ok);
@@ -129,7 +135,10 @@ class Controller {
                 ~Permission(){if(changed)api.field_set_value(owner,field,&old);}
             } permission(api,owner.Get(),allowed_field,allowed);
             bool permitted=false;api.field_get_value(owner.Get(),allowed_field,&permitted);
-            if(permitted)api.Call(send,owner.Get(),nullptr,&sent);
+            if(permitted){
+                chat_send_gate::StatusAlias display(alias.handle);
+                api.Call(send,owner.Get(),nullptr,&sent);
+            }
         }
         bool read_ok=false;const auto after=ReadString(input_text,input.Get(),read_ok);
         if(read_ok&&after==line){

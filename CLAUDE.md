@@ -41,3 +41,10 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   çağrılarına uygulanır; bayrağı yalnız çağrı boyunca değiştirip geri yükleyin.
   Durum akışını 6 satır/sn ve 5 sn ile sınırlayın; gerçek uygulama ayrıntıları
   yerine kurgusal terminal satırları ve anlaşılır Türkçe sonuç yazın.
+- Terminal gösterimi açılışta 24, diğer olaylarda 18 satırdır. Kernel/çekirdek
+  derleme metni kullanmayın; uzun satırlarda kurgusal konsol servisi akışını anlatın.
+- Yalnız terminal gönderiminde PhotonNetwork.get_NickName okumasını köklü
+  System metnine yönlendirin; kalıcı oyuncu özelliğini/adını değiştirmeyin.
+  İstek iş parçacığına özeldir, SendMessage girişinde tüketilir ve iç içe normal
+  gönderime aktarılmaz. Kanca yoksa gösterimi atlayın. Photon aktör kimliği
+  değişmediğinden bu özelliği sunucudan kimlik gizleme diye sunmayın.

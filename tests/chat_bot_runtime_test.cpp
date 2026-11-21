@@ -27,7 +27,7 @@ struct Fake {
  std::map<std::pair<std::string,std::string>,std::unique_ptr<Class>> classes;
  std::vector<std::unique_ptr<Object>> objects;std::map<Class*,Type> types;std::map<Handle,Object*> roots;Handle next=0;
  Object *current_room{},*manager{},*input{};Class *messages{},*managers{},*strings{},*arrays{},*players{};
- std::vector<Object*> chat_lines,others;std::vector<std::string> sent;
+ std::vector<Object*> chat_lines,others;std::vector<std::string> sent,sent_names;
  bool allowed=true,focused=false,panel=false;std::string own="Bot";
  Class* C(const std::string& ns,const std::string& name){auto& c=classes[{ns,name}];if(!c){c=std::make_unique<Class>();c->ns=ns;c->name=name;}return c.get();}
  Object* O(Class* c){auto o=std::make_unique<Object>();o->klass=c;auto* p=o.get();objects.push_back(std::move(o));return p;}
@@ -36,6 +36,7 @@ struct Fake {
  Object* I(int n){auto* o=O(C("System","Int32"));o->number=n;return o;}
  Fake(){
   fake=this;chat_bot_bridge::Take();chat_bot_bridge::Publish({});http_calls=0;
+  chat_send_gate::status_alias_ready=true;
   strings=C("System","String");arrays=C("System","Array");players=C("Photon.Realtime","Player");
   messages=C("","ChatMessage");managers=C("","ChatManager");manager=O(managers);input=O(C("TMPro","TMP_InputField"));
   current_room=O(C("Photon.Realtime","Room"));others={S("Ali"),S("Veli")};
@@ -88,7 +89,10 @@ Object* Invoke(const Method* m,void* self,void** args,Object** error){
  if(name=="get_text")return fake->S(test_utf::ToUtf8(o->text));
  if(name=="set_text"){o->text=static_cast<Object*>(args[0])->text;return nullptr;}
  if(name=="SendMessage"){
+  chat_send_gate::StatusSend display;
   assert(fake->allowed&&!fake->focused);
+  auto* alias=chat_send_gate::active_status_alias?GetRoot(chat_send_gate::active_status_alias):nullptr;
+  fake->sent_names.push_back(alias?test_utf::ToUtf8(alias->text):fake->own);
   const auto text=test_utf::ToUtf8(fake->input->text);assert(!chat_bot_core::IsSkipReply(text,"Ali"));
   fake->sent.push_back(text);fake->input->text.clear();return nullptr;
  }
@@ -105,9 +109,11 @@ struct Harness {
   assert(chat_bot_bridge::Read().chat_ready&&chat_bot_bridge::Read().has_key);
   chat_bot_bridge::ToggleAll();chat_bot_bridge::Toggle();bot.Tick(now);assert(chat_bot_bridge::Read().enabled);
   // Finish the initial status animation before testing unrelated reply counts.
-  for(int i=0;i<12;++i){now+=.2;bot.Tick(now);}
-  now+=3;bot.Tick(now);f.sent.clear();}
- void Tick(double at){now=at;bot.Tick(now);assert(f.roots.empty());}
+  for(int i=0;i<24;++i){now+=.2;bot.Tick(now);}
+  assert(f.sent.size()==chat_bot_fx::Lines(chat_bot_fx::Event::Start,"",true).size());
+  for(const auto& name:f.sent_names)assert(name=="System");
+  now+=3;bot.Tick(now);f.sent.clear();f.sent_names.clear();}
+ void Tick(double at){now=at;bot.Tick(now);assert(f.roots.empty()&&!chat_send_gate::status_alias&&!chat_send_gate::active_status_alias);}
  void Step(){Tick(now+.5);}
  void Message(const std::string& s){f.Message(s);Step();}
  void Drain(){for(int i=0;i<8;++i){Step();std::this_thread::sleep_for(std::chrono::milliseconds(1));}
@@ -131,6 +137,7 @@ int main(){
   for(const char* greeting:{"merhaba","slm","selam","sa","nasılsınız","Bot merhaba"}){
    h.Tick(h.now+31);const auto before=h.f.sent.size();h.Message(greeting);h.Step();
    assert(h.f.sent.size()==before+1&&http_calls==0);
+   assert(h.f.sent_names.back()=="Bot");
   }
   const auto count=h.f.sent.size();h.Message("merhaba");h.Step();assert(h.f.sent.size()==count&&http_calls==0);
   Response("Ali, dünya kütleçekim nedeniyle yuvarlaktır.");h.Message("Bot merhaba, dünya neden yuvarlak?");h.Drain();h.Step();
@@ -158,12 +165,20 @@ int main(){
   }
  }
  {Harness h;
+  chat_bot_bridge::ToggleStrict();h.Step();
   h.f.allowed=false;chat_bot_bridge::SetMode(1);const double begin=h.now;
-  for(int i=1;i<=18;++i)h.Tick(begin+i*.2);
-  assert(h.f.sent.size()==5&&!h.f.allowed&&http_calls==0); // one frame + four profile lines
-  h.f.sent.clear();chat_bot_bridge::Toggle();h.Step();
-  const double stop=h.now;for(int i=1;i<=18;++i)h.Tick(stop+i*.2);
-  assert(!chat_bot_bridge::Read().enabled&&h.f.sent.size()==6&&!h.f.allowed);
+  for(int i=1;i<=24;++i)h.Tick(begin+i*.2);
+  assert(h.f.sent.size()==chat_bot_fx::Lines(chat_bot_fx::Event::Profile,"",true).size()&&!h.f.allowed&&http_calls==0);
+  for(const auto& name:h.f.sent_names)assert(name=="System");
+  assert(h.f.own=="Bot");h.f.sent.clear();h.f.sent_names.clear();chat_bot_bridge::Toggle();h.Step();
+  const double stop=h.now;for(int i=1;i<=24;++i)h.Tick(stop+i*.2);
+  assert(!chat_bot_bridge::Read().enabled&&h.f.sent.size()==chat_bot_fx::Lines(chat_bot_fx::Event::Stop,"",false).size()&&!h.f.allowed);
+  for(const auto& name:h.f.sent_names)assert(name=="System");
+ }
+ {Harness h;
+  chat_send_gate::status_alias_ready=false;chat_bot_bridge::Toggle();h.Step();
+  for(int i=0;i<24;++i)h.Tick(h.now+.2);
+  assert(h.f.sent.empty()&&h.f.own=="Bot"); // no fallback exposing the normal name
  }
  {Harness h;chat_bot_bridge::ToggleStrict();h.Step();
   for(const char* control:{"SKIP","Ali: SKIP","Ali, **SKIP**","Ali SKIP",u8"SKİP"}){

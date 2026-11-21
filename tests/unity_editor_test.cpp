@@ -214,6 +214,23 @@ int main(){
  assert(chat_sends==1&&sent=="manual chat"&&cooldown&&roots.empty());
  assert(chat_send_gate::Available(false));chat_send_gate::ready=false;assert(!chat_send_gate::Available(false));
  g_api.field_set_value=nullptr;
+ // Status alias affects only the synchronous chat scope, never the stored nick.
+ g_chat_nick=+[](const Method*)->String*{static String name{u"Bot"};return &name;};
+ String system_name{u"System"};
+ assert(g_api.Utf8(ChatNick(nullptr))=="Bot");
+ {
+  ScopedRoot name(reinterpret_cast<Object*>(&system_name));
+  chat_send_gate::StatusAlias request(name.handle);
+  assert(g_api.Utf8(ChatNick(nullptr))=="Bot");
+  {
+   chat_send_gate::StatusSend send;
+   assert(g_api.Utf8(ChatNick(nullptr))=="System");
+   {chat_send_gate::StatusSend nested;assert(g_api.Utf8(ChatNick(nullptr))=="Bot");}
+   assert(g_api.Utf8(ChatNick(nullptr))=="System");
+  }
+  assert(g_api.Utf8(ChatNick(nullptr))=="Bot");
+ }
+ assert(roots.empty()&&!chat_send_gate::status_alias&&!chat_send_gate::active_status_alias);
  std::cout<<"Android editor: native typing/autocorrection, latest-text FIFO shortcuts, UTF-16 caret/selection, 1024-scalar callback/submit cap, restore/reentry/fallback and stale session rejection: PASS\n";
  std::cout<<"Native square shortcut: normal chat send, cooldown/owner checks, native refocus, newer Android draft and scene guards: PASS\n";
 }
