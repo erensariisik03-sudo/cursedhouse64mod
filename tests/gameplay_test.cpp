@@ -45,6 +45,8 @@ float scalar=2.5f;
 String* forwarded_name=nullptr;
 int hit_forwards=0,state_forwards=0,ground_created=0;
 int plan_forwards=0,camera_forwards=0,motion_forwards=0,fall_forwards=0,fire_forwards=0;
+int controller_forwards=0,clone_owner=2,leader_number=3;bool local_master=false,nav_stopped=false,nav_on_mesh=true;float nav_speed=3;
+gameplay::Vec3 forwarded_motion{};
 float forwarded_delay=0,delta=.25f;
 bool cross_loaded_value=false,shot_loaded_value=false,fire_loaded=false,consume_shot=false;
 uint8_t hand_item=0,last_entity=0,last_state=0;bool last_sync=false;
@@ -76,7 +78,7 @@ void WriteField(Object* o,Field* f,void* value){
  if(f==shot_loaded_field){assert(o==shot_manager_object);shot_loaded_value=*static_cast<bool*>(value);return;}
  assert(o==pawn&&f==scalar_field);scalar=*static_cast<float*>(value);++writes;
 }
-Class* ObjectClass(Object* o){assert(o==pawn||o==movement_object);return reinterpret_cast<Class*>(0x900);}
+Class* ObjectClass(Object* o){assert(o==pawn||o==movement_object||o==view);return reinterpret_cast<Class*>(0x900);}
 Field* FindField(Class*,const char* name){if(!std::strcmp(name,"controller"))return controller_field;if(!std::strcmp(name,"dropPointTransform"))return drop_field;return has_cached_view&&(!std::strcmp(name,"qsa")||!std::strcmp(name,"pv"))?view_field:nullptr;}
 String* NewString(const char*){return reinterpret_cast<String*>(0xF00);}
 Object* Invoke(const Method* method,void* self,void** args,Object** error){
@@ -107,6 +109,15 @@ Object* Invoke(const Method* method,void* self,void** args,Object** error){
  if(method==M(25)){assert(self==body_transform);body_position=*static_cast<gameplay::Vec3*>(args[0]);return nullptr;}
  if(method==M(26))return reinterpret_cast<Object*>(&delta);
  if(method==M(27)){assert(self==body_transform);return reinterpret_cast<Object*>(&rotation);}
+ if(method==M(28)){assert(self==pawn);return reinterpret_cast<Object*>(&nav_speed);}
+ if(method==M(29)){assert(self==pawn);nav_speed=*static_cast<float*>(args[0]);return nullptr;}
+ if(method==M(30)){assert(self==pawn);return reinterpret_cast<Object*>(&nav_stopped);}
+ if(method==M(31)){assert(self==pawn);nav_stopped=*static_cast<bool*>(args[0]);return nullptr;}
+ if(method==M(32)){assert(self==pawn);return reinterpret_cast<Object*>(&nav_on_mesh);}
+ if(method==M(33)){assert(self==view);return reinterpret_cast<Object*>(&clone_owner);}
+ if(method==M(34))return local_actor;
+ if(method==M(35)){assert(self==local_actor);return reinterpret_cast<Object*>(&leader_number);}
+ if(method==M(36))return reinterpret_cast<Object*>(&local_master);
  assert(false);return nullptr;
 }
 void* Unbox(Object* o){return o;}
@@ -122,6 +133,7 @@ void OriginalMotion(Object*,const Method*){++motion_forwards;}
 void OriginalFall(Object*,const Method*){++fall_forwards;}
 void OriginalCrossFire(Object*,const Method*){++fire_forwards;fire_loaded=cross_loaded_value;if(consume_shot)cross_loaded_value=false;}
 void OriginalShotFire(Object*,const Method*){++fire_forwards;fire_loaded=shot_loaded_value;if(consume_shot)shot_loaded_value=false;}
+int OriginalControllerMove(Object* object,gameplay::Vec3 motion,const Method*){assert(object==body_controller);++controller_forwards;forwarded_motion=motion;return 5;}
 }
 extern "C" int __android_log_print(int,const char*,const char*,...){return 0;}
 extern "C" int DobbyHook(void*,void*,void**){return -1;}
@@ -206,12 +218,17 @@ int main(){
   gameplay::crossbow_loaded=cross_loaded_field;gameplay::shotgun_loaded=shot_loaded_field;gameplay::shotgun_manager=shot_manager_field;
   gameplay::tool_transform=M(23);gameplay::tool_position=M(24);gameplay::tool_set_position=M(25);gameplay::tool_delta=M(26);gameplay::tool_hand=M(12);
   gameplay::original_motion=OriginalMotion;gameplay::original_fall_update=OriginalFall;gameplay::original_cross_fire=OriginalCrossFire;gameplay::original_shot_fire=OriginalShotFire;
+  gameplay::original_controller_move=OriginalControllerMove;
   const int before=vm_calls;gameplay::ghost_enabled=false;gameplay::Motion(movement_object,nullptr);assert(motion_forwards==1&&vm_calls==before);
   gameplay::ghost_enabled=true;gameplay::Motion(movement_object,nullptr);
-  assert(motion_forwards==1&&gameplay::Near(body_position,gameplay::Vec3{4.75f,5,6.5f})&&velocity.y==0);
+  assert(motion_forwards==1&&gameplay::Near(body_position,gameplay::Vec3{4,5,6})&&velocity.y==0);
+  assert(gameplay::GhostControllerMove(body_controller,{.75f,0,.5f},nullptr)==0);
+  assert(controller_forwards==0&&gameplay::Near(body_position,gameplay::Vec3{4.75f,5,6.5f}));
   gameplay::FallUpdate(fall_object,nullptr);assert(fall_forwards==0);
-  owned=false;gameplay::Motion(movement_object,nullptr);gameplay::FallUpdate(fall_object,nullptr);assert(motion_forwards==2&&fall_forwards==1);owned=true;
+  owned=false;gameplay::Motion(movement_object,nullptr);gameplay::FallUpdate(fall_object,nullptr);assert(motion_forwards==2&&fall_forwards==1);
+  assert(gameplay::GhostControllerMove(body_controller,{1,2,3},nullptr)==5&&controller_forwards==1&&gameplay::Near(forwarded_motion,{1,2,3}));owned=true;
   gameplay::ghost_enabled=false;gameplay::FallUpdate(fall_object,nullptr);assert(fall_forwards==2);
+  assert(gameplay::GhostControllerMove(body_controller,{3,2,1},nullptr)==5&&controller_forwards==2);
   hand_item=9;gameplay::ammo_enabled=false;gameplay::CrossFire(cross_object,nullptr);assert(!fire_loaded&&fire_forwards==1);
   gameplay::ammo_enabled=true;gameplay::CrossFire(cross_object,nullptr);assert(fire_loaded&&!cross_loaded_value&&fire_forwards==2);
   consume_shot=true;gameplay::CrossFire(cross_object,nullptr);assert(fire_loaded&&!cross_loaded_value);consume_shot=false;
@@ -219,6 +236,32 @@ int main(){
   owned=false;gameplay::ShotFire(shot_object,nullptr);assert(!fire_loaded);owned=true;
   hand_item=1;gameplay::ShotFire(shot_object,nullptr);assert(!fire_loaded);
   gameplay::ammo_enabled=false;gameplay::tool_movement=gameplay::tool_fall=gameplay::tool_crossbow=gameplay::tool_shotgun=gameplay::tool_inventory=0;hand_item=0;
+ }
+ assert(roots.empty());
+ {
+  gameplay::Runtime runtime(api);runtime.alive=M(7);runtime.enabled_get=M(19);runtime.enabled_set=M(20);runtime.nav_get=M(28);runtime.nav_set=M(29);runtime.nav_stop_get=M(30);runtime.nav_stop_set=M(31);runtime.nav_onmesh=M(32);
+  auto actor=std::make_unique<gameplay::Actor>(api,pawn,0);actor->nav.Set(pawn);runtime.actors.push_back(std::move(actor));
+  gameplay::protected_scene=scene;gameplay::protected_room=reinterpret_cast<uintptr_t>(room);
+  runtime.snap.ready=true;gameplay::runtime=&runtime;runtime.settings[0].paused=true;script_enabled=true;
+  runtime.Apply(*runtime.actors[0]);assert(nav_stopped&&script_enabled&&gameplay::EnemyPaused(pawn,0)&&!gameplay::EnemyPaused(other,0));
+  gameplay::original_enemy_update[0]=OriginalMotion;const int tick_before=motion_forwards;
+  gameplay::EnemyUpdate<0>(pawn,nullptr);assert(motion_forwards==tick_before);
+  runtime.settings[0].paused=false;runtime.Apply(*runtime.actors[0]);assert(!nav_stopped&&script_enabled&&!gameplay::EnemyPaused(pawn,0));
+  gameplay::EnemyUpdate<0>(pawn,nullptr);assert(motion_forwards==tick_before+1);
+  motion_forwards=0;
+  runtime.settings[0].paused=true;runtime.Apply(*runtime.actors[0]);nav_on_mesh=false;
+  runtime.settings[0].paused=false;runtime.Apply(*runtime.actors[0]);assert(runtime.actors[0]->stop_changed&&nav_stopped);
+  nav_on_mesh=true;runtime.Apply(*runtime.actors[0]);assert(!nav_stopped&&!runtime.actors[0]->stop_changed);
+  gameplay::runtime=nullptr;
+ }
+ assert(roots.empty());
+ {
+  gameplay::Runtime runtime(api);runtime.alive=M(7);runtime.master_client=M(34);runtime.actor_number=M(35);runtime.owner_number=M(33);runtime.master=M(36);runtime.mine=M(2);
+  runtime.clones.push_back(std::make_unique<gameplay::CloneRecord>(api,game_object,view,gameplay::Vec3{},gameplay_bridge::Now()-1));
+  clone_owner=2;runtime.UpdateClones();assert(runtime.clones.front()->finished&&runtime.snap.status.find(u8"sabit")!=std::string::npos);
+  runtime.clones.clear();clone_owner=leader_number;
+  runtime.clones.push_back(std::make_unique<gameplay::CloneRecord>(api,game_object,view,gameplay::Vec3{},gameplay_bridge::Now()-1));
+  runtime.UpdateClones();assert(runtime.clones.front()->finished&&runtime.snap.status.find(u8"eşleşti")!=std::string::npos);
  }
  assert(roots.empty());
  {

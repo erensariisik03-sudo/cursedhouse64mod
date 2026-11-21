@@ -78,8 +78,10 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   eşya istenirse önce eldeki normal akışla bırakılır. Mermi ve şırınga yere
   oluşturulur. Bir saniyelik yerel bekleme kaldırıldı; en çok kare başına bir
   oluşturma işlenir. Eşya listesinde sürükleme seçim üretmemelidir.
-- Durdurma sırasında ana/alt Animator ve Animation.enabled değerlerini saklayıp
-  kapatın; devamda saklanan durumu geri yükleyin. Crow gerçek görsel kökleri
+- Durdurmak için AI Behaviour.enabled değiştirmeyin. Karar Update/FixedUpdate
+  ve saldırı tetikleyicisini kendi köklü aktöründe oturumla bekletin; OnDisable
+  olay/coroutine akışını bozmayın. Alt animasyon ve NavMesh isStopped durumunu
+  saklayın; agent off-mesh iken bekleyen geri yükleme kaydını silmeyin. Crow gerçek görsel kökleri
   ölçeklenir; iç içe kökleri tekrar çarpmayın. Crow üst sınırı 20x'tir.
 
 - Eşya adları kullanıcının son tercihiyle İngilizcedir. PickUpObject enum kimliği
@@ -88,8 +90,9 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   kamerasını ve doğrulanan saldırı başlangıçlarını korur. Diğer hedef/kaçış,
   mod kapalı hali ve oda/sahne değişimi özgün akışa iletilir; gün saati genel
   olarak dondurulmaz. Modsuz uzak yöneticinin kararını iptal ettiğini iddia etmeyin.
-- Hayalet modu yalnız sahipliği doğrulanan FirstPersonController.hjs ve kendi
-  düşme kontrolüne uygulanır. Joystick yatay hareketi korunur; kapanınca normal
+- Hayalet modu hjs yerçekimi ve gerçek joystick CharacterController.Move yolunu
+  ayrı korur. Move ABI: int(Object*, Vector3 HFA, MethodInfo*); başka kontrolcü,
+  farklı oturum ve kapalı mod özgün çağrı/CollisionFlags iletir. Kapanınca normal
   hareket ve sıfırlanmış dikey hız döner. Başlangıca dönüş komutu oturumludur.
 - Infinity Ammo yalnız eldeki kendi Crossbow/Shotgun atışında yük bayrağını
   çağrı boyunca hazırlar; özgün atışı bir kez çağırıp gerçek durumu korur.
@@ -97,8 +100,18 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
 - Klon oyuncunun kamera yönünde yatay ve dik yerleştirilir; yürünebilir zemin,
   AI bileşeni ve yeni hiyerarşinin ViewID'si doğrulanır. Geçerli ön zemin yoksa
   yana/başka yere sessizce oluşturmayın. Mevcut ana manager referansı ezilmez.
-- Shotgun Ammo kaynak hazır değilken de gri listelenir. Yerel model gerekiyorsa
-  yalnız script/PV içermeyen görseli veya gerçek mesh/materyallerle oluşturulan
-  yeni görseli kullanın. PhotonView/script kopyalayıp Awake çalıştırmayın.
-  Kendi oyuncu yaklaştığında normal hra(Ammo) ile doldurmayı doğrulayın;
-  kaynak nesneyi ve başka oyuncunun mühimmatını tüketmeyin.
+- Shotgun Ammo için yerel görsel fallback kaldırıldı. Yalnız gerçek ağ prefabı
+  (PickupItem Ammo=48 + PhotonView) doğrulanırsa normal SDK ile oluşturun;
+  aksi halde seçeneği kapalı gösterin. İngilizce eşya isimlerini koruyun.
+- Klon AI'si MasterClient kontrolüyle çalışır; görünürlük hareket kanıtı değildir.
+  Yerel master normal InstantiateRoomObject kullanır. Client kendi yeni klonunu
+  yalnız prefabın mevcut Request/Takeover politikası izin veriyorsa normal SDK
+  ile master'a devredebilir. Fixed/OwnershipTransfer veya IsMasterClient değerini
+  değiştirmeyin; devir onayını OwnerActorNr ile okuyun, reddi/timeout'u gösterin.
+  Unity Start'ı elle tekrarlamayın; ana manager referansını ezmeyin.
+- Boyut modsuz alıcıya iletilmediği kullanıcı cihazında gözlendi; yerel olarak
+  etiketleyin. Tek tarafta stream alan sayısını artırmayın; tahmini RPC eklemeyin.
+- Kullanıcı ikinci modu devre dışı bıraktığında maçın açıldığını bildirdi.
+  İki modla birlikteki önceki geçersiz native atlamanın tam kaynağı belirlenmedi;
+  kaldırılmış spekülatif native-call guard'ı geri eklemeyin. God Mode çalıştığı
+  kullanıcı tarafından düzeltildi; son hata hayalet modundaydı.

@@ -148,6 +148,15 @@ Field *movement_view=nullptr,*movement_controller=nullptr,*movement_velocity=nul
       *crossbow_view=nullptr,*crossbow_loaded=nullptr,*shotgun_view=nullptr,*shotgun_manager=nullptr,*shotgun_loaded=nullptr,*inventory_view=nullptr;
 const Method *tool_transform=nullptr,*tool_position=nullptr,*tool_set_position=nullptr,*tool_delta=nullptr,*tool_hand=nullptr,*tool_go_transform=nullptr,*tool_is_child=nullptr;
 Unary original_motion=nullptr,original_fall_update=nullptr,original_cross_fire=nullptr,original_shot_fire=nullptr;
+using ControllerMove=int(*)(Object*,Vec3,const Method*);
+ControllerMove original_controller_move=nullptr;
+std::array<Unary,gameplay_bridge::kEnemies> original_enemy_update{};
+std::array<bool,gameplay_bridge::kEnemies> enemy_update_ready{};
+using EnemyTrigger=void(*)(Object*,Object*,const Method*);
+std::array<EnemyTrigger,4> original_enemy_trigger{};
+bool EnemyPaused(Object* object,size_t kind);
+template<size_t K> void EnemyUpdate(Object* object,const Method* method){if(!EnemyPaused(object,K))original_enemy_update[K](object,method);}
+template<size_t K> void PausedEnemyTrigger(Object* object,Object* collider,const Method* method){if(!EnemyPaused(object,K))original_enemy_trigger[K](object,collider,method);}
 using VictimAction=void(*)(Object*,Object*,const Method*);
 VictimAction original_mom_grab=nullptr;
 bool Finite(Vec3 v);
@@ -161,19 +170,31 @@ bool ToolOwner(Object* o,Handle handle,Field* field){
     Object* view=nullptr;hook_api->field_get_value(o,field,&view);Root pv(*hook_api,view);
     return pv.Get()&&hook_api->Value<bool>(mine_method,pv.Get(),false);
 }
-Vec3 GhostMotion(Vec3 velocity,float delta){return {velocity.x*delta,0,velocity.z*delta};}
 void Motion(Object* o,const Method* m){
     if(std::this_thread::get_id()==unity_thread&&ghost_enabled&&movement_velocity&&ToolOwner(o,tool_movement,movement_view)){
         Vec3 velocity{};hook_api->field_get_value(o,movement_velocity,&velocity);
-        const float delta=hook_api->Value<float>(tool_delta,nullptr,-1);
-        Object* body=nullptr;hook_api->field_get_value(o,movement_controller,&body);Root controller(*hook_api,body),t(*hook_api,hook_api->Call(tool_transform,controller.Get()));
-        bool ok=false;Root boxed(*hook_api,hook_api->Call(tool_position,t.Get(),nullptr,&ok));
-        if(ok&&boxed.Get()&&Finite(velocity)&&std::isfinite(delta)&&delta>=0&&delta<=1){
-            Vec3 p=*static_cast<Vec3*>(hook_api->object_unbox(boxed.Get())),step=GhostMotion(velocity,delta);p.x+=step.x;p.z+=step.z;
-            if(Finite(p)){void* args[]={&p};hook_api->Call(tool_set_position,t.Get(),args,&ok);if(ok){velocity.y=0;hook_api->field_set_value(o,movement_velocity,&velocity);return;}}
-        }
+        // hjs applies gravity. Horizontal joystick movement uses hju and a
+        // separate CharacterController.Move; it is intercepted below.
+        if(Finite(velocity)){velocity.y=0;hook_api->field_set_value(o,movement_velocity,&velocity);return;}
     }
     original_motion(o,m);
+}
+int GhostControllerMove(Object* object,Vec3 motion,const Method* method){
+    if(std::this_thread::get_id()==unity_thread&&ghost_enabled&&Finite(motion)&&tool_movement&&hook_api){
+        auto* movement=hook_api->gchandle_get_target(tool_movement);
+        if(ToolOwner(movement,tool_movement,movement_view)){
+            Object* body=nullptr;hook_api->field_get_value(movement,movement_controller,&body);
+            if(body==object){
+                Root t(*hook_api,hook_api->Call(tool_transform,object));bool ok=false;
+                Root boxed(*hook_api,hook_api->Call(tool_position,t.Get(),nullptr,&ok));
+                if(ok&&boxed.Get()){
+                    Vec3 p=*static_cast<Vec3*>(hook_api->object_unbox(boxed.Get()));p.x+=motion.x;p.y+=motion.y;p.z+=motion.z;
+                    if(Finite(p)){void* args[]={&p};hook_api->Call(tool_set_position,t.Get(),args,&ok);if(ok)return 0;}
+                }
+            }
+        }
+    }
+    return original_controller_move(object,motion,method);
 }
 void FallUpdate(Object* o,const Method* m){if(std::this_thread::get_id()!=unity_thread||!ghost_enabled||!ToolOwner(o,tool_fall,fall_view))original_fall_update(o,m);}
 bool FieldType(const Api& api,Field* field,const char* ns,const char* name){
@@ -216,7 +237,9 @@ void InstallTools(const Api& api){
     modern_hooks_ready=modern_hooks_ready&&mom_guard;
     if(movement_view&&movement_controller&&fall_view&&tool_transform&&tool_position&&tool_set_position&&tool_delta&&FieldType(api,movement_velocity,"UnityEngine","Vector3")){
         const bool a=Hook(api.FindMethod(movement,"hjs",0),reinterpret_cast<void*>(Motion),original_motion);
-        const bool b=Hook(api.FindMethod(fall,"Update",0),reinterpret_cast<void*>(FallUpdate),original_fall_update);ghost_hook_ready=a&&b;
+        const bool b=Hook(api.FindMethod(fall,"Update",0),reinterpret_cast<void*>(FallUpdate),original_fall_update);
+        const bool c=Hook(method("UnityEngine","CharacterController","Move",1),reinterpret_cast<void*>(GhostControllerMove),original_controller_move);
+        ghost_hook_ready=a&&b&&c;
     }
     if(!FieldType(api,crossbow_loaded,"System","Boolean"))crossbow_loaded=nullptr;
     if(!FieldType(api,shotgun_loaded,"System","Boolean"))shotgun_loaded=nullptr;
@@ -237,6 +260,15 @@ constexpr Spec specs[kEnemyCount]={
     {"de",nullptr,nullptr,"CrowAnimHolder",{nullptr,nullptr,nullptr},{nullptr,nullptr,nullptr}},
     {"pj",nullptr,"qgy","ratAnim",{nullptr,nullptr,nullptr},{nullptr,nullptr,nullptr}}
 };
+void InstallEnemyUpdates(const Api& api){
+    void* replacements[]={reinterpret_cast<void*>(EnemyUpdate<0>),reinterpret_cast<void*>(EnemyUpdate<1>),reinterpret_cast<void*>(EnemyUpdate<2>),reinterpret_cast<void*>(EnemyUpdate<3>),reinterpret_cast<void*>(EnemyUpdate<4>),reinterpret_cast<void*>(EnemyUpdate<5>)};
+    void* triggers[]={reinterpret_cast<void*>(PausedEnemyTrigger<0>),reinterpret_cast<void*>(PausedEnemyTrigger<1>),reinterpret_cast<void*>(PausedEnemyTrigger<2>),reinterpret_cast<void*>(PausedEnemyTrigger<3>)};
+    for(size_t k=0;k<kEnemyCount;++k){
+        const auto* method=api.FindMethod(api.Find("",specs[k].klass),k<3?"FixedUpdate":"Update",0);
+        enemy_update_ready[k]=Hook(method,replacements[k],original_enemy_update[k]);
+        if(k<4){const bool ready=Hook(api.FindMethod(api.Find("",specs[k].klass),k==3?"OnTriggerEnter":"OnTriggerStay",1),triggers[k],original_enemy_trigger[k]);enemy_update_ready[k]=enemy_update_ready[k]&&ready;}
+    }
+}
 bool Near(float a,float b){return std::fabs(a-b)<.0001f;}
 bool Near(Vec3 a,Vec3 b){return Near(a.x,b.x)&&Near(a.y,b.y)&&Near(a.z,b.z);}
 bool Finite(Vec3 v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);}
@@ -258,7 +290,7 @@ struct Actor {
     Root object,nav,animator,transform;size_t kind;
     std::vector<Scalar> speed_fields,animation_fields;
     float nav_base=0,nav_last=0,anim_base=1,anim_last=1;
-    bool nav_changed=false,anim_changed=false,enabled_changed=false,enabled_before=true;
+    bool nav_changed=false,anim_changed=false;
     bool stop_changed=false,stop_before=false,scale_changed=false;
     Vec3 scale_before{},scale_last{};
     std::vector<std::unique_ptr<AnimationNode>> animations;
@@ -266,20 +298,23 @@ struct Actor {
     Field* no_hit=nullptr;bool no_hit_changed=false,no_hit_before=false;
     Actor(const Api& a,Object* p,size_t k):object(a,p),nav(a),animator(a),transform(a),kind(k){}
 };
-struct Prefab {int id;Root object;std::string name;bool local=false,pickup=false;Prefab(const Api& a,int i,Object* o,std::string n,bool l=false,bool p=false):id(i),object(a,o),name(std::move(n)),local(l),pickup(p){} };
-struct LocalAmmo {Root object;double born=0;bool requested=false;LocalAmmo(const Api& a,Object* o,double now):object(a,o),born(now){}};
+struct Prefab {int id;Root object;std::string name;Prefab(const Api& a,int i,Object* o,std::string n):id(i),object(a,o),name(std::move(n)){} };
+struct CloneRecord {
+    Root object,view;Vec3 position;double born,next=0;unsigned attempts=0;bool finished=false;
+    CloneRecord(const Api& api,Object* o,Object* pv,Vec3 p,double now):object(api,o),view(api,pv),position(p),born(now){}
+    Object* Get()const{return object.Get();}
+};
 struct Runtime {
     const Api& api;
     bool initialized=false,valid=false,busy=false;
     int scene=-1;uintptr_t room_id=0,player_id=0,modern_id=0,inventory_id=0;uint64_t generation=0;
     double next_scan=0;
-    Root player,manager,inventory,attacked,player_state,script,movement,fall_damage,crossbow,shotgun,ammo_template;
+    Root player,manager,inventory,attacked,player_state,script,movement,fall_damage,crossbow,shotgun;
     std::array<Class*,kEnemyCount> classes{};
     std::array<Enemy,kEnemyCount> settings{};
     std::vector<std::unique_ptr<Actor>> actors;
     std::vector<std::unique_ptr<Prefab>> prefabs;
-    std::vector<std::unique_ptr<Root>> clones;
-    std::vector<std::unique_ptr<LocalAmmo>> local_ammo;
+    std::vector<std::unique_ptr<CloneRecord>> clones;
     bool ghost_active=false,cross_visual=false,shot_visual=false,cross_button_saved=false,shot_button_saved=false;
     Vec3 ghost_origin{};
     gameplay_bridge::Snapshot snap;
@@ -288,12 +323,12 @@ struct Runtime {
         *transform{},*scale_get{},*scale_set{},*nav_get{},*nav_set{},*nav_stop_get{},*nav_stop_set{},*nav_onmesh{},
         *anim_get{},*anim_set{},*current_room{},*master{},*queue{},*get_scene{},*mine{},*name_get{},
         *pos_get{},*rot_get{},*spawn{},*prefix_get{},*path_combine{},*network_destroy{},*local_destroy{},*view_get{},*scene_valid{},*scene_loaded{},
-        *children{},*go_transform{},*is_child{},*hand_get{},*hand_pick{},*resources_load{},*local_clone{},*rpc{},*view_id{},*find_all{},*nav_sample{},*pos_set{},*rot_set{},*active_set{},*active_get{},*cross_images{},*cross_arrow{},
-        *go_ctor{},*add_component{},*mesh_get{},*mesh_set{},*materials_get{},*materials_set{},*lossy_scale{};
+        *children{},*go_transform{},*is_child{},*hand_get{},*hand_pick{},*resources_load{},*rpc{},*view_id{},*find_all{},*nav_sample{},*pos_set{},*rot_set{},*active_set{},*active_get{},*cross_images{},*cross_arrow{},
+        *room_spawn{},*master_client{},*actor_number{},*owner_number{},*transfer_owner{},*nav_warp{};
     Class *player_class{},*manager_class{},*inventory_class{},*tie_class{},*attack_class{},*state_class{},*animator_class{},*animation_class{},*view_class{},*shotgun_class{},*pun_class{},
-        *script_class{},*movement_class{},*fall_class{},*crossbow_class{},*weapon_class{},*pickup_class{},*renderer_class{},*mono_class{},*go_class{},*mesh_filter_class{},*mesh_renderer_class{};
+        *script_class{},*movement_class{},*fall_class{},*crossbow_class{},*weapon_class{},*pickup_class{};
     std::array<Class*,3> clone_managers{};
-    explicit Runtime(const Api& a):api(a),player(a),manager(a),inventory(a),attacked(a),player_state(a),script(a),movement(a),fall_damage(a),crossbow(a),shotgun(a),ammo_template(a){}
+    explicit Runtime(const Api& a):api(a),player(a),manager(a),inventory(a),attacked(a),player_state(a),script(a),movement(a),fall_damage(a),crossbow(a),shotgun(a){}
     const Method* ResolveMethod(const char* ns,const char* c,const char* n,int count=0){return api.FindMethod(api.Find(ns,c),n,count);}
     Object* Ref(Object* o,const char* field){
         if(!o||!field)return nullptr;
@@ -342,17 +377,6 @@ struct Runtime {
         for(int i=0;i<n;++i){void* at[]={&i};Root value(api,api.Call(item,array.Get(),at,&ok));if(!ok)return false;if(Alive(value.Get()))fn(value.Get());}
         return true;
     }
-    const Method* ExactClone(){
-        if(!api.class_get_methods||!api.method_get_param_count||!api.method_get_param)return nullptr;
-        auto* c=api.Find("UnityEngine","Object");if(!c)return nullptr;
-        void* it=nullptr;const Method* found=nullptr;const char* types[]={"Object","Vector3","Quaternion"};
-        for(int n=0;n<1024;++n){auto* m=api.class_get_methods(c,&it);if(!m)break;
-            if(std::strcmp(api.method_get_name(m),"Instantiate")||api.method_get_param_count(m)!=3)continue;
-            if(api.method_is_generic&&api.method_is_generic(m))continue;
-            bool match=true;for(uint32_t i=0;i<3;++i){auto* type=api.class_from_type(api.method_get_param(m,i));if(!type||std::strcmp(api.class_get_namespace(type),"UnityEngine")||std::strcmp(api.class_get_name(type),types[i]))match=false;}
-            if(match){if(found)return nullptr;found=m;}
-        }return found;
-    }
     const Method* ExactRpc(){
         if(!api.class_get_methods||!api.method_get_param_count||!api.method_get_param)return nullptr;
         auto* c=api.Find("Photon.Pun","PhotonView");if(!c)return nullptr;
@@ -389,6 +413,17 @@ struct Runtime {
         }
         return result;
     }
+    const Method* ExactTransfer(){
+        if(!api.class_get_methods||!api.method_get_param_count||!api.method_get_param)return nullptr;
+        auto* c=api.Find("Photon.Pun","PhotonView");void* it=nullptr;const Method* found=nullptr;
+        for(int n=0;c&&n<1024;++n){const auto* m=api.class_get_methods(c,&it);if(!m)break;
+            if(std::strcmp(api.method_get_name(m),"TransferOwnership")||api.method_get_param_count(m)!=1)continue;
+            auto* t=api.class_from_type(api.method_get_param(m,0));
+            if(!t||std::strcmp(api.class_get_namespace(t),"System")||std::strcmp(api.class_get_name(t),"Int32"))continue;
+            if(found)return nullptr;
+            found=m;
+        }return found;
+    }
     bool Resolve(){
         if(!api.domain_get||!api.field_get_value||!api.field_set_value||!api.field_get_type||!api.class_from_type||
            !api.object_get_class||!api.class_get_field_from_name||!api.class_get_type||!api.type_get_object)return false;
@@ -406,25 +441,24 @@ struct Runtime {
         view_get=ResolveMethod("Photon.Pun","MonoBehaviourPun","get_photonView");
         children=ResolveMethod("UnityEngine","GameObject","GetComponentsInternal",6);go_transform=ResolveMethod("UnityEngine","GameObject","get_transform");is_child=ResolveMethod("UnityEngine","Transform","IsChildOf",1);
         hand_get=ResolveMethod("","HandlePickUpItemInteractions","hrl");hand_pick=ResolveMethod("","HandlePickUpItemInteractions","hra",2);
-        resources_load=ResolveMethod("UnityEngine","Resources","Load",2);local_clone=ExactClone();
+        resources_load=ResolveMethod("UnityEngine","Resources","Load",2);
         rpc=ExactRpc();
         view_id=ResolveMethod("Photon.Pun","PhotonView","get_ViewID");
         find_all=ResolveMethod("UnityEngine","Resources","FindObjectsOfTypeAll",1);nav_sample=ExactNavSample();
         pos_set=ResolveMethod("UnityEngine","Transform","set_position",1);rot_set=ResolveMethod("UnityEngine","Transform","set_rotation",1);active_set=ResolveMethod("UnityEngine","GameObject","SetActive",1);active_get=ResolveMethod("UnityEngine","GameObject","get_activeSelf");
         cross_images=ResolveMethod("","HandleCrossBow","ice",1);cross_arrow=ResolveMethod("","HandleCrossBow","icg",1);
-        go_class=api.Find("UnityEngine","GameObject");mesh_filter_class=api.Find("UnityEngine","MeshFilter");mesh_renderer_class=api.Find("UnityEngine","MeshRenderer");
-        go_ctor=api.FindMethod(go_class,".ctor",1);add_component=api.FindMethod(go_class,"Internal_AddComponentWithType",1);
-        mesh_get=api.FindMethod(mesh_filter_class,"get_sharedMesh",0);mesh_set=api.FindMethod(mesh_filter_class,"set_sharedMesh",1);
-        materials_get=ResolveMethod("UnityEngine","Renderer","get_sharedMaterials");materials_set=ResolveMethod("UnityEngine","Renderer","set_sharedMaterials",1);lossy_scale=ResolveMethod("UnityEngine","Transform","get_lossyScale");
         name_get=ResolveMethod("UnityEngine","Object","get_name");pos_get=ResolveMethod("UnityEngine","Transform","get_position");rot_get=ResolveMethod("UnityEngine","Transform","get_rotation");
         spawn=ResolveMethod("Photon.Pun","PhotonNetwork","Instantiate",5);path_combine=ResolveMethod("System.IO","Path","Combine",2);
+        room_spawn=ResolveMethod("Photon.Pun","PhotonNetwork","InstantiateRoomObject",5);
+        master_client=ResolveMethod("Photon.Pun","PhotonNetwork","get_MasterClient");actor_number=ResolveMethod("Photon.Realtime","Player","get_ActorNumber");
+        owner_number=ResolveMethod("Photon.Pun","PhotonView","get_OwnerActorNr");transfer_owner=ExactTransfer();nav_warp=ResolveMethod("UnityEngine.AI","NavMeshAgent","Warp",1);
         prefix_get=ResolveMethod("<PrivateImplementationDetails>{B6FBF95C-D343-4B5E-9090-977A04841BC0}","a","bvx");
         network_destroy=ExactDestroy();local_destroy=ResolveMethod("UnityEngine","Object","Destroy",1);
         player_class=api.Find("","playerController");manager_class=api.Find("","playerManager");inventory_class=api.Find("","HandlePickUpItemInteractions");tie_class=api.Find("","HandItemTie");
         attack_class=api.Find("","HandleEnemyAttacked");state_class=api.Find("","PlayerStateManager");shotgun_class=api.Find("","ShotgunManager");
         animator_class=api.Find("UnityEngine","Animator");animation_class=api.Find("UnityEngine","Animation");view_class=api.Find("Photon.Pun","PhotonView");
         pun_class=api.Find("Photon.Pun","MonoBehaviourPun");
-        script_class=api.Find("","PlayerScriptManager");movement_class=api.Find("","FirstPersonController");fall_class=api.Find("","HandleFallDemage");crossbow_class=api.Find("","HandleCrossBow");weapon_class=api.Find("","HandleShotgun");pickup_class=api.Find("","PickupItem");renderer_class=api.Find("UnityEngine","Renderer");mono_class=api.Find("UnityEngine","MonoBehaviour");
+        script_class=api.Find("","PlayerScriptManager");movement_class=api.Find("","FirstPersonController");fall_class=api.Find("","HandleFallDemage");crossbow_class=api.Find("","HandleCrossBow");weapon_class=api.Find("","HandleShotgun");pickup_class=api.Find("","PickupItem");
         clone_managers={api.Find("","GrannyManager"),api.Find("","GrandpaManager"),api.Find("","SpiderMomManager")};
         for(size_t k=0;k<kEnemyCount;++k)classes[k]=api.Find("",specs[k].klass);
         const Method* required[]={find,length,item,alive,active,enabled_get,enabled_set,go,go_active,transform,scale_get,scale_set,current_room,master,queue,get_scene,scene_valid,scene_loaded,mine};
@@ -434,11 +468,9 @@ struct Runtime {
         protect=false;ghost_enabled=ammo_enabled=false;protected_player=0;protected_manager=0;protected_attack=protected_state=protected_script=0;
         tool_movement=tool_fall=tool_crossbow=tool_shotgun=tool_inventory=0;
         DisableTools(restore);
-        if(restore){for(auto& actor:actors){Restore(*actor);CombatGuard(*actor,false);}for(auto& ammo:local_ammo)if(Alive(ammo->object.Get())){void* args[]={ammo->object.Get()};api.Call(local_destroy,nullptr,args);}}
-        if(restore&&Alive(ammo_template.Get())){void* args[]={ammo_template.Get()};api.Call(local_destroy,nullptr,args);}
-        ammo_template.Set(nullptr);
+        if(restore)for(auto& actor:actors){Restore(*actor);CombatGuard(*actor,false);}
         actors.clear();prefabs.clear();clones.clear();player.Set(nullptr);manager.Set(nullptr);inventory.Set(nullptr);attacked.Set(nullptr);player_state.Set(nullptr);
-        script.Set(nullptr);movement.Set(nullptr);fall_damage.Set(nullptr);crossbow.Set(nullptr);shotgun.Set(nullptr);local_ammo.clear();
+        script.Set(nullptr);movement.Set(nullptr);fall_damage.Set(nullptr);crossbow.Set(nullptr);shotgun.Set(nullptr);
         settings={};snap={};next_scan=0;gameplay_bridge::Clear();
         modern_id=inventory_id=0;
     }
@@ -461,7 +493,7 @@ struct Runtime {
     void FreezeAnimations(Actor& actor,bool paused){
         for(auto& n:actor.animations){if(!paused&&!n->frozen)continue;if(!Alive(n->object.Get()))continue;
             if(paused){if(!n->frozen)n->enabled=api.Value<bool>(enabled_get,n->object.Get(),false);if(Set(enabled_set,n->object.Get(),false))n->frozen=true;}
-            else if(n->frozen){if(!api.Value<bool>(enabled_get,n->object.Get(),true))Set(enabled_set,n->object.Get(),n->enabled);n->frozen=false;}
+            else if(n->frozen){if(api.Value<bool>(enabled_get,n->object.Get(),true)||Set(enabled_set,n->object.Get(),n->enabled))n->frozen=false;}
         }
     }
     void ScaleVisuals(Actor& actor,float factor){
@@ -495,17 +527,18 @@ struct Runtime {
         FreezeAnimations(a,false);ScaleVisuals(a,1);
         const bool fields_changed=std::any_of(a.speed_fields.begin(),a.speed_fields.end(),[](const auto& f){return f.changed;})||
             std::any_of(a.animation_fields.begin(),a.animation_fields.end(),[](const auto& f){return f.changed;});
-        if(!fields_changed&&!a.enabled_changed&&!a.nav_changed&&!a.anim_changed&&!a.stop_changed&&!a.scale_changed)return;
+        if(!fields_changed&&!a.nav_changed&&!a.anim_changed&&!a.stop_changed&&!a.scale_changed)return;
         if(!Alive(a.object.Get()))return;
         ScalarApply(a,a.speed_fields,1);ScalarApply(a,a.animation_fields,1);
-        if(a.enabled_changed){Set(enabled_set,a.object.Get(),a.enabled_before);a.enabled_changed=false;}
+        // Never disable the AI to pause it: OnDisable unregisters game events
+        // and may terminate coroutines. The update hook freezes its decision loop.
         if(Alive(a.nav.Get())&&api.Value<bool>(nav_onmesh,a.nav.Get(),false)){
-            if(a.nav_changed&&Near(api.Value<float>(nav_get,a.nav.Get(),-1),a.nav_last))Set(nav_set,a.nav.Get(),a.nav_base);
-            if(a.stop_changed)Set(nav_stop_set,a.nav.Get(),a.stop_before);
+            if(a.nav_changed){if(!Near(api.Value<float>(nav_get,a.nav.Get(),-1),a.nav_last)||Set(nav_set,a.nav.Get(),a.nav_base))a.nav_changed=false;}
+            if(a.stop_changed&&Set(nav_stop_set,a.nav.Get(),a.stop_before))a.stop_changed=false;
         }
         if(Alive(a.animator.Get())&&a.anim_changed&&Near(api.Value<float>(anim_get,a.animator.Get(),-1),a.anim_last))Set(anim_set,a.animator.Get(),a.anim_base);
         if(Alive(a.transform.Get())&&a.scale_changed&&Near(api.Value<Vec3>(scale_get,a.transform.Get()),a.scale_last))Set(scale_set,a.transform.Get(),a.scale_before);
-        a.nav_changed=a.anim_changed=a.stop_changed=a.scale_changed=false;
+        a.anim_changed=a.scale_changed=false;
     }
     void Apply(Actor& a){
         const auto& cfg=settings[a.kind];
@@ -513,8 +546,6 @@ struct Runtime {
         if(!Alive(a.object.Get()))return;
         ScalarApply(a,a.speed_fields,cfg.speed);ScalarApply(a,a.animation_fields,cfg.animation);
         FreezeAnimations(a,cfg.paused);ScaleVisuals(a,cfg.size);
-        if(cfg.paused&&!a.enabled_changed){a.enabled_before=api.Value<bool>(enabled_get,a.object.Get(),false);a.enabled_changed=Set(enabled_set,a.object.Get(),false);}
-        if(!cfg.paused&&a.enabled_changed){Set(enabled_set,a.object.Get(),a.enabled_before);a.enabled_changed=false;}
         if(Alive(a.nav.Get())&&nav_get&&nav_set&&api.Value<bool>(nav_onmesh,a.nav.Get(),false)){
             const float now=api.Value<float>(nav_get,a.nav.Get(),-1);
             if(std::isfinite(now)&&now>=0){
@@ -523,7 +554,7 @@ struct Runtime {
                 if(Set(nav_set,a.nav.Get(),value)){a.nav_last=value;a.nav_changed=true;}
             }
             if(cfg.paused&&!a.stop_changed){a.stop_before=api.Value<bool>(nav_stop_get,a.nav.Get(),false);a.stop_changed=Set(nav_stop_set,a.nav.Get(),true);}
-            if(!cfg.paused&&a.stop_changed){Set(nav_stop_set,a.nav.Get(),a.stop_before);a.stop_changed=false;}
+            if(!cfg.paused&&a.stop_changed&&Set(nav_stop_set,a.nav.Get(),a.stop_before))a.stop_changed=false;
         }
         if(Alive(a.animator.Get())&&anim_get&&anim_set){
             const float now=api.Value<float>(anim_get,a.animator.Get(),-1);
@@ -591,43 +622,6 @@ struct Runtime {
         Root name(api,reinterpret_cast<Object*>(api.string_new(value.c_str())));if(!name.Get())return nullptr;
         void* args[]={prefix.Get(),name.Get()};return api.Call(path_combine,nullptr,args);
     }
-    Object* AddBuiltin(Object* object,Class* type){
-        if(!type||!add_component)return nullptr;
-        Root reflected(api,api.type_get_object(api.class_get_type(type)));if(!reflected.Get())return nullptr;void* args[]={reflected.Get()};return api.Call(add_component,object,args);
-    }
-    Object* BuildAmmoVisual(Object* source){
-        if(Alive(ammo_template.Get()))return ammo_template.Get();
-        if(!api.object_new||!go_class||!go_ctor||!active_set||!mesh_filter_class||!mesh_renderer_class||!mesh_get||!mesh_set||!materials_get||!materials_set||!add_component)return nullptr;
-        Root mesh(api),materials(api),source_transform(api);
-        Children(source,mesh_filter_class,[&](Object* filter){if(mesh.Get())return;Root found_mesh(api,api.Call(mesh_get,filter)),object(api,api.Call(go,filter));if(!Alive(found_mesh.Get())||!Alive(object.Get()))return;
-            Root found_materials(api);Children(object.Get(),renderer_class,[&](Object* renderer){if(!found_materials.Get())found_materials.Set(api.Call(materials_get,renderer));});
-            if(!found_materials.Get())return;
-            mesh.Set(found_mesh.Get());materials.Set(found_materials.Get());source_transform.Set(api.Call(transform,filter));
-        });
-        if(!mesh.Get()||!materials.Get())return nullptr;
-        Root name(api,reinterpret_cast<Object*>(api.string_new("Shotgun Ammo"))),object(api,api.object_new(go_class));if(!name.Get()||!object.Get())return nullptr;
-        bool ok=false;void* ctor_args[]={name.Get()};api.Call(go_ctor,object.Get(),ctor_args,&ok);if(!ok||!Alive(object.Get()))return nullptr;
-        const auto cleanup=[&](){void* args[]={object.Get()};api.Call(local_destroy,nullptr,args);};
-        if(!Set(active_set,object.Get(),false)){cleanup();return nullptr;}
-        Root filter(api,AddBuiltin(object.Get(),mesh_filter_class)),renderer(api,AddBuiltin(object.Get(),mesh_renderer_class));
-        if(!Alive(filter.Get())||!Alive(renderer.Get())){cleanup();return nullptr;}
-        void* mesh_args[]={mesh.Get()};api.Call(mesh_set,filter.Get(),mesh_args,&ok);if(!ok){cleanup();return nullptr;}
-        void* material_args[]={materials.Get()};api.Call(materials_set,renderer.Get(),material_args,&ok);if(!ok){cleanup();return nullptr;}
-        Root t(api,api.Call(go_transform,object.Get()));const Vec3 scale=api.Value<Vec3>(lossy_scale?lossy_scale:scale_get,source_transform.Get(),Vec3{1,1,1});if(Finite(scale))Set(scale_set,t.Get(),scale);
-        ammo_template.Set(object.Get());return ammo_template.Get();
-    }
-    Object* VisualAmmoSource(Object* source){
-        Root result(api);
-        const auto accept=[&](Object* object){
-            bool has_script=false,has_view=false;
-            if(!Children(object,mono_class,[&](Object*){has_script=true;})||!Children(object,view_class,[&](Object*){has_view=true;})||has_script||has_view)return;
-            result.Set(object);
-        };
-        accept(source);
-        if(!result.Get())Children(source,renderer_class,[&](Object* renderer){if(result.Get())return;Root object(api,api.Call(go,renderer));if(Alive(object.Get()))accept(object.Get());});
-        if(!result.Get())result.Set(BuildAmmoVisual(source));
-        return result.Get();
-    }
     bool IsAmmo(Object* pickup){
         if(!pickup)return false;
         auto* field=api.class_get_field_from_name(api.object_get_class(pickup),"handObject");
@@ -647,7 +641,6 @@ struct Runtime {
             Root object(api,api.Call(go,pickup));add(object.Get());
             Root pv(api,Ref(pickup,"pv")),owner(api,pv.Get()?api.Call(go,pv.Get()):nullptr);add(owner.Get());
         });
-        Root visual(api);std::string visual_name;
         for(const auto& source:sources){
             Root text(api,api.Call(name_get,source->Get()));if(!text.Get())continue;
             std::string name=api.Utf8(reinterpret_cast<String*>(text.Get()));if(name.empty()||name.size()>160)continue;
@@ -657,22 +650,20 @@ struct Runtime {
                 if(path.Get()&&reflection.Get()){void* args[]={path.Get(),reflection.Get()};asset.Set(api.Call(resources_load,nullptr,args));}
             }
             if(Alive(asset.Get())&&HasAmmo(asset.Get())){bool has_view=false;if(Children(asset.Get(),view_class,[&](Object*){has_view=true;})&&has_view){prefabs.push_back(std::make_unique<Prefab>(api,48,asset.Get(),name));return;}}
-            if(!visual.Get()&&local_clone&&HasAmmo(source->Get())){visual.Set(VisualAmmoSource(source->Get()));if(visual.Get())visual_name=name;}
         }
-        if(visual.Get())prefabs.push_back(std::make_unique<Prefab>(api,48,visual.Get(),visual_name,true,true));
+        // Static scene ammo without a registered network prefab is deliberately
+        // unavailable. Never substitute a local visual that other clients cannot see.
     }
-    Object* Create(Prefab& prefab,Vec3 position,Quat rotation,bool& ok){
-        ok=false;void* local_args[]={prefab.object.Get(),&position,&rotation};
-        if(prefab.local){Root result(api,api.Call(local_clone,nullptr,local_args,&ok));if(ok&&Alive(result.Get())){bool on=true;void* args[]={&on};api.Call(ResolveMethod("UnityEngine","GameObject","SetActive",1),result.Get(),args,&ok);}return result.Get();}
+    Object* Create(Prefab& prefab,Vec3 position,Quat rotation,bool& ok,bool room_object=false){
+        ok=false;
         Root path(api,PathFor(prefab.name));if(!path.Get())return nullptr;
-        uint8_t group=0;void* args[]={path.Get(),&position,&rotation,&group,nullptr};return api.Call(spawn,nullptr,args,&ok);
+        uint8_t group=0;void* args[]={path.Get(),&position,&rotation,&group,nullptr};return api.Call(room_object?room_spawn:spawn,nullptr,args,&ok);
     }
     void Spawn(int id){
         if(!snap.spawn_ready){snap.status=snap.spawn_status;return;}
         const auto it=std::find_if(prefabs.begin(),prefabs.end(),[&](const auto& p){return p->id==id;});
-        if(it==prefabs.end()){snap.status=id==48?u8"Shotgun Ammo listede; gerçek mermi modeli henüz yüklenmedi.":u8"Eşya kaynağı bulunamadı.";return;}
+        if(it==prefabs.end()){snap.status=id==48?u8"Shotgun Ammo için doğrulanmış ağ prefabı yok; oluşturma kapalı.":u8"Eşya kaynağı bulunamadı.";return;}
         if(!InHierarchy(inventory.Get())||!Owned(inventory.Get(),"pv")){snap.status=u8"Eşya seçimi bu oyuncu oturumuna ait değil.";return;}
-        if(id==48&&(*it)->pickup&&local_ammo.size()>=64){snap.status=u8"Bu oturumdaki yerel mermi sınırı dolu (64). Önce mevcut mermilerden al.";return;}
         if(id<47&&hand_get&&hand_pick){
             const uint8_t current=api.Value<uint8_t>(hand_get,inventory.Get(),255);
             if(current==255){snap.status=u8"Eldeki eşya okunamadı; işlem bekletildi.";return;}
@@ -692,8 +683,7 @@ struct Runtime {
         Vec3 target=position;Quat facing=rotation;
         if(id==48&&InFront(target,facing,1.8f)&&nav_sample){NavHit floor{};float radius=1.8f;int areas=-1;void* args[]={&target,&floor,&radius,&areas};bool found_floor=false;Root result(api,api.Call(nav_sample,nullptr,args,&found_floor));const float dx=floor.position.x-target.x,dz=floor.position.z-target.z;if(found_floor&&result.Get()&&*static_cast<bool*>(api.object_unbox(result.Get()))&&floor.hit&&Finite(floor.position)&&dx*dx+dz*dz<.75f*.75f)target.y=floor.position.y+.05f;}
         Root created(api,Create(**it,target,facing,ok));
-        if(ok&&Alive(created.Get())&&(*it)->pickup){local_ammo.push_back(std::make_unique<LocalAmmo>(api,created.Get(),gameplay_bridge::Now()));snap.status=u8"Shotgun Ammo önüne kondu. Pompalı elindeyken yaklaşınca normal doldurma işlemi çalışır; bu mermi yereldir.";}
-        else snap.status=ok&&Alive(created.Get())?u8"Eşya önünde oluşturuldu; normal ağ oluşturma yolu kullanıldı.":u8"Oyun bu prefabı oluşturamadı; konum veya kaynak kaydı hazır olmayabilir.";
+        snap.status=ok&&Alive(created.Get())?u8"Eşya önünde oluşturuldu; normal ağ oluşturma yolu kullanıldı.":u8"Oyun bu prefabı oluşturamadı; konum veya kaynak kaydı hazır olmayabilir.";
     }
     void Remove(size_t kind){
         int removed=0,local=0;
@@ -786,21 +776,6 @@ struct Runtime {
         if(local_target){const bool now=ReadBool(actor.object.Get(),actor.no_hit);if(!actor.no_hit_changed||!now)actor.no_hit_before=now;bool yes=true;api.field_set_value(actor.object.Get(),actor.no_hit,&yes);actor.no_hit_changed=true;}
         else if(actor.no_hit_changed){if(ReadBool(actor.object.Get(),actor.no_hit))api.field_set_value(actor.object.Get(),actor.no_hit,&actor.no_hit_before);actor.no_hit_changed=false;}
     }
-    void CollectAmmo(){
-        if(local_ammo.empty())return;
-        if(!inventory.Get()||!Owned(inventory.Get(),"pv")||!hand_pick||!shotgun_loaded)return;
-        Root manager(api,Ref(inventory.Get(),"shotgunManager")),body(api,BodyTransform());Vec3 player_position{};Quat rotation{};if(!manager.Get()||!Pose(body.Get(),player_position,rotation))return;
-        const bool loaded=ReadBool(manager.Get(),shotgun_loaded);const auto now=gameplay_bridge::Now();
-        for(auto& token:local_ammo){
-            if(!Alive(token->object.Get()))continue;
-            Root t(api,api.Call(go_transform,token->object.Get()));Vec3 p{};Quat q{};if(!Pose(t.Get(),p,q))continue;
-            const float dx=p.x-player_position.x,dz=p.z-player_position.z,dy=p.y-player_position.y;
-            if(token->requested&&loaded){void* args[]={token->object.Get()};api.Call(local_destroy,nullptr,args);token->object.Set(nullptr);continue;}
-            if(dx*dx+dz*dz>2.25f||std::fabs(dy)>2){token->requested=false;continue;}
-            if(!loaded&&!token->requested&&now-token->born>.5&&api.Value<uint8_t>(hand_get,inventory.Get(),0)==25){uint8_t id=48;void* args[]={&id,nullptr};bool ok=false;api.Call(hand_pick,inventory.Get(),args,&ok);token->requested=ok;break;}
-        }
-        local_ammo.erase(std::remove_if(local_ammo.begin(),local_ammo.end(),[&](const auto& p){return !Alive(p->object.Get());}),local_ammo.end());
-    }
     void Kill(size_t kind){
         settings[kind]={};for(auto& a:actors)if(a->kind==kind)Restore(*a);
         bool sent=false;
@@ -844,7 +819,8 @@ struct Runtime {
         const float dx=hit.position.x-position.x,dz=hit.position.z-position.z;
         if(!sampled||!found.Get()||!*static_cast<bool*>(api.object_unbox(found.Get()))||!hit.hit||!Finite(hit.position)||dx*dx+dz*dz>.35f*.35f){snap.status=u8"Tam önünde yürünebilir zemin bulunamadı; klon oluşturulmadı.";return;}
         position=hit.position;
-        Prefab source(api,0,prefab.Get(),name);bool ok=false;Root created(api,Create(source,position,q,ok));
+        const bool own_master=api.Value<bool>(master,nullptr,false);
+        Prefab source(api,0,prefab.Get(),name);bool ok=false;Root created(api,Create(source,position,q,ok,own_master&&room_spawn));
         if(!ok||!Alive(created.Get())){snap.status=u8"Oyun klon prefabını oluşturmayı reddetti.";return;}
         Root controller(api);bool ambiguous_controller=false;
         Children(created.Get(),classes[kind],[&](Object* o){if(controller.Get()&&controller.Get()!=o)ambiguous_controller=true;controller.Set(o);});
@@ -857,7 +833,55 @@ struct Runtime {
             snap.status=u8"Klonun AI/ağ kimliği doğrulanamadı; oluşturulan nesne temizlendi.";return;
         }
         Root t(api,api.Call(go_transform,created.Get()));Set(pos_set,t.Get(),position);Set(rot_set,t.Get(),q);
-        clones.push_back(std::make_unique<Root>(api,created.Get()));snap.status=u8"Klon önündeki zeminde dik olarak oluşturuldu; AI bileşeni ve ayrı ağ kimliği doğrulandı.";next_scan=0;
+        clones.push_back(std::make_unique<CloneRecord>(api,created.Get(),pv.Get(),position,gameplay_bridge::Now()));
+        snap.status=u8"Klon oluşturuldu. AI başlangıcı ve oda sahibiyle kontrol eşleşmesi bekleniyor.";next_scan=0;
+    }
+    void UpdateClones(){
+        const double now=gameplay_bridge::Now();
+        for(auto& clone:clones){
+            if(clone->finished||now<clone->next||now-clone->born<.25)continue;
+            clone->next=now+.5;
+            if(!Alive(clone->object.Get())||!Alive(clone->view.Get())){clone->finished=true;continue;}
+            if(!master_client||!actor_number||!owner_number){clone->finished=true;snap.status=u8"Klon görünür; AI kontrolünü doğrulayacak ağ bağlantısı eksik.";continue;}
+            Root leader(api,api.Call(master_client));int leader_id=api.Value<int>(actor_number,leader.Get(),0);
+            const int owner=api.Value<int>(owner_number,clone->view.Get(),-1);
+            if(leader_id<=0||owner<0){if(now-clone->born>5)clone->finished=true;continue;}
+            const bool local_master=api.Value<bool>(master,nullptr,false);
+            if(owner==leader_id||owner==0){
+                if(local_master){
+                    bool ready=true;unsigned controllers=0;
+                    // Start has run by now. Only this newly created, locally
+                    // controlled hierarchy may be activated/placed on its mesh.
+                    for(size_t k=0;k<3;++k)Children(clone->object.Get(),classes[k],[&](Object* ai){
+                        ++controllers;Root nav(api,Ref(ai,specs[k].nav));if(!Alive(nav.Get())){ready=false;return;}
+                        if(!api.Value<bool>(enabled_get,ai,false))Set(enabled_set,ai,true);
+                        if(!api.Value<bool>(enabled_get,nav.Get(),false))Set(enabled_set,nav.Get(),true);
+                        if(!api.Value<bool>(nav_onmesh,nav.Get(),false)&&nav_warp){void* args[]={&clone->position};api.Call(nav_warp,nav.Get(),args);}
+                        if(!api.Value<bool>(nav_onmesh,nav.Get(),false)||!api.Value<bool>(enabled_get,ai,false)){ready=false;return;}
+                        if(!settings[k].paused)Set(nav_stop_set,nav.Get(),false);
+                    });
+                    if(!ready||!controllers){
+                        if(++clone->attempts>=3||now-clone->born>5){clone->finished=true;snap.status=u8"Klonun AI/NavMesh başlangıcı doğrulanamadı; saldırı/hareket hazır sayılmadı.";}
+                        continue;
+                    }
+                }
+                clone->finished=true;snap.status=u8"Klonun ağ kontrolü oda sahibiyle eşleşti; normal AI hareket ve saldırı akışı kullanılacak.";continue;
+            }
+            if(!api.Value<bool>(mine,clone->view.Get(),false)){
+                clone->finished=true;snap.status=u8"Klon görünür; kontrol başka oyuncuda. AI için oda sahibiyle eşleşme doğrulanamadı.";continue;
+            }
+            auto* policy=api.class_get_field_from_name(api.object_get_class(clone->view.Get()),"OwnershipTransfer");int mode=0;
+            if(FieldType(api,policy,"Photon.Pun","OwnershipOption"))api.field_get_value(clone->view.Get(),policy,&mode);
+            if(!transfer_owner||(mode!=1&&mode!=2)){
+                clone->finished=true;snap.status=u8"Klon ağda görünür, fakat prefabın sahipliği sabit. Bu klonun AI hareketi için oda sahibinin oluşturması gerekiyor.";continue;
+            }
+            if(clone->attempts>=3||now-clone->born>5){clone->finished=true;snap.status=u8"Klonun oda sahibine kontrol devri doğrulanamadı; hareket/saldırı hazır sayılmadı.";continue;}
+            // Only transfer our own fresh clone through the public SDK. Never
+            // edit OwnershipTransfer or forge a host/owner identity.
+            void* args[]={&leader_id};bool ok=false;api.Call(transfer_owner,clone->view.Get(),args,&ok);++clone->attempts;
+            if(!ok){clone->finished=true;snap.status=u8"Oyun klon kontrol devrini reddetti.";}
+        }
+        clones.erase(std::remove_if(clones.begin(),clones.end(),[&](const auto& clone){return !Alive(clone->object.Get());}),clones.end());
     }
     void Capabilities(){
         for(size_t k=0;k<kEnemyCount;++k){snap.enemies[k].death_ready=false;snap.enemies[k].clone_ready=false;}
@@ -992,18 +1016,24 @@ struct Runtime {
             if(command.kind==gameplay_bridge::Kind::KillEnemy){Kill(command.enemy);continue;}
             if(command.kind==gameplay_bridge::Kind::CloneEnemy){Clone(command.enemy);continue;}
             settings[command.enemy]=command.kind==gameplay_bridge::Kind::ResetEnemy?Enemy{}:command.settings;
+            if(!enemy_update_ready[command.enemy])settings[command.enemy].paused=false;
             snap.status=authority?u8"Düşman ayarları uygulandı; sıfırlama özgün değerleri geri yükler.":u8"Düşman ayarları bu cihazda uygulandı; diğer oyunculardaki sonuç ağ yetkisine bağlıdır.";
         }
         protect=snap.god&&snap.god_ready;protected_player=player.h;protected_manager=manager.h;protected_scene=scene;protected_room=room_id;
         protected_attack=attacked.h;protected_state=player_state.h;protected_script=script.h;
         tool_movement=movement.h;tool_fall=fall_damage.h;tool_crossbow=crossbow.h;tool_shotgun=shotgun.h;tool_inventory=inventory.h;
-        UpdateTools();CollectAmmo();
+        UpdateTools();if(snap.ready)UpdateClones();
         if(snap.ready)for(auto& a:actors){Apply(*a);CombatGuard(*a,snap.god&&snap.god_ready);}
-        for(size_t k=0;k<kEnemyCount;++k){const auto observed=snap.enemies[k];snap.enemies[k]=settings[k];snap.enemies[k].count=observed.count;snap.enemies[k].death_ready=observed.death_ready;snap.enemies[k].clone_ready=observed.clone_ready;}
+        for(size_t k=0;k<kEnemyCount;++k){const auto observed=snap.enemies[k];snap.enemies[k]=settings[k];snap.enemies[k].count=observed.count;snap.enemies[k].death_ready=observed.death_ready;snap.enemies[k].clone_ready=observed.clone_ready;snap.enemies[k].pause_ready=enemy_update_ready[k];}
         gameplay_bridge::Publish(snap);
     }
 };
 Runtime* runtime=nullptr;
+bool EnemyPaused(Object* object,size_t kind){
+    if(std::this_thread::get_id()!=unity_thread||!runtime||!runtime->snap.ready||kind>=kEnemyCount||!runtime->settings[kind].paused||!WorldMatches())return false;
+    for(const auto& actor:runtime->actors)if(actor->kind==kind&&actor->object.Get()==object)return true;
+    return false;
+}
 }
 void Install(const Api& api){
     if(hooks_installed)return;
@@ -1018,6 +1048,7 @@ void Install(const Api& api){
     if(!room_method||!mine_method||!scene_valid_method||!scene_loaded_method)return;
     InstallModern(api);
     InstallTools(api);
+    InstallEnemyUpdates(api);
     auto* player=api.Find("","playerController");auto* manager=api.Find("","playerManager");if(!player||!manager)return;
     player_view=api.class_get_field_from_name(player,"qsa");if(!room_method||!mine_method||(!player_view&&!view_method)||!scene_valid_method||!scene_loaded_method)return;
     const bool a=Hook(api.FindMethod(manager,"die",0),reinterpret_cast<void*>(Die),original_die);

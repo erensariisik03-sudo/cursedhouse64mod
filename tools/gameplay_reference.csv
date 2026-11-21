@@ -67,3 +67,14 @@ UnityEngine,GameObject,.ctor,public void .ctor() { },// RVA: 0x4D78B0C Offset: 0
 UnityEngine,GameObject,.ctor,"public void .ctor(string name, Type[] components) { }",// RVA: 0x4D78B70 Offset: 0x4D74B70 VA: 0x4D78B70,reference only; resolved by metadata at runtime
 UnityEngine,Transform,get_lossyScale,public Vector3 get_lossyScale() { },// RVA: 0x4D87D34 Offset: 0x4D83D34 VA: 0x4D87D34,reference only; resolved by metadata at runtime
 UnityEngine.AI,NavMesh,SamplePosition,"public static bool SamplePosition(Vector3 sourcePosition, out NavMeshHit hit, float maxDistance, int areaMask) { }",// RVA: 0x4D04F2C Offset: 0x4D00F2C VA: 0x4D04F2C,reference only; resolved by metadata at runtime
+,EnemyAIGrandpaMulti,OnTriggerStay,public virtual void OnTriggerStay(Collider other) { },// RVA: 0x276ED28 Offset: 0x276AD28 VA: 0x276ED28 Slot: 54,reference only; resolved by metadata at runtime
+,EnemyAIGrannyMulti,OnTriggerStay,public virtual void OnTriggerStay(Collider other) { },// RVA: 0x2798D4C Offset: 0x2794D4C VA: 0x2798D4C Slot: 54,reference only; resolved by metadata at runtime
+,SpiderMomAIController,OnTriggerStay,private void OnTriggerStay(Collider other) { },// RVA: 0x25890B4 Offset: 0x25850B4 VA: 0x25890B4,reference only; resolved by metadata at runtime
+,SpiderControllerMulti,OnTriggerEnter,private void OnTriggerEnter(Collider other) { },// RVA: 0x25A7B04 Offset: 0x25A3B04 VA: 0x25A7B04,reference only; resolved by metadata at runtime
+Photon.Realtime,Player,get_ActorNumber,public int get_ActorNumber() { },// RVA: 0x42CAFF8 Offset: 0x42C6FF8 VA: 0x42CAFF8,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonNetwork,get_MasterClient,public static Player get_MasterClient() { },// RVA: 0x42E1518 Offset: 0x42DD518 VA: 0x42E1518,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonNetwork,InstantiateRoomObject,"public static GameObject InstantiateRoomObject(string prefabName, Vector3 position, Quaternion rotation, byte group = 0, object[] data) { }",// RVA: 0x42EB4C4 Offset: 0x42E74C4 VA: 0x42EB4C4,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonView,get_OwnerActorNr,public int get_OwnerActorNr() { },// RVA: 0x42F7C24 Offset: 0x42F3C24 VA: 0x42F7C24,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonView,TransferOwnership,public void TransferOwnership(Player newOwner) { },// RVA: 0x42F843C Offset: 0x42F443C VA: 0x42F843C,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonView,TransferOwnership,public void TransferOwnership(int newOwnerId) { },// RVA: 0x42F8638 Offset: 0x42F4638 VA: 0x42F8638,reference only; resolved by metadata at runtime
+UnityEngine,CharacterController,Move,public CollisionFlags Move(Vector3 motion) { },// RVA: 0x4DF2948 Offset: 0x4DEE948 VA: 0x4DF2948,reference only; resolved by metadata at runtime

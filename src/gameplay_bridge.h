@@ -11,7 +11,7 @@
 namespace gameplay_bridge {
 inline constexpr size_t kEnemies=6;
 inline constexpr const char* kNames[kEnemies]={"Granny","Grandpa","MomSpider","Spider","Crow","Rat"};
-struct Enemy { int count=0;bool paused=false;float speed=1,animation=1,size=1;bool death_ready=false,clone_ready=false; };
+struct Enemy { int count=0;bool paused=false;float speed=1,animation=1,size=1;bool death_ready=false,clone_ready=false,pause_ready=false; };
 struct Item { int id=0;std::string name;bool available=true; };
 struct Snapshot {
     uint64_t context=0;bool ready=false,authority=false,spawn_ready=false,god_ready=false,god=false;

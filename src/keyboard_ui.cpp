@@ -601,7 +601,7 @@ void GameplaySectionBody(float key_height,float content){
         ActionKey("Seçili eşyayı oluştur",content,key_height,[queue,context=s.context,id=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::Spawn,context};c.item=id;queue(c);});
         ImGui::EndDisabled();
         if(!s.spawn_ready)ImGui::TextWrapped("%s",s.spawn_status.c_str());
-        ImGui::TextWrapped("Oluşturulabilir eşya: %d",static_cast<int>(s.items.size()));
+        ImGui::TextWrapped("Oluşturulabilir eşya: %d",static_cast<int>(std::count_if(s.items.begin(),s.items.end(),[](const auto& item){return item.available;})));
         if(!s.items.empty()){
             const float list_height=std::min(key_height*4,std::max(key_height,ImGui::GetContentRegionAvail().y-ImGui::GetStyle().ItemSpacing.y));
             if(ImGui::BeginChild("##game_items",ImVec2(0,list_height),false)){
@@ -627,7 +627,7 @@ void GameplaySectionBody(float key_height,float content){
             ImGui::EndChild();
         }
         ImGui::EndDisabled();
-        if(std::any_of(s.items.begin(),s.items.end(),[](const auto& item){return !item.available;}))ImGui::TextWrapped("Gri eşyanın gerçek kaynağı henüz yüklenmedi; liste otomatik yenilenir.");
+        if(std::any_of(s.items.begin(),s.items.end(),[](const auto& item){return !item.available;}))ImGui::TextWrapped("Shotgun Ammo için gerçek ağ prefabı bulunamadıysa oluşturma kapalıdır; yerel görsel kopya üretilmez.");
         ImGui::TextWrapped("Listeyi düğmelerin üzerinden sürükleyebilirsin. Yeni eşya ele gelir; aynısı eldeyse kopyası önüne oluşur. Farklı eldeki eşya önce bırakılır. Mermi doğrudan önüne oluşur.");
         break;
     }
@@ -648,7 +648,10 @@ void GameplaySectionBody(float key_height,float content){
         const auto send=[queue,context=s.context,enemy=selected](gameplay_bridge::Enemy value){gameplay_bridge::Command c{gameplay_bridge::Kind::EnemySettings,context};c.enemy=enemy;c.settings=value;queue(c);};
         ImGui::Text("Bulunan: %d",s.enemies[selected].count);
         ImGui::BeginDisabled(s.enemies[selected].count==0);
+        ImGui::BeginDisabled(!s.enemies[selected].pause_ready);
         ActionKey(edit.paused?"Devam et":"Durdur",content,key_height,[send,enemy=selected,value=edit]()mutable{value.paused=!value.paused;if(selected==enemy)edit=value;send(value);},edit.paused);
+        ImGui::EndDisabled();
+        if(!s.enemies[selected].pause_ready)ImGui::TextWrapped("Durdurma hareket bağlantısı bu düşman için hazır değil.");
         editing=false;
         ImGui::BeginDisabled(selected==4);
         ImGui::SetNextItemWidth(content);
@@ -658,10 +661,11 @@ void GameplaySectionBody(float key_height,float content){
         if(ImGui::SliderFloat("##enemy_animation",&edit.animation,.1f,3.f,u8"Animasyon: %.1fx"))send(edit);
         editing|=ImGui::IsItemActive();
         ImGui::SetNextItemWidth(content);
-        if(ImGui::SliderFloat("##enemy_size",&edit.size,.25f,selected==4?20.f:3.f,u8"Boyut: %.2fx"))send(edit);
+        if(ImGui::SliderFloat("##enemy_size",&edit.size,.25f,selected==4?20.f:3.f,u8"Boyut (yerel): %.2fx"))send(edit);
         editing|=ImGui::IsItemActive();
         ActionKey("Bu düşmanın ayarlarını sıfırla",content,key_height,[queue,context=s.context,enemy=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::ResetEnemy,context};c.enemy=enemy;queue(c);editing=false;});
         ImGui::EndDisabled();ImGui::EndDisabled();
+        ImGui::TextWrapped("Boyut yalnız bu cihazda değişir; karşı oyuncuya ölçek aktarımı doğrulanmadı.");
         if(selected>=4)ImGui::TextWrapped("Crow ve Rat ayarları yereldir; diğer oyuncularda aynı görünmeyebilir.");
         if(selected==4)ImGui::TextWrapped("Crow için ayrı hareket hızı alanı bulunmadı; animasyon hızını kullanabilirsin.");
         break;
