@@ -12,6 +12,7 @@
 #include "auto_join.h"
 #include "chat_bot_http.h"
 #include "chat_shortcut.h"
+#include "chat_send_gate.h"
 #include "native_shortcuts.h"
 #include "dobby.h"
 #include <EGL/egl.h>
@@ -51,6 +52,7 @@ using Unary = void (*)(Object*, const Method*);
 using Event = void (*)(Object*, Object*, const Method*);
 Unary g_activate = nullptr, g_update = nullptr, g_disable = nullptr;
 Unary g_late = nullptr, g_changed = nullptr, g_submit_callback = nullptr;
+Unary g_chat_send = nullptr;
 Event g_deselect = nullptr;
 using Swap = EGLBoolean (*)(EGLDisplay, EGLSurface);
 Swap g_swap = nullptr;
@@ -284,13 +286,27 @@ Object* ChatOwner(Object* input) {
     }
     return chosen;
 }
+void SendChat(Object* self,const Method* method) {
+    if(!self||!m.chatAllowed||!g_api.field_get_value||!g_api.field_set_value){g_chat_send(self,method);return;}
+    ScopedRoot owner(self);
+    if(!owner.Get()){g_chat_send(self,method);return;}
+    bool before=false;g_api.field_get_value(owner.Get(),m.chatAllowed,&before);
+    struct Permit {
+        Object* owner;bool old,changed=false;
+        Permit(Object* o,bool value):owner(o),old(value){
+            if(!old){changed=true;bool yes=true;g_api.field_set_value(owner,m.chatAllowed,&yes);}
+        }
+        ~Permit(){if(changed)g_api.field_set_value(owner,m.chatAllowed,&old);}
+    } permit(owner.Get(),before);
+    g_chat_send(self,method);
+}
 bool QuickSend(Object* object,uint64_t generation) {
     if(g_api.Value<int>(m.inputType,object)==2)return false;
     ScopedRoot owner(ChatOwner(object));
     if(generation!=g_generation)return true;
     if(!owner.Get())return false;
     bool allowed=false;g_api.field_get_value(owner.Get(),m.chatAllowed,&allowed);
-    if(!allowed)return false; // Keep the game's own send cooldown.
+    if(!chat_send_gate::Available(allowed))return false;
     bool ok=false;
     ScopedRoot text(reinterpret_cast<Object*>(g_api.string_new(chat_shortcut::kPayload)));
     if(!text.Get())return false;
@@ -307,7 +323,7 @@ bool QuickSend(Object* object,uint64_t generation) {
     Object* stillOwned=nullptr;
     g_api.field_get_value(owner.Get(),m.chatInput,&stillOwned);
     g_api.field_get_value(owner.Get(),m.chatAllowed,&allowed);
-    if(stillOwned!=object||!allowed||!Alive(owner.Get())){
+    if(stillOwned!=object||!chat_send_gate::Available(allowed)||!Alive(owner.Get())){
         g_applied=accepted;return true;
     }
     // SendMessage was inspected in this exact game's native binary: it uses
@@ -489,6 +505,10 @@ void InstallFromUnityFrame() {
         Hook(Entry(m.submit), reinterpret_cast<void*>(Submit), g_submit_callback, "TMP.SendOnSubmit") &&
         Hook(Entry(m.late), reinterpret_cast<void*>(LateUpdate), g_late, "TMP.LateUpdate") &&
         Hook(Entry(m.activate), reinterpret_cast<void*>(Activate), g_activate, "TMP.ActivateInputFieldInternal");
+    if(ready&&m.chatSend&&m.chatAllowed&&g_api.field_set_value){
+        const bool installed=Hook(Entry(m.chatSend),reinterpret_cast<void*>(SendChat),g_chat_send,"ChatManager.SendMessage");
+        chat_send_gate::ready.store(installed,std::memory_order_release);
+    }
     if (ready) g_rules = game_text_rules::Install(g_api);
     if (ready) auto_join::Install(g_api); // dolu odaya otomatik katılma (JoinRoom adını ve 'Game full' hatasını izler)
     if (ready) ad_block::Install(g_api); // banner/geçiş reklamı engeli (ödüllü reklamlara dokunmaz)

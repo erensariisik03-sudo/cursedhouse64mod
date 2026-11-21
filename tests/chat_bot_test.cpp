@@ -209,6 +209,14 @@ int main() {
         assert(lines.size()>=5&&lines.size()<=8&&lines.front()==std::string("<#888F>")+chat_shortcut::kPayload);
         for(const auto& line:lines)assert(ScalarCount(line)<=200);
     }
+    for(auto event:{chat_bot_fx::Event::Start,chat_bot_fx::Event::Stop,chat_bot_fx::Event::Model}){
+        const auto lines=chat_bot_fx::Lines(event,"SECRET_PROVIDER_ID",true);
+        for(const auto& line:lines){
+            assert(line.find("SECRET_PROVIDER_ID")==std::string::npos);
+            assert(line.find("IL2CPP")==std::string::npos&&line.find("ChatManager")==std::string::npos);
+        }
+    }
+    assert(chat_bot_fx::Lines(chat_bot_fx::Event::Profile,u8"İmam",true).back().find(u8"MODEL: İMAM")!=std::string::npos);
     // Kalıcı ayar
     {
         Config c; c.key = "AIza\\x"; c.mode = 2; c.all = true; c.custom = "satır1\nsatır2";

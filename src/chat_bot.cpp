@@ -2,6 +2,7 @@
 #include "chat_bot_bridge.h"
 #include "chat_bot_core.h"
 #include "chat_bot_fx.h"
+#include "chat_send_gate.h"
 #include "chat_bot_engine.h"
 #include "chat_bot_http.h"
 #include "keyboard_bridge.h"
@@ -361,7 +362,7 @@ class Controller {
         if (now - outbox_since > kOutboxTimeout) { Status(u8"AI | Cevap gönderilemedi (sohbet beklemede/odakta)."); DropOutbox(); return false; }
         Root owner(api, ChatOwner()); if (!owner.Get()) return false;
         bool allowed = false; api.field_get_value(owner.Get(), allowed_field, &allowed);
-        if (!allowed) return false; // oyunun kendi bekleme süresi
+        if (!chat_send_gate::Available(allowed)) return false;
         Object* tmp = nullptr; api.field_get_value(owner.Get(), input_field, &tmp);
         Root input(api, tmp); if (!input.Get() || !IsAlive(input.Get())) return false;
         bool ok = false;

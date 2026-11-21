@@ -168,18 +168,19 @@ Taslak/odak koruması, sohbet bekleme süresi ve zaman aşımı bu mesajlarda da
 
 ### Açılış/kapanış ve model durum akışı
 
-Bot açılırken, kapatılırken, kişilik değiştirilirken ve başarılı yanıtta gerçek
-model değiştiğinde oyun sohbetine kısa bir kod/durum animasyonu hazırlanır.
-İlk satır mevcut büyük kare kısayolunu `<#888F>` ile griye boyar; ardından açık
-renkli `AI::BOOT`, `AI::LINK`, `AI::ROUTE`, `AI::READY` benzeri satırlar akar.
-Bu satırlar görsel durum metinleridir; AI isteği üretmez.
+Bot açılırken, kapatılırken, kişilik ve model değişiminde oyun sohbetine her
+olay için farklı, **tamamen kurgusal Linux terminali** satırları hazırlanır.
+Gerçek oyun sınıfları, API isimleri, sağlayıcı veya gerçek model kimliği gösterilmez.
+Son satır herkesin anlayacağı biçimde `AI AKTİF`, `MODEL: İMAM`, `AI KAPANDI`
+veya `AI MODELİ GÜNCELLENDİ` der. İlk satır mevcut büyük kare kısayolunu
+`<#888F>` ile griye boyar. Akış saniyede en çok 6, olay başına 5–7 satırdır.
 
-Akış **saniyede en çok 6 satır**, olay başına **5–7 satır** ile sınırlıdır.
-Sadece bu satırın `ChatManager.SendMessage` çağrısı sırasında yerel
-`canSendMessage` bayrağı gerekirse geçici açılır; önceki kapalı değer çağrı
-bitince geri yüklenir. Normal yanıtlar aynı yetkiyi kullanmaz. Sunucunun kendi
-sınırı varsa bu kod onu değiştirmez. Gerekli IL2CPP yazma API'si yoksa olağan
-bekleme süresi geçerlidir.
+Yerel bekleme izni artık bütün `ChatManager.SendMessage` çağrılarına uygulanır:
+normal gönder düğmesi, kare kısayolu ve AI gönderimleri aynı genel kancadan geçer.
+Bayrak yalnız çağrı boyunca geçici açılır ve önceki kapalı değer geri konur;
+kalıcı açık bayrak veya yeni ağ paketi kullanılmaz. AI'nin ayrı yanıt aralıkları ve
+taslak/odak koruması korunur. Gerekli API veya kanca kullanılamazsa oyunun olağan
+kontrolü geçerli kalır. Sunucu sınırları bu değişiklikten etkilenmez.
 
 Oyuncu yazarken/taslak varken gönderim bekler. Akış beş saniyede tamamlanamazsa
 kalanı iptal edilir; yeni olay eskisinin yerine geçer ve odadan çıkınca temizlenir.

@@ -90,6 +90,10 @@ void FreeRoot(Handle h){roots.erase(h);}
 const Type* ClassType(Class*){return reinterpret_cast<const Type*>(1);}
 Object* TypeObject(const Type*){return reflection;}
 void FieldValue(Object* self,Field* field,void* out){assert(self==chat);if(field==m.chatInput)*static_cast<Object**>(out)=matching_field?Self():nullptr;else *static_cast<bool*>(out)=!cooldown;}
+void WriteChatFlag(Object* owner,Field* field,void* value){
+ assert(owner==chat&&field==m.chatAllowed);cooldown=!*static_cast<bool*>(value);
+}
+void OriginalChatSend(Object* owner,const Method*){Object* error=nullptr;FakeInvoke(m.chatSend,owner,nullptr,&error);}
 void NoEvent(Object*,Object*,const Method*){}
 void NoUnary(Object*,const Method*){}
 void* Unbox(Object* self){return self;}
@@ -205,6 +209,11 @@ int main(){
  Reset();Activate(Self(),nullptr);cooldown=true;Queue(chat_shortcut::kPayload,true,true);Tick();
  assert(chat_sends==0&&editor.text==chat_shortcut::kPayload);
  cooldown=false;Queue(chat_shortcut::kPayload,true,true);Tick();assert(chat_sends==1);End();
+ Reset();cooldown=true;editor.text="manual chat";g_chat_send=OriginalChatSend;g_api.field_set_value=WriteChatFlag;
+ chat_send_gate::ready=true;SendChat(chat,nullptr);
+ assert(chat_sends==1&&sent=="manual chat"&&cooldown&&roots.empty());
+ assert(chat_send_gate::Available(false));chat_send_gate::ready=false;assert(!chat_send_gate::Available(false));
+ g_api.field_set_value=nullptr;
  std::cout<<"Android editor: native typing/autocorrection, latest-text FIFO shortcuts, UTF-16 caret/selection, 1024-scalar callback/submit cap, restore/reentry/fallback and stale session rejection: PASS\n";
  std::cout<<"Native square shortcut: normal chat send, cooldown/owner checks, native refocus, newer Android draft and scene guards: PASS\n";
 }

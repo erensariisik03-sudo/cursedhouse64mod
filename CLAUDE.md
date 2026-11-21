@@ -37,6 +37,7 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   selam eşleştirmesiyle yutmayın. İsim hatırlatmaları yalnız bot/isim süzgeci
   açıkken çalışır; normal yanıtlar, taslaklar ve oyun bekleme süresi önceliklidir.
 
-- Kullanıcının istediği durum animasyonunda yalnız tek SendMessage çağrısı
-  çevresinde canSendMessage için kapsamlı geri-yükleme koruması kullanılır.
-  Normal sohbetin kontrolünü kaldırmayın; olay akışını 6 satır/sn ve 5 sn ile sınırlayın.
+- Kullanıcının son isteğiyle yerel gönderim izni tüm ChatManager.SendMessage
+  çağrılarına uygulanır; bayrağı yalnız çağrı boyunca değiştirip geri yükleyin.
+  Durum akışını 6 satır/sn ve 5 sn ile sınırlayın; gerçek uygulama ayrıntıları
+  yerine kurgusal terminal satırları ve anlaşılır Türkçe sonuç yazın.
