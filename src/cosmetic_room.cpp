@@ -4,6 +4,7 @@
 #include <chrono>
 #include <vector>
 #include <algorithm>
+#include <sstream>
 
 #define ROOM_LOG(...) __android_log_print(ANDROID_LOG_INFO,"multiplayermod",__VA_ARGS__)
 namespace cosmetic_room {
@@ -248,6 +249,90 @@ struct Runtime {
         });
         return applied;
     }
+    // One requested snapshot on Unity's thread. No setters, publishers or RPCs.
+    void ProbeNetwork() {
+        if(!is_mine||!api.object_get_class){
+            wardrobe_bridge::SetDiagnostics(u8"Ağ incelemesi: sahiplik API'si hazır değil.");return;
+        }
+        std::ostringstream report;
+        report<<u8"Son ağ incelemesi (düğmeye bastığın an)\n";
+        bool incomplete=false;
+        int object_budget=256;
+        auto each=[&](Class* klass,auto&& visit){
+            if(!klass){incomplete=true;return;}
+            const auto* type=api.class_get_type(klass);Root managed_type(api,type?api.type_get_object(type):nullptr);
+            if(!managed_type.Get()){incomplete=true;return;}
+            int exclude=0,sort=0;void* args[]={managed_type.Get(),&exclude,&sort};bool ok=false;
+            Root objects(api,api.Call(find,nullptr,args,&ok));
+            Root count(api,ok&&objects.Get()?api.Call(array_length,objects.Get(),nullptr,&ok):nullptr);
+            if(!ok||!count.Get()){incomplete=true;return;}
+            const int n=*static_cast<int*>(api.object_unbox(count.Get()));
+            if(n<0||n>64){incomplete=true;return;}
+            for(int i=0;i<n;++i){
+                void* index[]={&i};Root object(api,api.Call(array_item,objects.Get(),index,&ok));
+                if(!ok){incomplete=true;continue;}
+                if(IsAlive(object.Get())&&Bool(active,object.Get()))visit(object.Get());
+            }
+        };
+        auto size=[&](Object* object,const char* field,bool array)->int{
+            Root container(api,Ref(object,field));if(!container.Get())return -1;
+            const Method* length=array?array_length:api.FindMethod(api.object_get_class(container.Get()),"get_Count",0);
+            bool ok=false;Root count(api,api.Call(length,container.Get(),nullptr,&ok));
+            if(!ok||!count.Get())return -1;
+            const int n=*static_cast<int*>(api.object_unbox(count.Get()));
+            return n>=0&&n<=512?n:-1;
+        };
+        auto own=[&](Object* object,const char* field){Root pv(api,Ref(object,field));return pv.Get()&&IsAlive(pv.Get())&&Bool(is_mine,pv.Get());};
+        auto live_slots=[&](Object* object,const char* field,int n)->int{
+            if(n<0||n>object_budget){incomplete=true;return -1;}
+            Root values(api,Ref(object,field));if(!values.Get()){incomplete=true;return -1;}
+            object_budget-=n;int live=0;
+            for(int i=0;i<n;++i){
+                void* index[]={&i};bool ok=false;Root value(api,api.Call(array_item,values.Get(),index,&ok));
+                if(!ok){incomplete=true;return -1;}
+                if(IsAlive(value.Get()))++live;
+            }
+            return live;
+        };
+        Root local(api,Call(player));int actor=-1;
+        if(local.Get()&&actor_number){Root number(api,Call(actor_number,local.Get()));if(number.Get())actor=*static_cast<int*>(api.object_unbox(number.Get()));}
+        int lobby_own=0,modern_own=0,legacy_own=0,legacy_lobby_own=0;
+        if(actor>0)each(lobby_class,[&](Object* object){
+            auto* f=api.class_get_field_from_name(api.object_get_class(object),"ownerActorId");int owner_id=-1;
+            if(f)api.field_get_value(object,f,&owner_id);
+            if(owner_id==actor)++lobby_own;
+        });else incomplete=true;
+        report<<u8"Kendi bekleme odası karakterin: "<<lobby_own<<"\n";
+        each(loader_class,[&](Object* object){
+            if(!own(object,"pv"))return;
+            ++modern_own;const int acc=size(object,"accessories",false),skin=size(object,"skins",false);
+            if(acc<0||skin<0)incomplete=true;
+            report<<u8"Yeni yükleyici #"<<modern_own<<u8": aksesuar="<<acc<<u8", kıyafet="<<skin<<"\n";
+            ROOM_LOG("v24 wardrobe-probe modern=%d accessories=%d skins=%d",modern_own,acc,skin);
+        });
+        each(api.Find("","playerObjectData"),[&](Object* object){
+            if(!own(object,"PV"))return;
+            ++legacy_lobby_own;const int acc=size(object,"accessories",true);
+            const int live=live_slots(object,"accessories",acc);
+            if(acc<0)incomplete=true;
+            report<<u8"Eski oda bileşeni #"<<legacy_lobby_own<<u8": aksesuar yuvası="<<acc<<u8", nesne="<<live<<"\n";
+            ROOM_LOG("v24 wardrobe-probe legacy-lobby=%d accessories=%d live=%d",legacy_lobby_own,acc,live);
+        });
+        each(api.Find("","playerObjectDataInGame"),[&](Object* object){
+            if(!own(object,"PV"))return;
+            ++legacy_own;const int acc=size(object,"accessories",true),rag=size(object,"accessoriesRagdoll",true);
+            const int live=live_slots(object,"accessories",acc),rag_live=live_slots(object,"accessoriesRagdoll",rag);
+            if(acc<0||rag<0)incomplete=true;
+            report<<u8"Eski maç bileşeni #"<<legacy_own<<u8": aksesuar yuvası="<<acc<<u8", nesne="<<live<<u8"; ragdoll="<<rag<<u8", nesne="<<rag_live<<"\n";
+            ROOM_LOG("v24 wardrobe-probe legacy-match=%d accessories=%d live=%d ragdoll=%d rag-live=%d",legacy_own,acc,live,rag,rag_live);
+        });
+        report<<u8"Sahipliği doğrulanan: yeni="<<modern_own<<u8", eski oda="<<legacy_lobby_own<<u8", eski maç="<<legacy_own<<"\n";
+        if(incomplete)report<<u8"Bazı alanlar/sahiplik okunamadı; -1 bilinmiyor demektir.\n";
+        report<<u8"Nesne sayısı canlı Unity nesnesidir; görünürlük veya karşı tarafta güncelleme garantisi değildir.\n";
+        report<<u8"Oda ve maç içinde ayrı ayrı bu düğmeye basıp sonuçları karşılaştır.";
+        ROOM_LOG("v24 wardrobe-probe summary own-lobby=%d modern=%d legacy-lobby=%d legacy-match=%d incomplete=%d",lobby_own,modern_own,legacy_lobby_own,legacy_own,incomplete?1:0);
+        wardrobe_bridge::SetDiagnostics(report.str());
+    }
     // Çık-gir: diğer cihazlar kıyafeti yalnız oyuncu odaya girerken okur (PlayerCosmeticsLoader.Awake).
     // Yalnız Photon'un normal LeaveRoom/JoinRoom çağrıları; oda kapalı/tek kişilik ise denenmez.
     size_t ActiveCount(Class* klass){
@@ -292,13 +377,15 @@ struct Runtime {
         }
     }
     void Tick(double now){
-        if(disabled||busy)return;
+        if(disabled){if(wardrobe_bridge::TakeProbe())wardrobe_bridge::SetDiagnostics(u8"Ağ incelemesi: kıyafet metadata bağlantısı kullanılamıyor.");return;}
+        if(busy)return;
         if(!started){started=true;start=now+3;return;}
         if(now<start)return;
         if(now<next_poll)return;
         next_poll=now+0.1;
         struct Guard{bool& f;explicit Guard(bool& b):f(b){f=true;}~Guard(){f=false;}}guard(busy);
         if(!initialized){initialized=true;if(!Resolve()){disabled=true;ROOM_LOG("v13 room: metadata unavailable; existing wardrobe/keyboard retained");return;}}
+        if(wardrobe_bridge::TakeProbe())ProbeNetwork();
         Root account(api,Call(uid));const auto account_text=Text(account.Get());
         // UID is retained only as an account/session boundary. Clothing choices
         // themselves are read from the active LockerManager below.

@@ -25,6 +25,12 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
 - Kıyafet/dans/sohbet için mevcut oyun akışını ve yerel sahiplik kontrollerini
   koruyun. Yeni ağ paketleri, tahmini RPC veya bulut/satın alma çağrıları eklemeyin.
 - Oyun panelinin devre dışı kontrolleri yalnız arayüz taslağıdır.
+- Kıyafet panelindeki Ağ inceleme yalnız istek üzerine, Unity karesinde çalışan
+  salt okunur sahne ölçümüdür. PhotonView sahipliği/oda aktör kimliği doğrulanır;
+  metadata adları çözülür, sabit alan offset'i/RVA kullanılmaz. Dizi nesnesi okuma
+  bütçesi 256'dır. Bu ölçümden uzaktaki istemcide canlı kombin eşitlemesi sonucu
+  çıkarmayın. Eski RPC_syncPlayerDataRunTime yalnız aksesuar nesnelerini açan bir
+  aday yoldur; eski aksesuarı kapatma/tam skin yenileme doğrulanmadan bağlamayın.
 - Dobby bu paket için uyarlanmıştır. Bağımlılık lisanslarını ve ImGui'nin
   mevcut context kaybı uzantısını koruyun.
 - Kullanıcı açıkça istemedikçe yerel build veya C++ test derlemesi çalıştırmayın.

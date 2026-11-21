@@ -110,6 +110,20 @@ tekrar kontrol et; panel oyunun gardırop kart listelerini okur. Seçimler mevcu
 oyun/oda akışından uygulanır. **Dans** paneli geçerli yerel oyuncu ve animasyon
 hedefini bekler; hedef hazır değilse işlem devre dışı kalır.
 
+**Kıyafet → Ağ inceleme**, Unity iş parçacığında tek seferlik bir sahne ölçümü
+yapar. Kendi oyuncuna ait yeni kıyafet yükleyicilerini, eski oda/maç aksesuar
+bileşenlerini, katalog/dizi yuvalarını ve eski dizilerdeki canlı Unity nesnelerini
+sayar. İnceleme başına en çok 256 dizi elemanı okunur; eksik/okunamayan sonuç
+`-1` olarak gösterilir. Sonuç panelde kalır ve `v24 wardrobe-probe` etiketiyle
+logcat'e yazılır; sohbet metni, oyuncu adı veya API anahtarı içermez.
+
+Önce bekleme odasında, sonra maç içinde düğmeye basıp iki ekran görüntüsünü
+karşılaştır. Bu ölçüm nesnenin ekranda görünür olduğunu veya diğer istemcilerin
+değişikliği uyguladığını kanıtlamaz. İnceleme RPC/paket göndermez, kıyafet
+değiştirmez ve çık-gir başlatmaz. Mevcut çık-gir düğmesi bekleme odasında elle
+kullanılır; maçta devre dışıdır. Çık-gir gerektirmeyen tam kombin eşitlemesi
+henüz uygulanmış değildir.
+
 ### AI sohbet
 
 1. Odaya girip menünün **AI** bölümünü aç.

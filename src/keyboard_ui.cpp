@@ -667,7 +667,11 @@ void WardrobeBody(const ImGuiIO& io,float key_height,float content){
             ImGui::PushID("wd_rejoin");
             ActionKey("Çık-gir: herkese uygula",content,key_height,[]{wardrobe_bridge::RequestRejoin();InvalidateKeys();});
             ImGui::PopID();
-            ImGui::TextWrapped("Diğer oyuncular kıyafeti yalnız odaya girişte okur. Seçimi yaptıktan sonra buna bas: odadan çıkıp aynı odaya yeniden girer.");
+            ImGui::TextWrapped("Bekleme odasında yeniden katılıp seçimi diğerlerine uygular. Maç sırasında bu işlem kullanılmaz.");
+            ImGui::PushID("wd_network_probe");
+            ActionKey("Ağ inceleme",content,key_height,[]{wardrobe_bridge::RequestProbe();InvalidateKeys();});
+            ImGui::PopID();
+            if(!s.diagnostics.empty())ImGui::TextWrapped("%s",s.diagnostics.c_str());
 }
 // "Game full" hatasından sonra yalnız o durumda görünen küçük düğme: oda boşalınca otomatik bağlan.
 void DrawAutoJoin(const ImGuiIO& io){
