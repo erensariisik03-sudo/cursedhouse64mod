@@ -9,6 +9,7 @@
 #include "chat_bot_core.h"
 #include "auto_join_bridge.h"
 #include "wardrobe_bridge.h"
+#include "gameplay_bridge.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include <algorithm>
@@ -571,54 +572,90 @@ void BotBody(const ImGuiIO& io,float key_height,float content,float max_height){
             if(!s.last_out.empty())ImGui::TextWrapped("Son cevap: %s",s.last_out.c_str());
 }
 void GameplaySectionBody(float key_height,float content){
-    const auto back=[&]{g_gameplay_page=-1;InvalidateKeys();};
+    const auto s=gameplay_bridge::Read();
+    const auto back=[]{g_gameplay_page=-1;InvalidateKeys();};
     ImGui::PushID("gameplay_back");
     ActionKey(u8"← Bölümlere dön",content,key_height,back);
     ImGui::PopID();
-
-    ImGui::Spacing();
-    ImGui::TextWrapped("Bu bölüm tek oyunculu / izole test kullanımı için hazırlanıyor.");
-    ImGui::TextWrapped("1.8 çalışma zamanı doğrulaması tamamlanmadığı için oyun etkisi oluşturan kontroller şimdilik kapalı.");
-
-    // Disabled controls are deliberately visible but cannot enqueue touch actions.
-    // This avoids presenting unverified 1.7.4 offsets as working 1.8 features.
-    ImGui::BeginDisabled(true);
+    ImGui::Spacing();ImGui::TextWrapped("%s",s.status.c_str());
+    if(!s.ready)ImGui::TextWrapped("Kendi maç karakterin hazır olduğunda kontroller açılır.");
+    const auto queue=[](gameplay_bridge::Command c){gameplay_bridge::Queue(c);InvalidateKeys();};
+    const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
     switch(g_gameplay_page){
-        case 0: // Item spawn
-            ImGui::TextWrapped("Eşya seçimi ve spawn: 1.8 envanter API doğrulaması bekleniyor.");
-            ActionKey("Seçili eşyayı elime getir",content,key_height,[]{});
-            break;
-        case 1: // Enemy freeze
-            ImGui::SeparatorText("Düşman hareketini durdur");
-            ImGui::TextWrapped("Düşman sınıfları için yalnızca yerel test oturumunda kullanılacak kontroller.");
-            { const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
-              for(int i=0;i<5;++i){
-                  if(i%2)ImGui::SameLine();
-                  const char* names[]={"Granny","MomSpider","Spider","Crow","Rat"};
-                  ImGui::PushID(i+400);ActionKey(names[i],half,key_height,[]{});ImGui::PopID();
-              }
-            }
-            break;
-        case 2: // Enemy elimination
-            ImGui::SeparatorText("Düşmanı etkisizleştir");
-            ImGui::TextWrapped("Yalnızca oyunun izin verdiği yerel test senaryolarında; ağ RPC'si veya oda durumuna müdahale olmadan.");
-            { const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
-              for(int i=0;i<5;++i){
-                  if(i%2)ImGui::SameLine();
-                  const char* names[]={"Granny","MomSpider","Spider","Crow","Rat"};
-                  ImGui::PushID(i+500);ActionKey(names[i],half,key_height,[]{});ImGui::PopID();
-              }
-            }
-            break;
-        case 3: // God mode
-            ImGui::SeparatorText("Oyuncu dayanıklılığı");
-            ImGui::TextWrapped("Hasar / ölüm akışına ilişkin 1.8 yerel metotları ve güvenli kapatma davranışı doğrulanana kadar kapalı.");
-            ActionKey("God Mode — doğrulama bekliyor",content,key_height,[]{});
-            break;
-        default:
-            break;
+    case 0:{
+        static int selected=0;
+        if(!s.items.empty()&&std::none_of(s.items.begin(),s.items.end(),[&](const auto& v){return v.id==selected;}))selected=s.items.front().id;
+        ImGui::TextWrapped("Oluşturulabilir eşya: %d",static_cast<int>(s.items.size()));
+        ImGui::BeginDisabled(!s.spawn_ready);
+        ImGui::BeginChild("##game_items",ImVec2(0,key_height*4),false);
+        for(const auto& item:s.items){
+            ImGui::PushID(item.id);
+            ActionKey(item.name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[id=item.id]{selected=id;InvalidateKeys();},item.id==selected);
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        ActionKey("Seçili eşyayı önüme oluştur",content,key_height,[queue,context=s.context,id=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::Spawn,context};c.item=id;queue(c);});
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("Eşya önüne bırakılır; ardından normal şekilde alabilirsin. İki oluşturma arasında bir saniye beklenir.");
+        break;
     }
-    ImGui::EndDisabled();
+    case 1:{
+        static size_t selected=0,previous=gameplay_bridge::kEnemies;
+        static gameplay_bridge::Enemy edit;
+        static bool editing=false;
+        if(!s.authority)ImGui::TextWrapped("Düşman ayarları oda yöneticisinde kullanılabilir.");
+        ImGui::BeginDisabled(!s.ready||!s.authority);
+        for(size_t k=0;k<gameplay_bridge::kEnemies;++k){
+            if(k%2)ImGui::SameLine();
+            ImGui::PushID(static_cast<int>(k)+400);
+            ActionKey(gameplay_bridge::kNames[k],half,key_height,[k]{selected=k;InvalidateKeys();},selected==k);
+            ImGui::PopID();
+        }
+        if(!editing||previous!=selected)edit=s.enemies[selected];
+        previous=selected;
+        const auto send=[queue,context=s.context,enemy=selected](gameplay_bridge::Enemy value){gameplay_bridge::Command c{gameplay_bridge::Kind::EnemySettings,context};c.enemy=enemy;c.settings=value;queue(c);};
+        ImGui::Text("Bulunan: %d",s.enemies[selected].count);
+        ImGui::BeginDisabled(s.enemies[selected].count==0);
+        ActionKey(edit.paused?"Devam et":"Durdur",content,key_height,[send,enemy=selected,value=edit]()mutable{value.paused=!value.paused;if(selected==enemy)edit=value;send(value);},edit.paused);
+        editing=false;
+        ImGui::BeginDisabled(selected==4);
+        ImGui::SetNextItemWidth(content);
+        if(ImGui::SliderFloat("##enemy_speed",&edit.speed,.1f,5.f,u8"Hız: %.1fx"))send(edit);
+        editing|=ImGui::IsItemActive();ImGui::EndDisabled();
+        ImGui::SetNextItemWidth(content);
+        if(ImGui::SliderFloat("##enemy_animation",&edit.animation,.1f,3.f,u8"Animasyon: %.1fx"))send(edit);
+        editing|=ImGui::IsItemActive();
+        ImGui::SetNextItemWidth(content);
+        if(ImGui::SliderFloat("##enemy_size",&edit.size,.25f,3.f,u8"Boyut: %.2fx"))send(edit);
+        editing|=ImGui::IsItemActive();
+        ActionKey("Bu düşmanın ayarlarını sıfırla",content,key_height,[queue,context=s.context,enemy=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::ResetEnemy,context};c.enemy=enemy;queue(c);editing=false;});
+        ImGui::EndDisabled();ImGui::EndDisabled();
+        if(selected>=4)ImGui::TextWrapped("Crow ve Rat ayarları yereldir; diğer oyuncularda aynı görünmeyebilir.");
+        if(selected==4)ImGui::TextWrapped("Crow için ayrı hareket hızı alanı bulunmadı; animasyon hızını kullanabilirsin.");
+        break;
+    }
+    case 2:
+        ImGui::TextWrapped("Düşman nesnesini kaldırır. Normal ölüm animasyonu, süreli bayılma ve ödül akışı çalıştırılmaz.");
+        if(!s.authority)ImGui::TextWrapped("Bu işlem için oda yöneticisi olmalısın.");
+        ImGui::BeginDisabled(!s.ready||!s.authority);
+        for(size_t k=0;k<gameplay_bridge::kEnemies;++k){
+            if(k%2)ImGui::SameLine();
+            ImGui::PushID(static_cast<int>(k)+500);ImGui::BeginDisabled(s.enemies[k].count==0);
+            ActionKey(gameplay_bridge::kNames[k],half,key_height,[queue,context=s.context,k]{gameplay_bridge::Command c{gameplay_bridge::Kind::RemoveEnemy,context};c.enemy=k;queue(c);});
+            ImGui::EndDisabled();ImGui::PopID();
+        }
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("Crow ve Rat yalnız bu cihazda kaldırılır. Granny, Grandpa, MomSpider ve Spider için sahip olduğun ağ nesnesi kaldırılır.");
+        break;
+    case 3:
+        ImGui::SeparatorText("Oyuncu dayanıklılığı");
+        ImGui::BeginDisabled(!s.god_ready);
+        ActionKey(s.god?"God Mode AÇIK - kapat":"God Mode KAPALI - aç",content,key_height,[queue,context=s.context,on=!s.god]{gameplay_bridge::Command c{gameplay_bridge::Kind::God,context};c.flag=on;queue(c);},s.god);
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("Kendi karakterinin AI ve ölüm girişlerini engeller. Ölüm başladıktan sonra açmak karakteri yeniden canlandırmaz; tüm çevresel senaryoları kapsadığı doğrulanmadı.");
+        break;
+    default:break;
+    }
 }
 void GameplayBody(float key_height,float content){
     if(g_gameplay_page>=0){
@@ -667,11 +704,7 @@ void WardrobeBody(const ImGuiIO& io,float key_height,float content){
             ImGui::PushID("wd_rejoin");
             ActionKey("Çık-gir: herkese uygula",content,key_height,[]{wardrobe_bridge::RequestRejoin();InvalidateKeys();});
             ImGui::PopID();
-            ImGui::TextWrapped("Bekleme odasında yeniden katılıp seçimi diğerlerine uygular. Maç sırasında bu işlem kullanılmaz.");
-            ImGui::PushID("wd_network_probe");
-            ActionKey("Ağ inceleme",content,key_height,[]{wardrobe_bridge::RequestProbe();InvalidateKeys();});
-            ImGui::PopID();
-            if(!s.diagnostics.empty())ImGui::TextWrapped("%s",s.diagnostics.c_str());
+            ImGui::TextWrapped("Diğer oyuncular kıyafeti yalnız odaya girişte okur. Seçimi yaptıktan sonra buna bas: odadan çıkıp aynı odaya yeniden girer.");
 }
 // "Game full" hatasından sonra yalnız o durumda görünen küçük düğme: oda boşalınca otomatik bağlan.
 void DrawAutoJoin(const ImGuiIO& io){

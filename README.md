@@ -19,7 +19,7 @@ paneller ImGui ile OpenGL ES 3 üzerinden çizilir; oyun bağlantıları
 | AI sohbet | Gemini API anahtarıyla seçilen oyuncunun yeni mesajlarına otomatik yanıt, kişilik ve sohbet hafızası |
 | Oda bağlantısı | Dolu odaya bağlantı denemesini kullanıcı başlattığında tekrar etme |
 | Reklam | Mevcut reklam engelleme entegrasyonu |
-| Oyun paneli | Eşya spawn, düşman durdurma, düşman öldürme ve God Mode başlıkları; kontroller henüz devre dışı |
+| Oyun paneli | Mevcut eşya prefablarından oluşturma, düşman durdurma/hız/animasyon/boyut, düşman nesnesi kaldırma ve kendi karakterine God Mode |
 
 Klavye sınırı 1024 Unicode karakteridir. Oyun veya sunucu tarafındaki diğer
 sınırların aynı uzunluğu kabul ettiği varsayılmaz. Emoji listesi bütün emojileri
@@ -110,19 +110,53 @@ tekrar kontrol et; panel oyunun gardırop kart listelerini okur. Seçimler mevcu
 oyun/oda akışından uygulanır. **Dans** paneli geçerli yerel oyuncu ve animasyon
 hedefini bekler; hedef hazır değilse işlem devre dışı kalır.
 
-**Kıyafet → Ağ inceleme**, Unity iş parçacığında tek seferlik bir sahne ölçümü
-yapar. Kendi oyuncuna ait yeni kıyafet yükleyicilerini, eski oda/maç aksesuar
-bileşenlerini, katalog/dizi yuvalarını ve eski dizilerdeki canlı Unity nesnelerini
-sayar. İnceleme başına en çok 256 dizi elemanı okunur; eksik/okunamayan sonuç
-`-1` olarak gösterilir. Sonuç panelde kalır ve `v24 wardrobe-probe` etiketiyle
-logcat'e yazılır; sohbet metni, oyuncu adı veya API anahtarı içermez.
+### Oyun kontrolleri
 
-Önce bekleme odasında, sonra maç içinde düğmeye basıp iki ekran görüntüsünü
-karşılaştır. Bu ölçüm nesnenin ekranda görünür olduğunu veya diğer istemcilerin
-değişikliği uyguladığını kanıtlamaz. İnceleme RPC/paket göndermez, kıyafet
-değiştirmez ve çık-gir başlatmaz. Mevcut çık-gir düğmesi bekleme odasında elle
-kullanılır; maçta devre dışıdır. Çık-gir gerektirmeyen tam kombin eşitlemesi
-henüz uygulanmış değildir.
+Bu sürüm ağ inceleme eklenmeden önceki `system-terminal-testfix` tabanından
+devam eder. Kıyafet inceleme düğmesi dahil değildir. Mevcut klavye/AI akışı korunur.
+
+- **Eşya spawn:** Kendi `HandlePickUpItemInteractions.handItemTies` listesindeki
+  gerçek prefabları listeler. Seçilen eşyayı **önüme oluştur** düğmesi, oyunun
+  eşya bırakırken kullandığı kaynak dizini ve `PhotonNetwork.Instantiate` yoluyla
+  önündeki bırakma noktasında oluşturur. Eşyayı ardından normal şekilde alırsın.
+  Kaynak adı tahmin edilmez; boş/çift kimlikli prefablar listelenmez. İki deneme
+  arasında bir saniye vardır. Oyunun kaynak havuzu/oda kuralları çağrıyı reddedebilir.
+- **Düşman durdur:** Granny, Grandpa, MomSpider, Spider, Crow ve Rat için seçim
+  sunar. Durdur/devam, hız çarpanı, animasyon çarpanı, boyut ve sıfırlama vardır.
+  Bu kontroller oda yöneticisinde açılır. Crow için doğrulanan ayrı bir hareket
+  hızı alanı olmadığından o sürgü kapalıdır; animasyon ayarı kullanılabilir.
+  Crow/Rat değişiklikleri yereldir. Özgün değerler saklanır; sıfırlama bunları
+  geri yükler, sonradan oyun tarafından değiştirilmiş alanlar korunur.
+- **Düşman öldür:** Bu başlık altındaki işlem **nesne kaldırmadır**; normal
+  vurulma, süreli bayılma, ragdoll, başarı veya ödül akışını taklit etmez.
+  Granny/Grandpa/MomSpider/Spider için yalnız sahibi olduğun Photon nesnesine
+  oyunun normal ağdan silme API'si çağrılır. Crow/Rat için yerel Unity nesnesi
+  kaldırılır. Sahne nesnesi/PUN kuralları kaldırmayı reddedebilir; durum metni
+  çağrıyı bildirir, diğer istemcide sonuç alındığını iddia etmez.
+- **God Mode:** Yalnız kendi oyuncu nesnenin doğrulanan AI/ölüm girişlerini ve
+  playerManager ölüm girişini engeller. MomSpider ölüm coroutine'i kendi oyuncuna
+  aitse durdurulur. Kapalıyken, başka oyuncuda, farklı odada/sahnede veya Unity
+  iş parçacığı dışında özgün metotlar çalışır. Ölmüş karakteri diriltmez; ölüm
+  animasyonu başlamadan açılmalıdır. Bütün çevresel tehlikeleri ve sunucudaki
+  kararları engellediği doğrulanmış değildir.
+
+Metot/alanlar çalışma anında metadata isimleriyle çözülür; gönderilen eski C++
+dosyasındaki sabit RVA'lar ve Grandpa'ya kopyalanmış Granny offset'leri kullanılmaz.
+Yeni bağlantıların inceleme envanteri `tools/gameplay_reference.csv` içindedir;
+bu dosya çalışma anı adres yapılandırması değildir. Aynı ariteye sahip
+`PhotonNetwork.Destroy` overload'ları parametre tipiyle ayrılır.
+
+Renderer yalnız sayısal ayarları ve oturum kimlikli komutları kuyruğa koyar.
+Unity çağrıları Unity karesinde yapılır; eski oda/karakterden gelen ve üç saniyeden
+eski komutlar atılır. Yeni oda/sahne/karakter oturumunda ayarlar sıfırlanır.
+Desteklenmeyen metadata veya henüz oluşmamış karakterde kontroller kapalı kalır.
+God Mode bağlantılarından biri eksikse bu düğme etkinleştirilmez.
+
+Yeni host testleri kapalı God Mode'un özgün çağrıları iletmesini; oyuncu, oda,
+sahne ve iş parçacığı sınırlarını; coroutine ve GC handle davranışını; hızın
+üst üste çarpılmamasını ve geri yüklemeyi; eski UI komutlarının reddini denetler.
+Yerel build/C++ test derlemesi çalıştırılmadı; GitHub CI ve cihaz davranışı
+ayrıca doğrulanmalıdır.
 
 ### AI sohbet
 

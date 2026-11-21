@@ -14,7 +14,7 @@ build/tests/text_buffer_test
 build/tests/keyboard_ui_test
 "${CXX:-g++}" -std=c++17 -fPIC -shared -I src tests/fake_il2cpp.cpp -o build/tests/libil2cpp.so
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Wno-unused-parameter -I tests/stubs -I src -I include \
-    tests/startup_test.cpp src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/ad_block.cpp src/auto_join.cpp -ldl -pthread -o build/tests/startup_test
+    tests/startup_test.cpp src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/ad_block.cpp src/auto_join.cpp src/gameplay.cpp -ldl -pthread -o build/tests/startup_test
 LD_LIBRARY_PATH="$PWD/build/tests${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" build/tests/startup_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I tests/stubs -I src \
     tests/emoji_support_test.cpp src/emoji_support.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/emoji_support_test
@@ -31,7 +31,7 @@ build/tests/username_gate_test
     tests/game_text_rules_test.cpp src/game_text_rules.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/game_text_rules_test
 build/tests/game_text_rules_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Wno-unused-parameter -I tests/stubs -I src -I include \
-    tests/unity_editor_test.cpp src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/ad_block.cpp src/auto_join.cpp \
+    tests/unity_editor_test.cpp src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/ad_block.cpp src/auto_join.cpp src/gameplay.cpp \
     -ldl -pthread -o build/tests/unity_editor_test
 build/tests/unity_editor_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src \
@@ -58,3 +58,6 @@ build/tests/chat_bot_runtime_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src -pthread \
     tests/chat_bot_test.cpp -o build/tests/chat_bot_test
 build/tests/chat_bot_test
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I tests/stubs -I src -pthread \
+    tests/gameplay_test.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/gameplay_test
+build/tests/gameplay_test

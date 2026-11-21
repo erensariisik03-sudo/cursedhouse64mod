@@ -7,6 +7,7 @@
 #include "observer_target.h"
 #include "cosmetic_catalog.h"
 #include "cosmetic_room.h"
+#include "gameplay.h"
 #include "chat_bot.h"
 #include "ad_block.h"
 #include "auto_join.h"
@@ -419,6 +420,7 @@ void Update(Object* self, const Method* method) {
     // Pause scene discovery/mutations while Photon suspends its message queue
     // for a scene load. Release UI roots but retain the native desired strings.
     const bool loading=m.messageQueue&&!g_api.Value<bool>(m.messageQueue,nullptr,true);
+    gameplay::Pump(g_api,loading);
     if(loading)cosmetic_room::Pump(g_api,true);
     else if (!g_editing.load()) { cosmetic_room::Pump(g_api); cosmetic_catalog::Pump(g_api); }
     // Skip uGUI processing for the gesture that began on the keyboard, including its UP.
@@ -527,6 +529,7 @@ void InstallFromUnityFrame() {
     if (ready) g_rules = game_text_rules::Install(g_api);
     if (ready) auto_join::Install(g_api); // dolu odaya otomatik katılma (JoinRoom adını ve 'Game full' hatasını izler)
     if (ready) ad_block::Install(g_api); // banner/geçiş reklamı engeli (ödüllü reklamlara dokunmaz)
+    if (ready) gameplay::Install(g_api);
     g_ready.store(ready, std::memory_order_release);
     LOGI("v19 Integration %s; native keyboard active; shortcut strip uses GLES and Unity touch input", ready ? "ready" : "disabled");
 }

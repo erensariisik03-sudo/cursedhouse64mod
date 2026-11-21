@@ -14,14 +14,12 @@ struct Snapshot {
     std::vector<std::string> items[2];
     std::string selected[2];
     std::string status;
-    std::string diagnostics;
 };
 struct Request { bool pending = false; size_t category = 0; std::string id; };
 inline std::mutex mutex;
 inline Snapshot state;
 inline Request request;
 inline bool rejoin_requested = false;
-inline bool probe_requested = false;
 inline Snapshot Read() { std::lock_guard<std::mutex> l(mutex); return state; }
 inline void SetWardrobeLists(std::vector<std::string> accessories, std::vector<std::string> skins) {
     std::lock_guard<std::mutex> l(mutex);
@@ -41,8 +39,5 @@ inline bool Select(size_t category, const std::string& id) {
 }
 inline void RequestRejoin() { std::lock_guard<std::mutex> l(mutex); rejoin_requested = true; }
 inline bool TakeRejoin() { std::lock_guard<std::mutex> l(mutex); const bool r = rejoin_requested; rejoin_requested = false; return r; }
-inline void RequestProbe() { std::lock_guard<std::mutex> l(mutex); probe_requested=true; state.diagnostics=u8"Ağ incelemesi için Unity karesi bekleniyor..."; }
-inline bool TakeProbe() { std::lock_guard<std::mutex> l(mutex); const bool r=probe_requested; probe_requested=false; return r; }
-inline void SetDiagnostics(const std::string& text) { std::lock_guard<std::mutex> l(mutex); state.diagnostics=text; }
 inline Request Take() { std::lock_guard<std::mutex> l(mutex); Request r = std::move(request); request = {}; return r; }
 }

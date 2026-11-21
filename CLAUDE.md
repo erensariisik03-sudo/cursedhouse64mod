@@ -24,13 +24,18 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   komşu API girişleri üzerine yazmayı reddeder.
 - Kıyafet/dans/sohbet için mevcut oyun akışını ve yerel sahiplik kontrollerini
   koruyun. Yeni ağ paketleri, tahmini RPC veya bulut/satın alma çağrıları eklemeyin.
-- Oyun panelinin devre dışı kontrolleri yalnız arayüz taslağıdır.
-- Kıyafet panelindeki Ağ inceleme yalnız istek üzerine, Unity karesinde çalışan
-  salt okunur sahne ölçümüdür. PhotonView sahipliği/oda aktör kimliği doğrulanır;
-  metadata adları çözülür, sabit alan offset'i/RVA kullanılmaz. Dizi nesnesi okuma
-  bütçesi 256'dır. Bu ölçümden uzaktaki istemcide canlı kombin eşitlemesi sonucu
-  çıkarmayın. Eski RPC_syncPlayerDataRunTime yalnız aksesuar nesnelerini açan bir
-  aday yoldur; eski aksesuarı kapatma/tam skin yenileme doğrulanmadan bağlamayın.
+- Kullanıcının isteğiyle Oyun paneli gameplay modülüne bağlanmıştır. Taban
+  system-terminal-testfix sürümüdür; kıyafet ağ inceleme denemesi dahil değildir.
+  Eski düşman dosyasındaki RVA/offset'leri taşımayın. Grandpa'nın güncel kendi
+  sınıf/alanlarını çözün. Enemy alanı yazmadan önce Single tipini doğrulayın.
+  Eşya prefablarını kendi aktif envanterindeki HandItemTie kayıtlarından alın;
+  oyun kaynak yolu çözücüsü ve normal Instantiate yolunu koruyun. Ağdan kaldırma
+  yalnız oda yöneticisinde ve sahipliği doğrulanan nesneye uygulanır. Nesne
+  kaldırmayı normal ölüm/ödül akışı diye sunmayın. God Mode yalnız köklü kendi
+  oyuncu/manager nesnesi için, aynı oda/sahnede ve Unity thread'inde engeller;
+  diğer tüm çağrıları asıl metotlara iletin. Coroutine MoveNext ABI'sini koruyun.
+  Dokunma callback'lerinde render karesinin yerel değişkenlerini referansla
+  yakalamayın; oturum, seçim ve komut değerlerini kopyalayın.
 - Dobby bu paket için uyarlanmıştır. Bağımlılık lisanslarını ve ImGui'nin
   mevcut context kaybı uzantısını koruyun.
 - Kullanıcı açıkça istemedikçe yerel build veya C++ test derlemesi çalıştırmayın.

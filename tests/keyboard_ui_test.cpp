@@ -185,7 +185,7 @@ int main() {
   Direct(u8"← Bölümlere dön");Frame();Frame();
   for(auto label:{"Eşya spawn","Düşman durdur","Düşman öldür","God Mode"})assert(items.count(label));
   Direct("Eşya spawn");Frame();Frame();
-  assert(items.count("Seçili eşyayı elime getir")&&!items.count("Düşman durdur"));
+  assert(items.count("Seçili eşyayı önüme oluştur")&&!items.count("Düşman durdur"));
   Direct(u8"← Bölümlere dön");Frame();Frame();
   Direct("AI");Frame();Frame();
   keyboard_ui::SetVisible(true);Frame();assert(!items.count("##hub_btn")&&!items.count("AI")&&items.count("q"));

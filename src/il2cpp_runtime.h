@@ -43,6 +43,9 @@ struct Api {
     Object* (*type_get_object)(const Type*);
     const Type* (*field_get_type)(Field*);
     Class* (*class_from_type)(const Type*);
+    const Method* (*class_get_methods)(Class*,void**); // optional exact-overload discovery
+    uint32_t (*method_get_param_count)(const Method*);
+    const Type* (*method_get_param)(const Method*,uint32_t);
     bool Load(void* library);
     Class* Find(const char* namespc, const char* name) const;
     const Method* FindMethod(Class* klass, const char* name, int count) const;

@@ -18,6 +18,7 @@ bool Api::Load(void* library) {
     OPTIONAL(class_get_nested_types)
     OPTIONAL(field_get_value) OPTIONAL(field_set_value) OPTIONAL(class_get_type) OPTIONAL(type_get_object)
     OPTIONAL(field_get_type) OPTIONAL(class_from_type)
+    OPTIONAL(class_get_methods) OPTIONAL(method_get_param_count) OPTIONAL(method_get_param)
 #undef OPTIONAL
     return true;
 }

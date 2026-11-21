@@ -1,0 +1,19 @@
+Namespace,Class,Method,Signature,DumpAddressComment,Usage
+,de,Update,private void Update() { },// RVA: 0x246F944 Offset: 0x246B944 VA: 0x246F944,reference only; resolved by metadata at runtime
+,EnemyAIGrandpaMulti,FixedUpdate,private void FixedUpdate() { },// RVA: 0x2767830 Offset: 0x2763830 VA: 0x2767830,reference only; resolved by metadata at runtime
+,EnemyAIGrannyMulti,FixedUpdate,private void FixedUpdate() { },// RVA: 0x27915FC Offset: 0x278D5FC VA: 0x27915FC,reference only; resolved by metadata at runtime
+,pj,Update,private void Update() { },// RVA: 0x24CDD10 Offset: 0x24C9D10 VA: 0x24CDD10,reference only; resolved by metadata at runtime
+,playerController.qr,MoveNext,private bool MoveNext() { },// RVA: 0x2513190 Offset: 0x250F190 VA: 0x2513190 Slot: 6,reference only; resolved by metadata at runtime
+,playerController,RPC_playerDies,private void RPC_playerDies(string killerName) { },// RVA: 0x24E0164 Offset: 0x24DC164 VA: 0x24E0164,reference only; resolved by metadata at runtime
+,playerController,RPC_playerDiesBySpider,private void RPC_playerDiesBySpider() { },// RVA: 0x24EC118 Offset: 0x24E8118 VA: 0x24EC118,reference only; resolved by metadata at runtime
+,playerController,RPC_playerKilledByAI,private void RPC_playerKilledByAI() { },// RVA: 0x24F562C Offset: 0x24F162C VA: 0x24F562C,reference only; resolved by metadata at runtime
+,playerController,RPC_playerDiesBySpiderAIGranny,private void RPC_playerDiesBySpiderAIGranny() { },// RVA: 0x24F610C Offset: 0x24F210C VA: 0x24F610C,reference only; resolved by metadata at runtime
+,playerManager,die,public void die() { },// RVA: 0x25267BC Offset: 0x25227BC VA: 0x25267BC,reference only; resolved by metadata at runtime
+,HandlePickUpItemInteractions,hrd,"private void hrd(bool a, bool b = False, bool c = True) { }",// RVA: 0x253EF38 Offset: 0x253AF38 VA: 0x253EF38,reference only; resolved by metadata at runtime
+,SpiderMomAIController,FixedUpdate,private void FixedUpdate() { },// RVA: 0x2589920 Offset: 0x2585920 VA: 0x2589920,reference only; resolved by metadata at runtime
+,SpiderControllerMulti,Update,private void Update() { },// RVA: 0x25A6EB8 Offset: 0x25A2EB8 VA: 0x25A6EB8,reference only; resolved by metadata at runtime
+<PrivateImplementationDetails>{B6FBF95C-D343-4B5E-9090-977A04841BC0},a,bvx,public static string bvx() { },// RVA: 0x26AEAFC Offset: 0x26AAAFC VA: 0x26AEAFC,reference only; resolved by metadata at runtime
+UnityEngine.SceneManagement,SceneManager,GetActiveScene,public static Scene GetActiveScene() { },// RVA: 0x4D8C730 Offset: 0x4D88730 VA: 0x4D8C730,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonNetwork,Instantiate,"public static GameObject Instantiate(string prefabName, Vector3 position, Quaternion rotation, byte group = 0, object[] data) { }",// RVA: 0x42EAB0C Offset: 0x42E6B0C VA: 0x42EAB0C,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonNetwork,Destroy,public static void Destroy(PhotonView targetView) { },// RVA: 0x42EC1C4 Offset: 0x42E81C4 VA: 0x42EC1C4,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonNetwork,Destroy,public static void Destroy(GameObject targetGo) { },// RVA: 0x42EC8AC Offset: 0x42E88AC VA: 0x42EC8AC,reference only; resolved by metadata at runtime
