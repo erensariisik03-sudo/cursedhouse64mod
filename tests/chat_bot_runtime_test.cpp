@@ -116,6 +116,13 @@ struct Harness {
  void Tick(double at){now=at;bot.Tick(now);assert(f.roots.empty()&&!chat_send_gate::status_alias&&!chat_send_gate::active_status_alias);}
  void Step(){Tick(now+.5);}
  void Message(const std::string& s){f.Message(s);Step();}
+ void ExpectReply(const std::string& text,size_t expected=1)const{
+  // Timed reminders may follow a reply. Verify the complete reply and its
+  // sender, rather than assuming it is still the last item in the chat log.
+  assert(f.sent.size()==f.sent_names.size());size_t count=0;
+  for(size_t i=0;i<f.sent.size();++i)if(f.sent[i]==text){assert(f.sent_names[i]==f.own);++count;}
+  assert(count==expected);
+ }
  void Drain(){for(int i=0;i<8;++i){Step();std::this_thread::sleep_for(std::chrono::milliseconds(1));}
   for(int i=0;i<400;++i){Step();if(!chat_bot_bridge::Read().busy)return;std::this_thread::sleep_for(std::chrono::milliseconds(2));}assert(false&&"HTTP worker timeout");}
 };
@@ -141,7 +148,7 @@ int main(){
   }
   const auto count=h.f.sent.size();h.Message("merhaba");h.Step();assert(h.f.sent.size()==count&&http_calls==0);
   Response("Ali, dünya kütleçekim nedeniyle yuvarlaktır.");h.Message("Bot merhaba, dünya neden yuvarlak?");h.Drain();h.Step();
-  assert(http_calls==1&&h.f.sent.back().find("kütleçekim")!=std::string::npos);
+  assert(http_calls==1);h.ExpectReply("Ali, dünya kütleçekim nedeniyle yuvarlaktır.");
   const int requests=http_calls;h.Message("Veli merhaba");h.Step();assert(http_calls==requests);
   h.Message("asdasdasdasd");h.Step();assert(http_calls==requests);
  }
@@ -152,7 +159,13 @@ int main(){
   assert(h.f.sent[0].find(u8"saygılı")!=std::string::npos);
   const auto warnings=h.f.sent.size();h.Message("Bot siktir git");h.Step();assert(h.f.sent.size()==warnings&&http_calls==0);
   Response("Ali, oyun ayarlarını kontrol edebilirsin.");h.Message("Bot amk oyun nasıl oynanır?");h.Drain();h.Step();
-  assert(http_calls==1&&h.f.sent.back().find("ayarlarını")!=std::string::npos);
+  assert(http_calls==1);h.ExpectReply("Ali, oyun ayarlarını kontrol edebilirsin.");
+  // Only the expected reply or an ordinary timed name hint may follow the
+  // warning pair. Extra warnings, missing replies and unexpected text fail.
+  for(size_t i=warnings;i<h.f.sent.size();++i){
+   assert(h.f.sent[i]=="Ali, oyun ayarlarını kontrol edebilirsin."||h.f.sent[i]==chat_bot_core::NameReminderText(h.f.own));
+   assert(h.f.sent_names[i]==h.f.own);
+  }
   h.Tick(h.now+7);h.Message("Bot siktir kelimesi ne demek?");h.Drain();h.Step();assert(http_calls==2);
   const int requests=http_calls.load();h.Message("Veli seni sikeyim");h.Step();assert(http_calls==requests);
  }
@@ -162,6 +175,7 @@ int main(){
   Response("Ali, sorunu yanıtlıyorum.");int expected=0;
   for(const char* text:{"zeka neden böyle", "yapay bunu açıkla", "YAPAYZEKA bir soru soruyorum"}){
    h.Tick(h.now+7);h.Message(text);h.Drain();h.Step();assert(http_calls==++expected);
+   h.ExpectReply("Ali, sorunu yanıtlıyorum.",static_cast<size_t>(expected));
   }
  }
  {Harness h;
