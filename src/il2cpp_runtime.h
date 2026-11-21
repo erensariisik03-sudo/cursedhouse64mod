@@ -47,6 +47,7 @@ struct Api {
     uint32_t (*method_get_param_count)(const Method*);
     const Type* (*method_get_param)(const Method*,uint32_t);
     Object* (*array_new)(Class*,uintptr_t); // optional, normal SDK RPC argument arrays
+    bool (*method_is_generic)(const Method*); // optional, exclude generic overload definitions
     bool Load(void* library);
     Class* Find(const char* namespc, const char* name) const;
     const Method* FindMethod(Class* klass, const char* name, int count) const;

@@ -119,11 +119,18 @@ sürümüdür; klavye ve AI akışı korunur.
   seçim sayılmaz; kısa dokunuş seçimdir. Yeni tutulabilen eşya önce ele gelir.
   Aynısı eldeyse yeni kopya önüne oluşturulur. Başka eşya eldeyse oyunun normal
   `hra` alma akışı önce eskisini bırakır, sonra yenisini verir. Boş/çift kimlikli
-  prefablar elenir. Şırınga ve **Pompalı mermisi (önüme)** doğrudan yere oluşturulur.
-  Mermi, mevcut `ShotgunManager.moreAmmo` kaynağından veya ona karşılık gelen
-  gerçek Resources prefabından alınır; yoksa uydurma prefab adı kullanılmaz.
-  Ağ prefabı SDK ile yeni kimlik alır; PhotonView içermeyen mermi yerel Unity
-  kopyasıdır. Ağ kimliği olan bir sahne nesnesi Unity.Instantiate ile kopyalanmaz.
+  prefablar elenir. Eşya adları PickUpObject kimliğine göre **İngilizce** gösterilir:
+  Crossbow, Shotgun, Cutting Pliers, Shotgun Ammo gibi. Etiket kaynak anahtarını
+  değiştirmez. Tranquilizer Dart ve **Shotgun Ammo** doğrudan yere oluşturulur.
+  Mermi kaynağı moreAmmo ve gerçek PickupItem(Ammo=48) bileşenlerinden aranır;
+  kaynak yüklenene kadar Shotgun Ammo gri olarak listede kalır. Doğrulanan ağ
+  prefabı varsa normal SDK kullanılır. Yalnız sahne modeli bulunursa script ve
+  PhotonView içermeyen görsel kopya kullanılır. Model/script aynı nesnedeyse
+  yalnız gerçek mesh ve paylaşılan materyallerle ayrı görsel oluşturulur; hiçbir
+  kaynak scripti/PhotonView kopyalanmaz. Yerel mermiye pompalı eldeyken yaklaşınca
+  normal hra(Ammo) doldurma isteği çalışır; yüklenme doğrulanınca görsel silinir.
+  Mermi doluyken tüketilmez. Bu yerel mermiyi diğer istemciler görmeyebilir;
+  sahnede en fazla 64 yerel mermi tutulur.
   Bir saniyelik bekleme yoktur; kuyruk Unity karesi başına bir oluşturma işler.
   Gecikmiş oturum komutları iptal edilir; sınırsız üretim döngüsü yoktur.
 - **Düşman durdur:** Granny, Grandpa, MomSpider, Spider, Crow ve Rat için durdur,
@@ -146,7 +153,11 @@ sürümüdür; klavye ve AI akışı korunur.
     normal SDK Destroy yoluyla kaldırılır; yetkin olmayan nesne yalnız yerelde
     kaldırılır. Ölüm/ödül/yeniden doğma süreci çalıştırılmaz.
   - **Klonla:** Granny, Grandpa ve MomSpider'ın manager'daki gerçek prefabları
-    normal PhotonNetwork.Instantiate ile yeni ağ kimliği alır. Canlı klon sayısı
+    normal PhotonNetwork.Instantiate ile yeni ağ kimliği alır. Kamera yönü yatay
+    düzleme indirilir; klon tam önde, oyuncuya dönük ve dik oluşturulur. Yürünebilir
+    zemin NavMesh.SamplePosition ile aranır; yana fazla kayma gerekiyorsa işlem
+    yapılmaz. AI bileşeni ve yeni hiyerarşinin kayıtlı PhotonView kimliği doğrulanır.
+    Eski sabit dünya-X kaydırması ve kamera eğimi kullanılmaz. Canlı klon sayısı
     bu oturumda sekizle sınırlıdır. Ana düşmanın ölüm isteği klonları yönetmeyebilir.
     Spider/Crow/Rat için güvenilir kaynak prefab bağlanmadığından klon düğmesi
     kapalıdır; mevcut PhotonView kimliği kopyalanmaz.
@@ -155,10 +166,30 @@ sürümüdür; klavye ve AI akışı korunur.
   bileşenlerin envanterin PhotonView'iyle eşleştirilir; bu eşleme yoksa tek,
   sahipliği doğrulanan aday seçilir. Birden fazla belirsiz veya başka oyuncuya
   ait nesne seçilmez. Doğrulanan AI saldırı girişleri/alıcısı, yerel lava isteği
-  ve kendi oyuncunun Dead durumuna geçişi engellenir. Başka hedefe saldırı,
+  ve kendi oyuncunun Dead durumuna geçişi engellenir. Hedef bizim oyuncumuzsa
+  DaysManager.foq ölüm/gün kaydını oluşturmaz; başka oyuncu ve kaçış akışı korunur.
+  PlayerScriptManager.iai öldürme kamerası ve MomSpider.inh saldırı başlangıcı
+  kendi hedefimiz için engellenir. Granny/Grandpa'nın hedefi kendi gövdemizin
+  altındaysa dontHitPlayer geçici korunur; hedef değişince/eski ayara dönünce
+  saklanan değer yüklenir. Uzak, modsuz MasterClient kendi ölüm/gün kararını
+  veriyorsa yerel mod bunu kesin olarak iptal edemez; küresel gün saati dondurulmaz. Başka hedefe saldırı,
   başka oyuncu, kapalı mod, farklı oda/sahne ve diğer durum değişimleri özgün
   metoda iletilir. Eski oyuncu yapısı için önceki koruma da korunur. Bu özellik
   diriltme değildir; her çevresel tehlike/sunucu kararı için garanti verilmez.
+
+- **Hayalet modu:** Kendi FirstPersonController.hjs hareketinde normal joystick'in
+  yatay yer değiştirmesi çarpışma/gravity adımı yerine doğrudan konuma uygulanır.
+  Başkalarının kontrolcüsü değişmez. Kendi düşme hasarı kontrolü açıkken atlanır;
+  kapanınca normal hareket/hasar çağrıları döner ve dikey hız sıfırlanır. Yüksel,
+  Alçal ve başlangıç konumuna dönüp kapatma düğmeleri vardır. Hayalet modu God
+  Mode'dan ayrıdır; oda/sahne/karakter değişiminde kapanır.
+- **Infinity Ammo:** Yalnız kendi oyuncunun elindeki Crossbow/Shotgun atışında
+  yüklenmiş cephane bayrağı çağrı boyunca hazırlanır. Özgün atış tam bir kez
+  çalışır; atış/cooldown animasyonu hızlandırılmaz. Çağrı sonrasında gerçek bayrak
+  korunur/geri yüklenir; başka silahın veya başka oyuncunun atışı etkilenmez.
+  Kendi silah/mermi görselleri hazırlanır ve mod kapanınca normal duruma döner.
+  ShotgunManager'ın ortak bayrağı sürekli açık tutulmaz; yeni tahmini reload
+  paketi gönderilmez.
 
 Oda sahibi şartı arayüzden kaldırılmıştır. Yerel ayar, ağdan silme ve normal
 ölüm isteğinin ağ yetkisi farklıdır; bütün değişikliklerin orijinal istemcilere
@@ -174,7 +205,9 @@ Negatif sahne kimlikleri geçerlilik/yüklenme sorgusuyla değerlendirilir.
 
 CI testlerine sürükleme/seçim ayrımı, aynı/farklı eşyanın ele/yere oluşturulması,
 merminin eli değiştirmemesi, animasyon dondurma/geri yükleme, 20x görsel ölçek,
-güncel God Mode hedef/oda/sahiplik sınırları eklenmiştir. **Bu sürümde yerel
+güncel God Mode hedef/oda/sahiplik sınırları; kendi ölüm/gün ve kamera kaydı,
+başka hedefe iletme, hayalet yatay hareketi/dönüşü, geçici cephane bayrağı,
+yatay/dik klon matematiği, İngilizce adlar ve eksik merminin görünürlüğü eklenmiştir. **Bu sürümde yerel
 build veya C++ test derlemesi çalıştırılmadı; cihaz davranışı doğrulanmadı.**
 
 ### AI sohbet

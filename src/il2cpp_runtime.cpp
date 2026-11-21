@@ -20,6 +20,7 @@ bool Api::Load(void* library) {
     OPTIONAL(field_get_type) OPTIONAL(class_from_type)
     OPTIONAL(class_get_methods) OPTIONAL(method_get_param_count) OPTIONAL(method_get_param)
     OPTIONAL(array_new)
+    OPTIONAL(method_is_generic)
 #undef OPTIONAL
     return true;
 }

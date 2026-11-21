@@ -179,7 +179,16 @@ int main() {
   Direct("AI");Frame();Frame();assert(items.count("API anahtarı gir")&&!items.count("Çık-gir: herkese uygula"));
   // Oyun paneli: bölüm listesi -> tek bölüm -> geriyle tam liste.
   Direct("Oyun");Frame();Frame();
-  for(auto label:{"Eşya spawn","Düşman durdur","Düşman öldür","God Mode"})assert(items.count(label));
+  for(auto label:{"Eşya spawn","Düşman durdur","Düşman öldür","God Mode","Hayalet modu","Infinity Ammo"})assert(items.count(label));
+  {
+    gameplay_bridge::Snapshot tools;tools.ready=true;tools.context=77;tools.ghost_ready=tools.infinity_ready=true;gameplay_bridge::Publish(tools);Frame();Frame();
+    Direct("Hayalet modu");Frame();Frame();Direct("Hayalet modu KAPALI - aç");
+    auto queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::Ghost&&queued.front().context==77&&queued.front().flag);
+    Frame();Frame();
+    Direct(u8"← Bölümlere dön");Frame();Frame();Direct("Infinity Ammo");Frame();Frame();Direct("Infinity Ammo KAPALI - aç");
+    queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::InfinityAmmo&&queued.front().context==77&&queued.front().flag);
+    gameplay_bridge::Publish({});Frame();Frame();Direct(u8"← Bölümlere dön");Frame();Frame();
+  }
   Direct("Düşman durdur");Frame();Frame();
   assert(items.count(u8"← Bölümlere dön")&&items.count("Granny"));
   assert(!items.count("Eşya spawn")&&!items.count("Düşman öldür")&&!items.count("God Mode"));
@@ -187,6 +196,11 @@ int main() {
   for(auto label:{"Eşya spawn","Düşman durdur","Düşman öldür","God Mode"})assert(items.count(label));
   Direct("Eşya spawn");Frame();Frame();
   assert(items.count("Seçili eşyayı oluştur")&&!items.count("Düşman durdur"));
+  {
+    gameplay_bridge::Snapshot waiting;waiting.ready=waiting.spawn_ready=true;waiting.context=42;waiting.status="Hazır.";waiting.items.push_back({48,"Shotgun Ammo",false});
+    gameplay_bridge::Publish(waiting);Frame();Frame();Frame();assert(items.count("Shotgun Ammo"));
+    const auto p=items.at("Seçili eşyayı oluştur").GetCenter();assert(!keyboard_ui::TouchDown(p.x,p.y));keyboard_ui::TouchUp();assert(gameplay_bridge::Take().empty());
+  }
   { // The action stays visible above an overflowing catalogue on every tested screen.
     gameplay_bridge::Snapshot ready;ready.context=42;ready.ready=ready.spawn_ready=true;ready.status="Hazır.";
     for(int i=1;i<=20;++i)ready.items.push_back({i,"Prefab "+std::to_string(i)});
@@ -217,6 +231,7 @@ int main() {
     gameplay_bridge::Publish({});Frame();Frame();
   }
   Direct(u8"← Bölümlere dön");Frame();Frame();
+  Direct(u8"← Ana menü");Frame();Frame();
   Direct("AI");Frame();Frame();
   keyboard_ui::SetVisible(true);Frame();assert(!items.count("##hub_btn")&&!items.count("AI")&&items.count("q"));
   keyboard_ui::SetVisible(false);Frame();Frame();assert(items.count("##hub_btn")&&!items.count("Dans >"));

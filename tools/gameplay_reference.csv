@@ -47,3 +47,23 @@ UnityEngine,Transform,IsChildOf,public bool IsChildOf(Transform parent) { },// R
 Photon.Pun,PhotonView,get_ViewID,public int get_ViewID() { },// RVA: 0x42F7F34 Offset: 0x42F3F34 VA: 0x42F7F34,reference only; resolved by metadata at runtime
 Photon.Pun,PhotonView,RPC,"public void RPC(string methodName, RpcTarget target, object[] parameters) { }",// RVA: 0x42F8D58 Offset: 0x42F4D58 VA: 0x42F8D58,reference only; resolved by metadata at runtime
 Photon.Pun,PhotonView,RPC,"public void RPC(string methodName, Player targetPlayer, object[] parameters) { }",// RVA: 0x42F8E5C Offset: 0x42F4E5C VA: 0x42F8E5C,reference only; resolved by metadata at runtime
+,DaysManager,foq,"private void foq(Player a, EnemyEntity b, float c) { }",// RVA: 0x24A2498 Offset: 0x249E498 VA: 0x24A2498,reference only; resolved by metadata at runtime
+,FirstPersonController,hjs,private void hjs() { },// RVA: 0x2532668 Offset: 0x252E668 VA: 0x2532668,reference only; resolved by metadata at runtime
+,HandleFallDemage,Update,private void Update() { },// RVA: 0x2536FF0 Offset: 0x2532FF0 VA: 0x2536FF0,reference only; resolved by metadata at runtime
+,PlayerScriptManager,iai,private void iai(EnemyEntity a) { },// RVA: 0x255256C Offset: 0x254E56C VA: 0x255256C,reference only; resolved by metadata at runtime
+,HandleCrossBow,icd,private void icd() { },// RVA: 0x2554AF8 Offset: 0x2550AF8 VA: 0x2554AF8,reference only; resolved by metadata at runtime
+,HandleCrossBow,ice,private void ice(bool a) { },// RVA: 0x2554ABC Offset: 0x2550ABC VA: 0x2554ABC,reference only; resolved by metadata at runtime
+,HandleCrossBow,icg,private void icg(bool a) { },// RVA: 0x25554D8 Offset: 0x25514D8 VA: 0x25554D8,reference only; resolved by metadata at runtime
+,HandleShotgun,idj,private void idj() { },// RVA: 0x2556ACC Offset: 0x2552ACC VA: 0x2556ACC,reference only; resolved by metadata at runtime
+,SpiderMomAIController,inh,private void inh(GameObject a) { },// RVA: 0x258924C Offset: 0x258524C VA: 0x258924C,reference only; resolved by metadata at runtime
+UnityEngine,Renderer,get_sharedMaterials,public Material[] get_sharedMaterials() { },// RVA: 0x4D49D08 Offset: 0x4D45D08 VA: 0x4D49D08,reference only; resolved by metadata at runtime
+UnityEngine,Renderer,set_sharedMaterials,public void set_sharedMaterials(Material[] value) { },// RVA: 0x4D49D0C Offset: 0x4D45D0C VA: 0x4D49D0C,reference only; resolved by metadata at runtime
+UnityEngine,MeshFilter,get_sharedMesh,public Mesh get_sharedMesh() { },// RVA: 0x4D51060 Offset: 0x4D4D060 VA: 0x4D51060,reference only; resolved by metadata at runtime
+UnityEngine,MeshFilter,set_sharedMesh,public void set_sharedMesh(Mesh value) { },// RVA: 0x4D51130 Offset: 0x4D4D130 VA: 0x4D51130,reference only; resolved by metadata at runtime
+UnityEngine,Resources,FindObjectsOfTypeAll,public static Object[] FindObjectsOfTypeAll(Type type) { },// RVA: 0x4D70740 Offset: 0x4D6C740 VA: 0x4D70740,reference only; resolved by metadata at runtime
+UnityEngine,GameObject,Internal_AddComponentWithType,private Component Internal_AddComponentWithType(Type componentType) { },// RVA: 0x4D77F10 Offset: 0x4D73F10 VA: 0x4D77F10,reference only; resolved by metadata at runtime
+UnityEngine,GameObject,.ctor,public void .ctor(string name) { },// RVA: 0x4D7892C Offset: 0x4D7492C VA: 0x4D7892C,reference only; resolved by metadata at runtime
+UnityEngine,GameObject,.ctor,public void .ctor() { },// RVA: 0x4D78B0C Offset: 0x4D74B0C VA: 0x4D78B0C,reference only; resolved by metadata at runtime
+UnityEngine,GameObject,.ctor,"public void .ctor(string name, Type[] components) { }",// RVA: 0x4D78B70 Offset: 0x4D74B70 VA: 0x4D78B70,reference only; resolved by metadata at runtime
+UnityEngine,Transform,get_lossyScale,public Vector3 get_lossyScale() { },// RVA: 0x4D87D34 Offset: 0x4D83D34 VA: 0x4D87D34,reference only; resolved by metadata at runtime
+UnityEngine.AI,NavMesh,SamplePosition,"public static bool SamplePosition(Vector3 sourcePosition, out NavMeshHit hit, float maxDistance, int areaMask) { }",// RVA: 0x4D04F2C Offset: 0x4D00F2C VA: 0x4D04F2C,reference only; resolved by metadata at runtime

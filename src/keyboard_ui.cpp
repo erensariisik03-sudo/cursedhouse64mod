@@ -595,7 +595,11 @@ void GameplaySectionBody(float key_height,float content){
         ImGui::BeginDisabled(!s.spawn_ready);
         // Keep the action above the scrolling catalogue, including on short
         // landscape screens. An empty catalogue must not reserve four rows.
+        const auto selection=std::find_if(s.items.begin(),s.items.end(),[&](const auto& v){return v.id==selected;});
+        const bool available=selection!=s.items.end()&&selection->available;
+        ImGui::BeginDisabled(!available);
         ActionKey("Seçili eşyayı oluştur",content,key_height,[queue,context=s.context,id=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::Spawn,context};c.item=id;queue(c);});
+        ImGui::EndDisabled();
         if(!s.spawn_ready)ImGui::TextWrapped("%s",s.spawn_status.c_str());
         ImGui::TextWrapped("Oluşturulabilir eşya: %d",static_cast<int>(s.items.size()));
         if(!s.items.empty()){
@@ -613,7 +617,9 @@ void GameplaySectionBody(float key_height,float content){
                 g_list_touch.recording=true;
                 for(const auto& item:s.items){
                     ImGui::PushID(item.id);
+                    ImGui::BeginDisabled(!item.available);
                     ActionKey(item.name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[id=item.id]{selected=id;InvalidateKeys();},item.id==selected);
+                    ImGui::EndDisabled();
                     ImGui::PopID();
                 }
                 g_list_touch.recording=false;
@@ -621,6 +627,7 @@ void GameplaySectionBody(float key_height,float content){
             ImGui::EndChild();
         }
         ImGui::EndDisabled();
+        if(std::any_of(s.items.begin(),s.items.end(),[](const auto& item){return !item.available;}))ImGui::TextWrapped("Gri eşyanın gerçek kaynağı henüz yüklenmedi; liste otomatik yenilenir.");
         ImGui::TextWrapped("Listeyi düğmelerin üzerinden sürükleyebilirsin. Yeni eşya ele gelir; aynısı eldeyse kopyası önüne oluşur. Farklı eldeki eşya önce bırakılır. Mermi doğrudan önüne oluşur.");
         break;
     }
@@ -683,23 +690,43 @@ void GameplaySectionBody(float key_height,float content){
         ActionKey(s.god?"God Mode AÇIK - kapat":"God Mode KAPALI - aç",content,key_height,[queue,context=s.context,on=!s.god]{gameplay_bridge::Command c{gameplay_bridge::Kind::God,context};c.flag=on;queue(c);},s.god);
         ImGui::EndDisabled();
         ImGui::TextWrapped("%s",s.god_status.c_str());
-        ImGui::TextWrapped("Kendi karakterinin AI ve ölüm girişlerini engeller. Ölüm başladıktan sonra açmak karakteri yeniden canlandırmaz; tüm çevresel senaryoları kapsadığı doğrulanmadı.");
+        ImGui::TextWrapped("Kendi karakterine AI saldırısında öldürme kamerasını ve ölüm/gün kaydını engeller. Ölmeden önce aç; diriltme değildir.");
+        break;
+    case 4:
+        ImGui::BeginDisabled(!s.ghost_ready);
+        ActionKey(s.ghost?"Hayalet modu AÇIK - kapat":"Hayalet modu KAPALI - aç",content,key_height,[queue,context=s.context,on=!s.ghost]{gameplay_bridge::Command c{gameplay_bridge::Kind::Ghost,context};c.flag=on;queue(c);},s.ghost);
+        ImGui::EndDisabled();
+        if(s.ghost){
+            ActionKey("Yüksel",half,key_height,[queue,context=s.context]{gameplay_bridge::Command c{gameplay_bridge::Kind::GhostStep,context};c.item=1;queue(c);},false,true);
+            ImGui::SameLine();
+            ActionKey("Alçal",half,key_height,[queue,context=s.context]{gameplay_bridge::Command c{gameplay_bridge::Kind::GhostStep,context};c.item=-1;queue(c);},false,true);
+            ActionKey("Başlangıca dön ve kapat",content,key_height,[queue,context=s.context]{queue({gameplay_bridge::Kind::GhostReturn,context});});
+        }
+        ImGui::TextWrapped("Joystick ile duvarlardan geç. Sıkıştığın yerden çıkınca kapatabilirsin. God Mode ayrı açılır.");
+        ImGui::TextWrapped("%s",s.tools_status.c_str());
+        break;
+    case 5:
+        ImGui::BeginDisabled(!s.infinity_ready);
+        ActionKey(s.infinity?"Infinity Ammo AÇIK - kapat":"Infinity Ammo KAPALI - aç",content,key_height,[queue,context=s.context,on=!s.infinity]{gameplay_bridge::Command c{gameplay_bridge::Kind::InfinityAmmo,context};c.flag=on;queue(c);},s.infinity);
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("Eldeki Crossbow ve Shotgun için sınırsız cephane. Atış aralığı ve silah animasyonu oyunun normalidir.");
+        ImGui::TextWrapped("%s",s.tools_status.c_str());
         break;
     default:break;
     }
 }
 void GameplayBody(float key_height,float content){
     if(g_gameplay_page>=0){
-        static const char* titles[]={"Eşya spawn","Düşman durdur","Düşman öldür","God Mode"};
-        if(g_gameplay_page<4)ImGui::Text("%s",titles[g_gameplay_page]);
+        static const char* titles[]={"Eşya spawn","Düşman durdur","Düşman öldür","God Mode","Hayalet modu","Infinity Ammo"};
+        if(g_gameplay_page<6)ImGui::Text("%s",titles[g_gameplay_page]);
         GameplaySectionBody(key_height,content);
         return;
     }
     ImGui::TextWrapped("Oyun özellikleri");
-    ImGui::TextWrapped("Bir bölüme dokun. Geri dönünce tüm bölüm başlıkları görünür.");
-    const char* labels[]={"Eşya spawn","Düşman durdur","Düşman öldür","God Mode"};
+    ImGui::TextWrapped("Bir bölüm seç.");
+    const char* labels[]={"Eşya spawn","Düşman durdur","Düşman öldür","God Mode","Hayalet modu","Infinity Ammo"};
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
-    for(int i=0;i<4;++i){
+    for(int i=0;i<6;++i){
         if(i%2)ImGui::SameLine();
         ImGui::PushID(i+300);
         ActionKey(labels[i],half,key_height,[i]{g_gameplay_page=i;InvalidateKeys();});
@@ -813,8 +840,9 @@ void DrawHub(const ImGuiIO& io){
     if(ImGui::Begin("##hub",nullptr,flags)){
         const float content=ImGui::GetContentRegionAvail().x;
         const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
-        if(g_hub_tab==2&&g_gameplay_page>=0){
+        if(g_hub_tab==2){
             // Subpage is focused: hide unrelated top-level tabs to keep the panel short.
+            if(g_gameplay_page<0)ActionKey(u8"← Ana menü",content,key_height,[]{g_hub_tab=0;InvalidateKeys();});
             GameplayBody(key_height,content);
         }else{
             ImGui::PushID("hub_tab0");ActionKey("AI",half,key_height,[]{g_hub_tab=0;g_gameplay_page=-1;InvalidateKeys();},g_hub_tab==0);ImGui::PopID();
@@ -890,7 +918,7 @@ void TouchHeld(float x,float y){
         if(list.dragged)list.delta+=list.last_y-y;
         list.last_y=y;return;
     }
-    if(!g_visible||!g_touch_repeat||x<g_repeat_min.x||x>=g_repeat_max.x||y<g_repeat_min.y||y>=g_repeat_max.y)return;
+    if(!g_touch_repeat||x<g_repeat_min.x||x>=g_repeat_max.x||y<g_repeat_min.y||y>=g_repeat_max.y)return;
     if(ImGui::GetTime()>=g_repeat_at){const auto action=g_touch_repeat;g_repeat_at=ImGui::GetTime()+.035;action();}
 }
 void TouchUp(){const auto tap=g_list_touch.down&&!g_list_touch.dragged?g_list_touch.tap:std::function<void()>{};g_list_touch.down=false;g_list_touch.tap={};g_touch_repeat={};if(tap)tap();}

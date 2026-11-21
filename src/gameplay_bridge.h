@@ -12,14 +12,16 @@ namespace gameplay_bridge {
 inline constexpr size_t kEnemies=6;
 inline constexpr const char* kNames[kEnemies]={"Granny","Grandpa","MomSpider","Spider","Crow","Rat"};
 struct Enemy { int count=0;bool paused=false;float speed=1,animation=1,size=1;bool death_ready=false,clone_ready=false; };
-struct Item { int id=0;std::string name; };
+struct Item { int id=0;std::string name;bool available=true; };
 struct Snapshot {
     uint64_t context=0;bool ready=false,authority=false,spawn_ready=false,god_ready=false,god=false;
     std::array<Enemy,kEnemies> enemies{};std::vector<Item> items;
     std::string status=u8"Oyun sahnesi bekleniyor.";
     std::string spawn_status=u8"Maç envanteri bekleniyor.",god_status=u8"Maç karakteri bekleniyor.";
+    bool ghost_ready=false,ghost=false,infinity_ready=false,infinity=false;
+    std::string tools_status=u8"Kendi maç oyuncun bekleniyor.";
 };
-enum class Kind { EnemySettings, ResetEnemy, RemoveEnemy, KillEnemy, CloneEnemy, Spawn, God };
+enum class Kind { EnemySettings, ResetEnemy, RemoveEnemy, KillEnemy, CloneEnemy, Spawn, God, Ghost, GhostStep, GhostReturn, InfinityAmmo };
 struct Command { Kind kind;uint64_t context;size_t enemy=0;Enemy settings{};int item=0;bool flag=false;double queued=0; };
 inline std::mutex mutex;
 inline Snapshot snapshot;

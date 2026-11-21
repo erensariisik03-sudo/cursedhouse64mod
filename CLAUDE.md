@@ -81,3 +81,24 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
 - Durdurma sırasında ana/alt Animator ve Animation.enabled değerlerini saklayıp
   kapatın; devamda saklanan durumu geri yükleyin. Crow gerçek görsel kökleri
   ölçeklenir; iç içe kökleri tekrar çarpmayın. Crow üst sınırı 20x'tir.
+
+- Eşya adları kullanıcının son tercihiyle İngilizcedir. PickUpObject enum kimliği
+  etiketle eşleştirilir; gerçek prefab/resource anahtarı etiketle değiştirilmez.
+- God Mode kendi hedefinin DaysManager.foq ölüm/gün kaydını, kendi öldürme
+  kamerasını ve doğrulanan saldırı başlangıçlarını korur. Diğer hedef/kaçış,
+  mod kapalı hali ve oda/sahne değişimi özgün akışa iletilir; gün saati genel
+  olarak dondurulmaz. Modsuz uzak yöneticinin kararını iptal ettiğini iddia etmeyin.
+- Hayalet modu yalnız sahipliği doğrulanan FirstPersonController.hjs ve kendi
+  düşme kontrolüne uygulanır. Joystick yatay hareketi korunur; kapanınca normal
+  hareket ve sıfırlanmış dikey hız döner. Başlangıca dönüş komutu oturumludur.
+- Infinity Ammo yalnız eldeki kendi Crossbow/Shotgun atışında yük bayrağını
+  çağrı boyunca hazırlar; özgün atışı bir kez çağırıp gerçek durumu korur.
+  Ortak ShotgunManager bayrağını kalıcı değiştirmeyin, cooldown'u kaldırmayın.
+- Klon oyuncunun kamera yönünde yatay ve dik yerleştirilir; yürünebilir zemin,
+  AI bileşeni ve yeni hiyerarşinin ViewID'si doğrulanır. Geçerli ön zemin yoksa
+  yana/başka yere sessizce oluşturmayın. Mevcut ana manager referansı ezilmez.
+- Shotgun Ammo kaynak hazır değilken de gri listelenir. Yerel model gerekiyorsa
+  yalnız script/PV içermeyen görseli veya gerçek mesh/materyallerle oluşturulan
+  yeni görseli kullanın. PhotonView/script kopyalayıp Awake çalıştırmayın.
+  Kendi oyuncu yaklaştığında normal hra(Ammo) ile doldurmayı doğrulayın;
+  kaynak nesneyi ve başka oyuncunun mühimmatını tüketmeyin.
