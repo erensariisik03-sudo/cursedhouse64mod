@@ -20,3 +20,30 @@ Photon.Pun,PhotonNetwork,Destroy,public static void Destroy(GameObject targetGo)
 UnityEngine.SceneManagement,Scene,IsValidInternal,private static bool IsValidInternal(int sceneHandle) { },// RVA: 0x4D8BAFC Offset: 0x4D87AFC VA: 0x4D8BAFC,reference only; resolved by metadata at runtime
 UnityEngine.SceneManagement,Scene,GetIsLoadedInternal,private static bool GetIsLoadedInternal(int sceneHandle) { },// RVA: 0x4D8BD50 Offset: 0x4D87D50 VA: 0x4D8BD50,reference only; resolved by metadata at runtime
 Photon.Pun,MonoBehaviourPun,get_photonView,public PhotonView get_photonView() { },// RVA: 0x42F95CC Offset: 0x42F55CC VA: 0x42F95CC,reference only; resolved by metadata at runtime
+,GrandpaManager,RPC_SyncShotShotgunGrandpa,private void RPC_SyncShotShotgunGrandpa(PhotonMessageInfo info) { },// RVA: 0x2779358 Offset: 0x2775358 VA: 0x2779358,reference only; resolved by metadata at runtime
+,GrannyManager,RPC_SyncShotShotgunGranny,private void RPC_SyncShotShotgunGranny(PhotonMessageInfo info) { },// RVA: 0x27A3D08 Offset: 0x279FD08 VA: 0x27A3D08,reference only; resolved by metadata at runtime
+,HandleEnemyAttacked,hiw,"public void hiw(Player a, EnemyEntity b) { }",// RVA: 0x252F548 Offset: 0x252B548 VA: 0x252F548,reference only; resolved by metadata at runtime
+,HandleEnemyAttacked,RPC_GetBatted,"private void RPC_GetBatted(Player targetPlayer, EnemyEntity entity) { }",// RVA: 0x252F6A8 Offset: 0x252B6A8 VA: 0x252F6A8,reference only; resolved by metadata at runtime
+,HandleEnemyAttacked,hiy,"public void hiy(Player a, EnemyEntity b) { }",// RVA: 0x252FAC4 Offset: 0x252BAC4 VA: 0x252FAC4,reference only; resolved by metadata at runtime
+,HandleEnemyAttacked,RPC_GetEatenBySpiderMom,"private void RPC_GetEatenBySpiderMom(Player targetPlayer, EnemyEntity entity) { }",// RVA: 0x252FC24 Offset: 0x252BC24 VA: 0x252FC24,reference only; resolved by metadata at runtime
+,HandleEnemyAttacked,hja,"public void hja(Player a, EnemyEntity b) { }",// RVA: 0x252FF8C Offset: 0x252BF8C VA: 0x252FF8C,reference only; resolved by metadata at runtime
+,HandleEnemyAttacked,RPC_GetBitBySpider,"private void RPC_GetBitBySpider(Player targetPlayer, EnemyEntity entity) { }",// RVA: 0x25300EC Offset: 0x252C0EC VA: 0x25300EC,reference only; resolved by metadata at runtime
+,HandleEnemyAttacked,hjb,public void hjb() { },// RVA: 0x2530418 Offset: 0x252C418 VA: 0x2530418,reference only; resolved by metadata at runtime
+,HandlePickUpItemInteractions,hra,"private void hra(PickUpObject a, AudioClip b) { }",// RVA: 0x2540330 Offset: 0x253C330 VA: 0x2540330,reference only; resolved by metadata at runtime
+,HandlePickUpItemInteractions,hrl,public PickUpObject hrl() { },// RVA: 0x2540B74 Offset: 0x253CB74 VA: 0x2540B74,reference only; resolved by metadata at runtime
+,PlayerStateManager,RPC_SyncCurrentPlayerState,private void RPC_SyncCurrentPlayerState(CurrentPlayerState newPlayerState) { },// RVA: 0x2553D34 Offset: 0x254FD34 VA: 0x2553D34,reference only; resolved by metadata at runtime
+,PlayerStateManager,ibe,"public void ibe(CurrentPlayerState a, bool b) { }",// RVA: 0x2553B64 Offset: 0x254FB64 VA: 0x2553B64,reference only; resolved by metadata at runtime
+,SpiderMomAIController,imv,"private void imv(object a, EventArgs b) { }",// RVA: 0x25894A4 Offset: 0x25854A4 VA: 0x25894A4,reference only; resolved by metadata at runtime
+,SpiderControllerMulti,jek,"private void jek(object a, int b) { }",// RVA: 0x25A8280 Offset: 0x25A4280 VA: 0x25A8280,reference only; resolved by metadata at runtime
+,SpiderControllerMulti,RPC_SyncSpiderDie,"private IEnumerator RPC_SyncSpiderDie(int viewId, PhotonMessageInfo info) { }",// RVA: 0x25A83EC Offset: 0x25A43EC VA: 0x25A83EC,reference only; resolved by metadata at runtime
+UnityEngine,Resources,Load,public static Object Load(string path) { },// RVA: 0x4D707A8 Offset: 0x4D6C7A8 VA: 0x4D707A8,reference only; resolved by metadata at runtime
+UnityEngine,Resources,Load,"public static Object Load(string path, Type systemTypeInstance) { }",// RVA: 0x4D70818 Offset: 0x4D6C818 VA: 0x4D70818,reference only; resolved by metadata at runtime
+UnityEngine,GameObject,GetComponentsInternal,"private Array GetComponentsInternal(Type type, bool useSearchTypeAsArrayReturnType, bool recursive, bool includeInactive, bool reverse, object resultList) { }",// RVA: 0x4D777B4 Offset: 0x4D737B4 VA: 0x4D777B4,reference only; resolved by metadata at runtime
+UnityEngine,Object,Instantiate,"public static Object Instantiate(Object original, Vector3 position, Quaternion rotation) { }",// RVA: 0x4D7DBF0 Offset: 0x4D79BF0 VA: 0x4D7DBF0,reference only; resolved by metadata at runtime
+UnityEngine,Object,Instantiate,"public static Object Instantiate(Object original, Vector3 position, Quaternion rotation, Transform parent) { }",// RVA: 0x4D7DED8 Offset: 0x4D79ED8 VA: 0x4D7DED8,reference only; resolved by metadata at runtime
+UnityEngine,Object,Instantiate,public static Object Instantiate(Object original) { },// RVA: 0x4D7E1A8 Offset: 0x4D7A1A8 VA: 0x4D7E1A8,reference only; resolved by metadata at runtime
+UnityEngine,Object,Instantiate,"public static Object Instantiate(Object original, Transform parent, bool instantiateInWorldSpace) { }",// RVA: 0x4D7E340 Offset: 0x4D7A340 VA: 0x4D7E340,reference only; resolved by metadata at runtime
+UnityEngine,Transform,IsChildOf,public bool IsChildOf(Transform parent) { },// RVA: 0x4D87E08 Offset: 0x4D83E08 VA: 0x4D87E08,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonView,get_ViewID,public int get_ViewID() { },// RVA: 0x42F7F34 Offset: 0x42F3F34 VA: 0x42F7F34,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonView,RPC,"public void RPC(string methodName, RpcTarget target, object[] parameters) { }",// RVA: 0x42F8D58 Offset: 0x42F4D58 VA: 0x42F8D58,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonView,RPC,"public void RPC(string methodName, Player targetPlayer, object[] parameters) { }",// RVA: 0x42F8E5C Offset: 0x42F4E5C VA: 0x42F8E5C,reference only; resolved by metadata at runtime

@@ -38,7 +38,7 @@ struct Api {
     Class* (*class_get_nested_types)(Class*, void**);
     // Optional, read-only discovery for the game cosmetic catalogue.
     void (*field_get_value)(Object*, Field*, void*);
-    void (*field_set_value)(Object*, Field*, void*); // optional, scoped status-stream permission
+    void (*field_set_value)(Object*, Field*, void*); // optional, verified scoped/scalar writes
     const Type* (*class_get_type)(Class*);
     Object* (*type_get_object)(const Type*);
     const Type* (*field_get_type)(Field*);
@@ -46,6 +46,7 @@ struct Api {
     const Method* (*class_get_methods)(Class*,void**); // optional exact-overload discovery
     uint32_t (*method_get_param_count)(const Method*);
     const Type* (*method_get_param)(const Method*,uint32_t);
+    Object* (*array_new)(Class*,uintptr_t); // optional, normal SDK RPC argument arrays
     bool Load(void* library);
     Class* Find(const char* namespc, const char* name) const;
     const Method* FindMethod(Class* klass, const char* name, int count) const;

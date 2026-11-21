@@ -19,7 +19,7 @@ paneller ImGui ile OpenGL ES 3 üzerinden çizilir; oyun bağlantıları
 | AI sohbet | Gemini API anahtarıyla seçilen oyuncunun yeni mesajlarına otomatik yanıt, kişilik ve sohbet hafızası |
 | Oda bağlantısı | Dolu odaya bağlantı denemesini kullanıcı başlattığında tekrar etme |
 | Reklam | Mevcut reklam engelleme entegrasyonu |
-| Oyun paneli | Mevcut eşya prefablarından oluşturma, düşman durdurma/hız/animasyon/boyut, düşman nesnesi kaldırma ve kendi karakterine God Mode |
+| Oyun paneli | Sürüklenebilir eşya/mermi listesi, ele/yere oluşturma, düşman ve animasyon durdurma, ölüm/kaldırma/klonlama ve kendi karakterine God Mode |
 
 Klavye sınırı 1024 Unicode karakteridir. Oyun veya sunucu tarafındaki diğer
 sınırların aynı uzunluğu kabul ettiği varsayılmaz. Emoji listesi bütün emojileri
@@ -112,65 +112,70 @@ hedefini bekler; hedef hazır değilse işlem devre dışı kalır.
 
 ### Oyun kontrolleri
 
-Bu sürüm ağ inceleme eklenmeden önceki `system-terminal-testfix` tabanından
-devam eder. Kıyafet inceleme düğmesi dahil değildir. Mevcut klavye/AI akışı korunur.
+Taban, kıyafet ağ inceleme denemesinden önceki `system-terminal-testfix`
+sürümüdür; klavye ve AI akışı korunur.
 
-- **Eşya spawn:** Kendi `HandlePickUpItemInteractions.handItemTies` listesindeki
-  gerçek prefabları listeler. Seçilen eşyayı **önüme oluştur** düğmesi, oyunun
-  eşya bırakırken kullandığı kaynak dizini ve `PhotonNetwork.Instantiate` yoluyla
-  önündeki bırakma noktasında oluşturur. Eşyayı ardından normal şekilde alırsın.
-  Kaynak adı tahmin edilmez; boş/çift kimlikli prefablar listelenmez. İki deneme
-  arasında bir saniye vardır. Oyunun kaynak havuzu/oda kuralları çağrıyı reddedebilir.
-- **Düşman durdur:** Granny, Grandpa, MomSpider, Spider, Crow ve Rat için seçim
-  sunar. Durdur/devam, hız çarpanı, animasyon çarpanı, boyut ve sıfırlama vardır.
-  Bu kontroller oda yöneticisinde açılır. Crow için doğrulanan ayrı bir hareket
-  hızı alanı olmadığından o sürgü kapalıdır; animasyon ayarı kullanılabilir.
-  Crow/Rat değişiklikleri yereldir. Özgün değerler saklanır; sıfırlama bunları
-  geri yükler, sonradan oyun tarafından değiştirilmiş alanlar korunur.
-- **Düşman öldür:** Bu başlık altındaki işlem **nesne kaldırmadır**; normal
-  vurulma, süreli bayılma, ragdoll, başarı veya ödül akışını taklit etmez.
-  Granny/Grandpa/MomSpider/Spider için yalnız sahibi olduğun Photon nesnesine
-  oyunun normal ağdan silme API'si çağrılır. Crow/Rat için yerel Unity nesnesi
-  kaldırılır. Sahne nesnesi/PUN kuralları kaldırmayı reddedebilir; durum metni
-  çağrıyı bildirir, diğer istemcide sonuç alındığını iddia etmez.
-- **God Mode:** Yalnız kendi oyuncu nesnenin doğrulanan AI/ölüm girişlerini ve
-  playerManager ölüm girişini engeller. MomSpider ölüm coroutine'i kendi oyuncuna
-  aitse durdurulur. Kapalıyken, başka oyuncuda, farklı odada/sahnede veya Unity
-  iş parçacığı dışında özgün metotlar çalışır. Ölmüş karakteri diriltmez; ölüm
-  animasyonu başlamadan açılmalıdır. Bütün çevresel tehlikeleri ve sunucudaki
-  kararları engellediği doğrulanmış değildir.
+- **Eşya spawn:** Liste, düğmelerin üzerinden yukarı/aşağı sürüklenir. Sürükleme
+  seçim sayılmaz; kısa dokunuş seçimdir. Yeni tutulabilen eşya önce ele gelir.
+  Aynısı eldeyse yeni kopya önüne oluşturulur. Başka eşya eldeyse oyunun normal
+  `hra` alma akışı önce eskisini bırakır, sonra yenisini verir. Boş/çift kimlikli
+  prefablar elenir. Şırınga ve **Pompalı mermisi (önüme)** doğrudan yere oluşturulur.
+  Mermi, mevcut `ShotgunManager.moreAmmo` kaynağından veya ona karşılık gelen
+  gerçek Resources prefabından alınır; yoksa uydurma prefab adı kullanılmaz.
+  Ağ prefabı SDK ile yeni kimlik alır; PhotonView içermeyen mermi yerel Unity
+  kopyasıdır. Ağ kimliği olan bir sahne nesnesi Unity.Instantiate ile kopyalanmaz.
+  Bir saniyelik bekleme yoktur; kuyruk Unity karesi başına bir oluşturma işler.
+  Gecikmiş oturum komutları iptal edilir; sınırsız üretim döngüsü yoktur.
+- **Düşman durdur:** Granny, Grandpa, MomSpider, Spider, Crow ve Rat için durdur,
+  devam, hız, animasyon, boyut ve sıfırlama vardır. Durdurma ana Animator ile
+  sınırlı değildir: alt Animator/Animation bileşenleri ve karganın görsel
+  varyantları da dondurulur. Devam/sıfırlama önceki enabled/hız değerlerini korur.
+  Crow boyutu gerçek görsel köklere uygulanır ve 20x'e kadar çıkar. İç içe görsel
+  kökler tekrar çarpılmaz. Ayrı bir hareket alanı doğrulanmayan Crow hız sürgüsü
+  kapalıdır. Oda sahibi olmayan oyuncuda da yerel ayarlar kullanılabilir;
+  gelen ağ güncellemeleri etkilerini sınırlayabilir.
+- **Düşman öldür:** İçinde üç işlem vardır:
+  - **Öldür:** Granny/Grandpa için dump'ta doğrulanan normal shotgun RPC'si SDK
+    ile MasterClient'a gönderilir; PhotonMessageInfo'yu SDK üretir. MomSpider
+    için kendi normal vurulma isteği, Spider için hedefin gerçek ViewID'siyle
+    normal vurulma handler'ı çalışır. Crow yerel vurulma bayrağıyla kendi oyun
+    akışına girer; uçuşun bitmesini bekleyebilir. Ragdoll, bekleme ve dönüşü
+    oyunun kendi akışı belirler. Rat için doğrulanmış ölüm akışı bulunmadığından
+    o düğme kapalıdır. Gönderilen istek diğer istemcide başarı garantisi değildir.
+  - **Kaldır:** Önceki kalıcı nesne kaldırma korunur. Sahip olduğun ağ nesnesi
+    normal SDK Destroy yoluyla kaldırılır; yetkin olmayan nesne yalnız yerelde
+    kaldırılır. Ölüm/ödül/yeniden doğma süreci çalıştırılmaz.
+  - **Klonla:** Granny, Grandpa ve MomSpider'ın manager'daki gerçek prefabları
+    normal PhotonNetwork.Instantiate ile yeni ağ kimliği alır. Canlı klon sayısı
+    bu oturumda sekizle sınırlıdır. Ana düşmanın ölüm isteği klonları yönetmeyebilir.
+    Spider/Crow/Rat için güvenilir kaynak prefab bağlanmadığından klon düğmesi
+    kapalıdır; mevcut PhotonView kimliği kopyalanmaz.
+- **God Mode:** Güncel oyunda `HandleEnemyAttacked` ve `PlayerStateManager`
+  bulunur; eski `playerController` nesnesinin oluşması şart değildir. Kendi
+  bileşenlerin envanterin PhotonView'iyle eşleştirilir; bu eşleme yoksa tek,
+  sahipliği doğrulanan aday seçilir. Birden fazla belirsiz veya başka oyuncuya
+  ait nesne seçilmez. Doğrulanan AI saldırı girişleri/alıcısı, yerel lava isteği
+  ve kendi oyuncunun Dead durumuna geçişi engellenir. Başka hedefe saldırı,
+  başka oyuncu, kapalı mod, farklı oda/sahne ve diğer durum değişimleri özgün
+  metoda iletilir. Eski oyuncu yapısı için önceki koruma da korunur. Bu özellik
+  diriltme değildir; her çevresel tehlike/sunucu kararı için garanti verilmez.
 
-Metot/alanlar çalışma anında metadata isimleriyle çözülür; gönderilen eski C++
-dosyasındaki sabit RVA'lar ve Grandpa'ya kopyalanmış Granny offset'leri kullanılmaz.
-Yeni bağlantıların inceleme envanteri `tools/gameplay_reference.csv` içindedir;
-bu dosya çalışma anı adres yapılandırması değildir. Aynı ariteye sahip
-`PhotonNetwork.Destroy` overload'ları parametre tipiyle ayrılır.
+Oda sahibi şartı arayüzden kaldırılmıştır. Yerel ayar, ağdan silme ve normal
+ölüm isteğinin ağ yetkisi farklıdır; bütün değişikliklerin orijinal istemcilere
+zorla uygulanabildiği iddia edilmez. Pasif seçenek eksik hedef/bağlantı nedenini
+bildirir; bekleme metni hedef bulunduğunda temizlenir.
 
-Renderer yalnız sayısal ayarları ve oturum kimlikli komutları kuyruğa koyar.
-Unity çağrıları Unity karesinde yapılır; eski oda/karakterden gelen ve üç saniyeden
-eski komutlar atılır. Yeni oda/sahne/karakter oturumunda ayarlar sıfırlanır.
-Sahne kimliği pozitif indeks sayılmaz; geçerlilik ve yüklenme Unity'nin kendi
-`Scene.IsValidInternal`/`GetIsLoadedInternal` metotlarıyla doğrulanır.
-Kapalı bir script, etkin GameObject üzerindeki kendi oyuncunu bulmayı engellemez.
-Özel PhotonView önbelleği boşsa miras alınan `get_photonView` kullanılır;
-ayrıca kendi playerManager nesnesinin playerControllerInstance bağı okunur.
-Belirsiz veya başka oyuncuya ait karakter seçilmez.
-Düşman kontrolleri oyuncu keşfinden bağımsızdır; oda yöneticisi ve düşmanın
-sahipliği doğrulanır. Eşya için kendi envanterin, God Mode için kendi karakterin
-ve yöneticin gerekir. Bekleme odasında maç karakteri/envanteri bulunmayabilir.
-Pasif eşya/God Mode düğmeleri bekleme nedenini gösterir; hazır olunca eski
-bekleme yazısı temizlenir. Oyuncu araması saniyede bir tekrarlanır.
-Desteklenmeyen metadata veya bulunamayan ilgili hedefte o kontrol kapalı kalır.
-God Mode bağlantılarından biri eksikse bu düğme etkinleştirilmez.
+Metot ve alanlar runtime metadata ile çözülür; eski C++ dosyasının RVA/offset'leri
+çalışma koduna taşınmaz. `tools/gameplay_reference.csv` inceleme envanteridir.
+Aynı aritedeki RPC/Destroy/Instantiate overload'ları parametre tipiyle ayrılır.
+Yönetilen nesneler GC handle ile korunur; Unity işlemleri yalnız Unity karesinde
+çalışır. Oda/sahne/oyuncu değişiminde eski komutlar ve koruma hedefleri temizlenir.
+Negatif sahne kimlikleri geçerlilik/yüklenme sorgusuyla değerlendirilir.
 
-Yeni host testleri kapalı God Mode'un özgün çağrıları iletmesini; oyuncu, oda,
-sahne ve iş parçacığı sınırlarını; coroutine ve GC handle davranışını; hızın
-üst üste çarpılmamasını ve geri yüklemeyi; eski UI komutlarının reddini denetler.
-Ayrıca negatif fakat geçerli sahneleri, yüklenmemiş/geçersiz sahnelerin reddini,
-kapalı script üzerindeki etkin GameObject'i ve PhotonView önbelleği boşken
-sahiplik denetiminin korunmasını kapsar.
-Yerel build/C++ test derlemesi çalıştırılmadı; GitHub CI ve cihaz davranışı
-ayrıca doğrulanmalıdır.
+CI testlerine sürükleme/seçim ayrımı, aynı/farklı eşyanın ele/yere oluşturulması,
+merminin eli değiştirmemesi, animasyon dondurma/geri yükleme, 20x görsel ölçek,
+güncel God Mode hedef/oda/sahiplik sınırları eklenmiştir. **Bu sürümde yerel
+build veya C++ test derlemesi çalıştırılmadı; cihaz davranışı doğrulanmadı.**
 
 ### AI sohbet
 

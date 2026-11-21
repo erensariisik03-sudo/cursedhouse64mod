@@ -30,10 +30,12 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   sınıf/alanlarını çözün. Enemy alanı yazmadan önce Single tipini doğrulayın.
   Eşya prefablarını kendi aktif envanterindeki HandItemTie kayıtlarından alın;
   oyun kaynak yolu çözücüsü ve normal Instantiate yolunu koruyun. Ağdan kaldırma
-  yalnız oda yöneticisinde ve sahipliği doğrulanan nesneye uygulanır. Nesne
+  yalnız sahipliği doğrulanan nesneye uygulanır; diğerinde yalnız yerel kaldırma vardır. Nesne
   kaldırmayı normal ölüm/ödül akışı diye sunmayın. God Mode yalnız köklü kendi
   oyuncu/manager nesnesi için, aynı oda/sahnede ve Unity thread'inde engeller;
-  diğer tüm çağrıları asıl metotlara iletin. Coroutine MoveNext ABI'sini koruyun.
+  güncel HandleEnemyAttacked/PlayerStateManager yapısında da kendi hedefini
+  doğrulayın; başka hedef ve Dead dışındaki durumları iletin. Diğer tüm
+  çağrıları asıl metotlara iletin. Coroutine MoveNext ABI'sini koruyun.
   Dokunma callback'lerinde render karesinin yerel değişkenlerini referansla
   yakalamayın; oturum, seçim ve komut değerlerini kopyalayın.
   Scene.handle opak, işaretli bir kimliktir; pozitiflik koşulu koymayın.
@@ -65,3 +67,17 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   İstek iş parçacığına özeldir, SendMessage girişinde tüketilir ve iç içe normal
   gönderime aktarılmaz. Kanca yoksa gösterimi atlayın. Photon aktör kimliği
   değişmediğinden bu özelliği sunucudan kimlik gizleme diye sunmayın.
+
+- Kullanıcının son isteğiyle düşman ayarlarında genel oda sahibi kilidi kaldırıldı.
+  Yerel etki ile ağ yetkisini ayırın; tüm istemcilere başarı garantisi vermeyin.
+  Gerçek ölüm, nesne kaldırma ve klonlama ayrı işlemlerdir. Shotgun ölüm isteği
+  yalnız doğrulanan Granny/Grandpa RPC isimleriyle normal SDK'ya gider; Sender
+  veya PhotonMessageInfo üretmeyin. Klonlar gerçek prefab ve yeni SDK kimliği
+  kullanır. PhotonView içeren sahne nesnesini Unity.Instantiate ile kopyalamayın.
+- Eşya kuralı: boş elde yeni eşya ele; elde aynısı varsa yeni kopya yere; farklı
+  eşya istenirse önce eldeki normal akışla bırakılır. Mermi ve şırınga yere
+  oluşturulur. Bir saniyelik yerel bekleme kaldırıldı; en çok kare başına bir
+  oluşturma işlenir. Eşya listesinde sürükleme seçim üretmemelidir.
+- Durdurma sırasında ana/alt Animator ve Animation.enabled değerlerini saklayıp
+  kapatın; devamda saklanan durumu geri yükleyin. Crow gerçek görsel kökleri
+  ölçeklenir; iç içe kökleri tekrar çarpmayın. Crow üst sınırı 20x'tir.

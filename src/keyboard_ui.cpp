@@ -39,7 +39,7 @@ uint64_t g_emoji_mask = 0;
 bool g_emoji_ready = false, g_emoji_query_ok = false, g_emoji_request = false;
 int g_emoji_page = 0;
 double g_last_shift = -1.0, g_limit_until = -1.0;
-struct TouchKey { ImVec2 min,max;std::function<void()> action;bool repeat; };
+struct TouchKey { ImVec2 min,max;std::function<void()> action;bool repeat;bool list=false; };
 std::vector<TouchKey> g_touch_keys;
 std::function<void()> g_touch_repeat;
 ImVec2 g_repeat_min{},g_repeat_max{};
@@ -47,7 +47,14 @@ double g_repeat_at=0;
 size_t g_wardrobe_tab=0;
 keyboard_ui::PasteProvider g_paste=nullptr;
 struct Layout { float unit, gap, height; };
-void InvalidateKeys(){g_touch_keys.clear();g_touch_repeat={};}
+struct ListTouch {
+    ImVec2 min{},max{};ImGuiID window=0;uint64_t context=0;
+    bool visible=false,down=false,dragged=false,recording=false;
+    float start_x=0,start_y=0,last_y=0,delta=0,threshold=8;
+    std::function<void()> tap;
+};
+ListTouch g_list_touch;
+void InvalidateKeys(){g_touch_keys.clear();g_touch_repeat={};g_list_touch={};}
 
 float Width(const Layout& l, float units) { return units * l.unit + (units - 1.0f) * l.gap; }
 void Dirty() { g_text_dirty = g_restore_cursor = true; }
@@ -126,7 +133,7 @@ void ActionKey(const char* label,float width,float height,std::function<void()> 
     const bool pressed=Key(label,width,height,active,repeat);
     if(!(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)){
         ImRect hit(ImGui::GetItemRectMin(),ImGui::GetItemRectMax());hit.ClipWith(ImGui::GetCurrentWindow()->ClipRect);
-        if(hit.Min.x<hit.Max.x&&hit.Min.y<hit.Max.y)g_touch_keys.push_back({hit.Min,hit.Max,action,repeat});
+        if(hit.Min.x<hit.Max.x&&hit.Min.y<hit.Max.y)g_touch_keys.push_back({hit.Min,hit.Max,action,repeat,g_list_touch.recording});
     }
     if(pressed)action();
 }
@@ -588,30 +595,38 @@ void GameplaySectionBody(float key_height,float content){
         ImGui::BeginDisabled(!s.spawn_ready);
         // Keep the action above the scrolling catalogue, including on short
         // landscape screens. An empty catalogue must not reserve four rows.
-        ActionKey("Seçili eşyayı önüme oluştur",content,key_height,[queue,context=s.context,id=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::Spawn,context};c.item=id;queue(c);});
+        ActionKey("Seçili eşyayı oluştur",content,key_height,[queue,context=s.context,id=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::Spawn,context};c.item=id;queue(c);});
         if(!s.spawn_ready)ImGui::TextWrapped("%s",s.spawn_status.c_str());
         ImGui::TextWrapped("Oluşturulabilir eşya: %d",static_cast<int>(s.items.size()));
         if(!s.items.empty()){
             const float list_height=std::min(key_height*4,std::max(key_height,ImGui::GetContentRegionAvail().y-ImGui::GetStyle().ItemSpacing.y));
             if(ImGui::BeginChild("##game_items",ImVec2(0,list_height),false)){
+                auto* list=ImGui::GetCurrentWindow();
+                if(g_list_touch.window!=list->ID||g_list_touch.context!=s.context)g_list_touch={};
+                g_list_touch.window=list->ID;g_list_touch.context=s.context;g_list_touch.visible=true;
+                g_list_touch.min=list->ClipRect.Min;g_list_touch.max=list->ClipRect.Max;
+                g_list_touch.threshold=std::max(6.f,key_height*.22f);
+                if(g_list_touch.delta!=0){ImGui::SetScrollY(std::clamp(ImGui::GetScrollY()+g_list_touch.delta,0.f,ImGui::GetScrollMaxY()));g_list_touch.delta=0;}
+                g_list_touch.recording=true;
                 for(const auto& item:s.items){
                     ImGui::PushID(item.id);
                     ActionKey(item.name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[id=item.id]{selected=id;InvalidateKeys();},item.id==selected);
                     ImGui::PopID();
                 }
+                g_list_touch.recording=false;
             }
             ImGui::EndChild();
         }
         ImGui::EndDisabled();
-        ImGui::TextWrapped("Eşya önüne bırakılır; ardından normal şekilde alabilirsin. İki oluşturma arasında bir saniye beklenir.");
+        ImGui::TextWrapped("Listeyi düğmelerin üzerinden sürükleyebilirsin. Yeni eşya ele gelir; aynısı eldeyse kopyası önüne oluşur. Farklı eldeki eşya önce bırakılır. Mermi doğrudan önüne oluşur.");
         break;
     }
     case 1:{
         static size_t selected=0,previous=gameplay_bridge::kEnemies;
         static gameplay_bridge::Enemy edit;
         static bool editing=false;
-        if(!s.authority)ImGui::TextWrapped("Düşman ayarları oda yöneticisinde kullanılabilir.");
-        ImGui::BeginDisabled(!s.ready||!s.authority);
+        if(!s.authority)ImGui::TextWrapped("Oda sahibi değilsen ayarlar bu cihazda uygulanır; ağ güncellemeleri etkisini sınırlayabilir.");
+        ImGui::BeginDisabled(!s.ready);
         for(size_t k=0;k<gameplay_bridge::kEnemies;++k){
             if(k%2)ImGui::SameLine();
             ImGui::PushID(static_cast<int>(k)+400);
@@ -633,7 +648,7 @@ void GameplaySectionBody(float key_height,float content){
         if(ImGui::SliderFloat("##enemy_animation",&edit.animation,.1f,3.f,u8"Animasyon: %.1fx"))send(edit);
         editing|=ImGui::IsItemActive();
         ImGui::SetNextItemWidth(content);
-        if(ImGui::SliderFloat("##enemy_size",&edit.size,.25f,3.f,u8"Boyut: %.2fx"))send(edit);
+        if(ImGui::SliderFloat("##enemy_size",&edit.size,.25f,selected==4?20.f:3.f,u8"Boyut: %.2fx"))send(edit);
         editing|=ImGui::IsItemActive();
         ActionKey("Bu düşmanın ayarlarını sıfırla",content,key_height,[queue,context=s.context,enemy=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::ResetEnemy,context};c.enemy=enemy;queue(c);editing=false;});
         ImGui::EndDisabled();ImGui::EndDisabled();
@@ -641,19 +656,24 @@ void GameplaySectionBody(float key_height,float content){
         if(selected==4)ImGui::TextWrapped("Crow için ayrı hareket hızı alanı bulunmadı; animasyon hızını kullanabilirsin.");
         break;
     }
-    case 2:
-        ImGui::TextWrapped("Düşman nesnesini kaldırır. Normal ölüm animasyonu, süreli bayılma ve ödül akışı çalıştırılmaz.");
-        if(!s.authority)ImGui::TextWrapped("Bu işlem için oda yöneticisi olmalısın.");
-        ImGui::BeginDisabled(!s.ready||!s.authority);
+    case 2:{
+        static int operation=0;
+        const float third=(content-ImGui::GetStyle().ItemSpacing.x*2)/3;
+        const char* operations[]={"Öldür","Kaldır","Klonla"};
+        for(int i=0;i<3;++i){if(i)ImGui::SameLine();ImGui::PushID(i+550);ActionKey(operations[i],third,key_height,[i]{operation=i;InvalidateKeys();},operation==i);ImGui::PopID();}
+        ImGui::TextWrapped(operation==0?"Oyunun vurulma/ölüm akışını çalıştırır; geri dönüşü oyun yönetir.":operation==1?"Nesneyi kaldırır; normal ölüm ve yeniden doğma akışı çalışmaz.":"Doğrulanan prefab ile ayrı ağ kimliğine sahip yeni düşman oluşturur.");
+        ImGui::BeginDisabled(!s.ready);
         for(size_t k=0;k<gameplay_bridge::kEnemies;++k){
             if(k%2)ImGui::SameLine();
-            ImGui::PushID(static_cast<int>(k)+500);ImGui::BeginDisabled(s.enemies[k].count==0);
-            ActionKey(gameplay_bridge::kNames[k],half,key_height,[queue,context=s.context,k]{gameplay_bridge::Command c{gameplay_bridge::Kind::RemoveEnemy,context};c.enemy=k;queue(c);});
+            const bool supported=operation==0?s.enemies[k].death_ready:operation==2?s.enemies[k].clone_ready:s.enemies[k].count>0;
+            ImGui::PushID(static_cast<int>(k)+500);ImGui::BeginDisabled(!supported);
+            ActionKey(gameplay_bridge::kNames[k],half,key_height,[queue,context=s.context,k,mode=operation]{const auto kind=mode==0?gameplay_bridge::Kind::KillEnemy:mode==2?gameplay_bridge::Kind::CloneEnemy:gameplay_bridge::Kind::RemoveEnemy;gameplay_bridge::Command c{kind,context};c.enemy=k;queue(c);});
             ImGui::EndDisabled();ImGui::PopID();
         }
         ImGui::EndDisabled();
-        ImGui::TextWrapped("Crow ve Rat yalnız bu cihazda kaldırılır. Granny, Grandpa, MomSpider ve Spider için sahip olduğun ağ nesnesi kaldırılır.");
+        ImGui::TextWrapped("Kapalı seçenek için doğrulanmış ölüm/prefab bağlantısı yoktur. Yetkin olmayan nesne yerel kaldırılır; ölüm isteğinin diğerlerine uygulanmasını oyun belirler.");
         break;
+    }
     case 3:
         ImGui::SeparatorText("Oyuncu dayanıklılığı");
         ImGui::BeginDisabled(!s.god_ready);
@@ -847,6 +867,12 @@ void SetEmojiSupport(uint64_t mask,bool query_ok) {
     g_emoji_ready=true; g_emoji_page=0;
 }
 bool TouchDown(float x,float y){
+    auto& list=g_list_touch;
+    if(list.visible&&x>=list.min.x&&x<list.max.x&&y>=list.min.y&&y<list.max.y){
+        list.down=true;list.dragged=false;list.start_x=x;list.start_y=list.last_y=y;list.tap={};
+        for(const auto& key:g_touch_keys)if(key.list&&x>=key.min.x&&x<key.max.x&&y>=key.min.y&&y<key.max.y){list.tap=key.action;break;}
+        return true;
+    }
     for(const auto& key:g_touch_keys)if(x>=key.min.x&&x<key.max.x&&y>=key.min.y&&y<key.max.y){
         const auto action=key.action;const bool repeat=key.repeat;
         g_repeat_min=key.min;g_repeat_max=key.max;g_touch_repeat=repeat?action:std::function<void()>{};
@@ -855,10 +881,16 @@ bool TouchDown(float x,float y){
     return false;
 }
 void TouchHeld(float x,float y){
+    auto& list=g_list_touch;
+    if(list.down){
+        if(std::fabs(y-list.start_y)>=list.threshold||std::fabs(x-list.start_x)>=list.threshold){list.dragged=true;list.tap={};}
+        if(list.dragged)list.delta+=list.last_y-y;
+        list.last_y=y;return;
+    }
     if(!g_visible||!g_touch_repeat||x<g_repeat_min.x||x>=g_repeat_max.x||y<g_repeat_min.y||y>=g_repeat_max.y)return;
     if(ImGui::GetTime()>=g_repeat_at){const auto action=g_touch_repeat;g_repeat_at=ImGui::GetTime()+.035;action();}
 }
-void TouchUp(){g_touch_repeat={};}
+void TouchUp(){const auto tap=g_list_touch.down&&!g_list_touch.dragged?g_list_touch.tap:std::function<void()>{};g_list_touch.down=false;g_list_touch.tap={};g_touch_repeat={};if(tap)tap();}
 bool HitTest(float x,float y) {
     for(int i=0;i<g_rect_count;++i) if(x>=g_rect_min[i].x&&x<g_rect_max[i].x&&y>=g_rect_min[i].y&&y<g_rect_max[i].y) return true;
     return false;
@@ -873,11 +905,13 @@ void ResetTransientState() {
 }
 void Draw() {
     g_touch_keys.clear();
+    g_list_touch.visible=false;g_list_touch.recording=false;
     g_rect_count=0;
     const auto& io=ImGui::GetIO();
     if(io.DisplaySize.x<=0||io.DisplaySize.y<=0) return;
     if(g_visible) {if(g_shortcuts_only)DrawShortcutStrip(io);else DrawKeyboard(io);}
     else if(g_integrated){DrawHub(io);DrawAutoJoin(io);}
     else DrawShowButton(io);
+    if(!g_list_touch.visible)g_list_touch={};
 }
 }
