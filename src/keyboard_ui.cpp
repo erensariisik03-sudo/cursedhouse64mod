@@ -604,7 +604,10 @@ void GameplaySectionBody(float key_height,float content){
                 auto* list=ImGui::GetCurrentWindow();
                 if(g_list_touch.window!=list->ID||g_list_touch.context!=s.context)g_list_touch={};
                 g_list_touch.window=list->ID;g_list_touch.context=s.context;g_list_touch.visible=true;
-                g_list_touch.min=list->ClipRect.Min;g_list_touch.max=list->ClipRect.Max;
+                // ClipRect is a stack value and changes when EndChild pops it.
+                // InnerClipRect retains the actual visible list content area.
+                g_list_touch.min=list->InnerClipRect.Min;g_list_touch.max=list->InnerClipRect.Max;
+                g_list_touch.visible=g_list_touch.min.x<g_list_touch.max.x&&g_list_touch.min.y<g_list_touch.max.y;
                 g_list_touch.threshold=std::max(6.f,key_height*.22f);
                 if(g_list_touch.delta!=0){ImGui::SetScrollY(std::clamp(ImGui::GetScrollY()+g_list_touch.delta,0.f,ImGui::GetScrollMaxY()));g_list_touch.delta=0;}
                 g_list_touch.recording=true;

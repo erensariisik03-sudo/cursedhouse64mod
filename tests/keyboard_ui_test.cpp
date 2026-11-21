@@ -194,11 +194,20 @@ int main() {
     assert(items.count("Seçili eşyayı oluştur"));
     const auto action=items.at("Seçili eşyayı oluştur");
     auto* hub=ImGui::FindWindowByName("##hub");
-    assert(action.Min.y>=hub->ClipRect.Min.y&&action.Max.y<=hub->ClipRect.Max.y);
+    assert(action.Min.y>=hub->InnerClipRect.Min.y&&action.Max.y<=hub->InnerClipRect.Max.y);
     ImGuiWindow* list=nullptr;
     for(auto* window:ImGui::GetCurrentContext()->Windows)if(window->ChildId==hub->GetID("##game_items"))list=window;
     assert(list&&list->ScrollMax.y>0);
-    const auto start=list->ClipRect.GetCenter();
+    // EndChild pops ClipRect back to the outer clip. Use the persistent inner
+    // rectangle and a real visible item, matching a finger drag on a button.
+    ImRect touch=list->InnerClipRect;bool on_item=false;
+    for(const char* label:{"Prefab 2","Prefab 1"}){
+      const auto found=items.find(label);if(found==items.end())continue;
+      ImRect hit=found->second;hit.ClipWithFull(list->InnerClipRect);
+      if(hit.Min.x<hit.Max.x&&hit.Min.y<hit.Max.y){touch=hit;on_item=true;break;}
+    }
+    assert(on_item);
+    const auto start=touch.GetCenter();
     assert(keyboard_ui::TouchDown(start.x,start.y));
     keyboard_ui::TouchHeld(start.x,start.y-55);keyboard_ui::TouchUp();Frame();Frame();Frame();
     assert(list->Scroll.y>0); // dragging on item buttons scrolls instead of selecting one
