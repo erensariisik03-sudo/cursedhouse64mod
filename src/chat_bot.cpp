@@ -133,7 +133,10 @@ class Controller {
         bool read_ok=false;const auto after=ReadString(input_text,input.Get(),read_ok);
         if(read_ok&&after==line){
             Root empty(api,reinterpret_cast<Object*>(api.string_new("")));void* reset[]={empty.Get()};
-            if(empty.Get())api.Call(input_set,input.Get(),reset);return false;
+            if(empty.Get()) {
+                api.Call(input_set,input.Get(),reset);
+            }
+            return false;
         }
         if(!sent||!read_ok)return false;
         recent_sent.push_back(chat_bot_core::StripTags(line));while(recent_sent.size()>12)recent_sent.pop_front();

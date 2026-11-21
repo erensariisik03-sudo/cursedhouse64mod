@@ -28,7 +28,8 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
 - Dobby bu paket için uyarlanmıştır. Bağımlılık lisanslarını ve ImGui'nin
   mevcut context kaybı uzantısını koruyun.
 - Kullanıcı açıkça istemedikçe yerel build veya C++ test derlemesi çalıştırmayın.
-  Eko modda ilgili kaynakları kontrol edip ZIP sağlayın; derleme GitHub
+  Eko modda bildirilen hatanın kaynağını düzeltin; ek kontrolü yalnız UTF-8
+  editörüyle sınırlayın. ZIP sağlayın; derleme GitHub
   üzerinden kullanıcı tarafından yapılır. Yapılmayan doğrulamayı yapılmış göstermeyin.
 
 - SKIP yalnız iç kontrol işaretidir; model yanıtını parçalamadan ve sohbete
