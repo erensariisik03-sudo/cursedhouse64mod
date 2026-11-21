@@ -17,3 +17,6 @@ UnityEngine.SceneManagement,SceneManager,GetActiveScene,public static Scene GetA
 Photon.Pun,PhotonNetwork,Instantiate,"public static GameObject Instantiate(string prefabName, Vector3 position, Quaternion rotation, byte group = 0, object[] data) { }",// RVA: 0x42EAB0C Offset: 0x42E6B0C VA: 0x42EAB0C,reference only; resolved by metadata at runtime
 Photon.Pun,PhotonNetwork,Destroy,public static void Destroy(PhotonView targetView) { },// RVA: 0x42EC1C4 Offset: 0x42E81C4 VA: 0x42EC1C4,reference only; resolved by metadata at runtime
 Photon.Pun,PhotonNetwork,Destroy,public static void Destroy(GameObject targetGo) { },// RVA: 0x42EC8AC Offset: 0x42E88AC VA: 0x42EC8AC,reference only; resolved by metadata at runtime
+UnityEngine.SceneManagement,Scene,IsValidInternal,private static bool IsValidInternal(int sceneHandle) { },// RVA: 0x4D8BAFC Offset: 0x4D87AFC VA: 0x4D8BAFC,reference only; resolved by metadata at runtime
+UnityEngine.SceneManagement,Scene,GetIsLoadedInternal,private static bool GetIsLoadedInternal(int sceneHandle) { },// RVA: 0x4D8BD50 Offset: 0x4D87D50 VA: 0x4D8BD50,reference only; resolved by metadata at runtime
+Photon.Pun,MonoBehaviourPun,get_photonView,public PhotonView get_photonView() { },// RVA: 0x42F95CC Offset: 0x42F55CC VA: 0x42F95CC,reference only; resolved by metadata at runtime

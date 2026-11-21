@@ -17,6 +17,7 @@ struct Snapshot {
     uint64_t context=0;bool ready=false,authority=false,spawn_ready=false,god_ready=false,god=false;
     std::array<Enemy,kEnemies> enemies{};std::vector<Item> items;
     std::string status=u8"Oyun sahnesi bekleniyor.";
+    std::string spawn_status=u8"Maç envanteri bekleniyor.",god_status=u8"Maç karakteri bekleniyor.";
 };
 enum class Kind { EnemySettings, ResetEnemy, RemoveEnemy, Spawn, God };
 struct Command { Kind kind;uint64_t context;size_t enemy=0;Enemy settings{};int item=0;bool flag=false;double queued=0; };

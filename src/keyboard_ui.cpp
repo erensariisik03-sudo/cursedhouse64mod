@@ -578,7 +578,7 @@ void GameplaySectionBody(float key_height,float content){
     ActionKey(u8"← Bölümlere dön",content,key_height,back);
     ImGui::PopID();
     ImGui::Spacing();ImGui::TextWrapped("%s",s.status.c_str());
-    if(!s.ready)ImGui::TextWrapped("Kendi maç karakterin hazır olduğunda kontroller açılır.");
+    if(!s.ready)ImGui::TextWrapped("Odaya girip sahnenin yüklenmesini bekle.");
     const auto queue=[](gameplay_bridge::Command c){gameplay_bridge::Queue(c);InvalidateKeys();};
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
     switch(g_gameplay_page){
@@ -589,6 +589,7 @@ void GameplaySectionBody(float key_height,float content){
         // Keep the action above the scrolling catalogue, including on short
         // landscape screens. An empty catalogue must not reserve four rows.
         ActionKey("Seçili eşyayı önüme oluştur",content,key_height,[queue,context=s.context,id=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::Spawn,context};c.item=id;queue(c);});
+        if(!s.spawn_ready)ImGui::TextWrapped("%s",s.spawn_status.c_str());
         ImGui::TextWrapped("Oluşturulabilir eşya: %d",static_cast<int>(s.items.size()));
         if(!s.items.empty()){
             const float list_height=std::min(key_height*4,std::max(key_height,ImGui::GetContentRegionAvail().y-ImGui::GetStyle().ItemSpacing.y));
@@ -658,6 +659,7 @@ void GameplaySectionBody(float key_height,float content){
         ImGui::BeginDisabled(!s.god_ready);
         ActionKey(s.god?"God Mode AÇIK - kapat":"God Mode KAPALI - aç",content,key_height,[queue,context=s.context,on=!s.god]{gameplay_bridge::Command c{gameplay_bridge::Kind::God,context};c.flag=on;queue(c);},s.god);
         ImGui::EndDisabled();
+        ImGui::TextWrapped("%s",s.god_status.c_str());
         ImGui::TextWrapped("Kendi karakterinin AI ve ölüm girişlerini engeller. Ölüm başladıktan sonra açmak karakteri yeniden canlandırmaz; tüm çevresel senaryoları kapsadığı doğrulanmadı.");
         break;
     default:break;

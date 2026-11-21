@@ -29,7 +29,7 @@ bool hooks_installed=false,god_hooks_ready=false,protect=false;
 Handle protected_player=0,protected_manager=0;
 int protected_scene=0;
 const Method* scene_method=nullptr;
-const Method *mine_method=nullptr,*room_method=nullptr;
+const Method *mine_method=nullptr,*room_method=nullptr,*view_method=nullptr,*scene_valid_method=nullptr,*scene_loaded_method=nullptr;
 Field* player_view=nullptr;
 uintptr_t protected_room=0;
 using Unary=void(*)(Object*,const Method*);
@@ -39,15 +39,25 @@ Unary original_die=nullptr,original_ai=nullptr,original_spider=nullptr,original_
 Named original_named=nullptr;
 Move original_mom=nullptr;
 Field* mom_owner=nullptr;
+bool ReadScene(const Api& api,const Method* get,const Method* valid,const Method* loaded,int& handle){
+    bool ok=false;Root boxed(api,api.Call(get,nullptr,nullptr,&ok));if(!ok||!boxed.Get())return false;
+    auto* value=static_cast<Scene*>(api.object_unbox(boxed.Get()));if(!value)return false;
+    const int current=value->handle;int argument=current;void* args[]={&argument};
+    Root is_valid(api,api.Call(valid,nullptr,args,&ok));if(!ok||!is_valid.Get()||!*static_cast<bool*>(api.object_unbox(is_valid.Get())))return false;
+    Root is_loaded(api,api.Call(loaded,nullptr,args,&ok));if(!ok||!is_loaded.Get()||!*static_cast<bool*>(api.object_unbox(is_loaded.Get())))return false;
+    // Scene handles are opaque signed identifiers, not non-negative indices.
+    handle=current;return true;
+}
 bool Protected(Object* object,bool manager=false){
     if(std::this_thread::get_id()!=unity_thread)return false;
     if(!protect||!object||!hook_api)return false;
     const Handle h=manager?protected_manager:protected_player;
-    if(!h||hook_api->gchandle_get_target(h)!=object||!player_view||!protected_player)return false;
-    if(hook_api->Value<Scene>(scene_method,nullptr,Scene{-1}).handle!=protected_scene)return false;
+    if(!h||hook_api->gchandle_get_target(h)!=object||!protected_player)return false;
+    int current=0;if(!ReadScene(*hook_api,scene_method,scene_valid_method,scene_loaded_method,current)||current!=protected_scene)return false;
     if(reinterpret_cast<uintptr_t>(hook_api->Call(room_method))!=protected_room||!protected_room)return false;
     auto* player=hook_api->gchandle_get_target(protected_player);if(!player)return false;
-    Object* view=nullptr;hook_api->field_get_value(player,player_view,&view);
+    Object* view=nullptr;if(player_view)hook_api->field_get_value(player,player_view,&view);
+    if(!view&&view_method)view=hook_api->Call(view_method,player);
     Root pv(*hook_api,view);
     return pv.Get()&&hook_api->Value<bool>(mine_method,pv.Get(),false);
 }
@@ -104,11 +114,12 @@ struct Runtime {
     std::vector<std::unique_ptr<Actor>> actors;
     std::vector<std::unique_ptr<Prefab>> prefabs;
     gameplay_bridge::Snapshot snap;
+    std::string player_issue=u8"Maç karakteri bekleniyor.",inventory_issue=u8"Maç envanteri bekleniyor.";
     const Method *find{},*length{},*item{},*alive{},*active{},*enabled_get{},*enabled_set{},*go{},*go_active{},
         *transform{},*scale_get{},*scale_set{},*nav_get{},*nav_set{},*nav_stop_get{},*nav_stop_set{},*nav_onmesh{},
         *anim_get{},*anim_set{},*current_room{},*master{},*queue{},*get_scene{},*mine{},*name_get{},
-        *pos_get{},*rot_get{},*spawn{},*prefix_get{},*path_combine{},*network_destroy{},*local_destroy{};
-    Class *player_class{},*inventory_class{},*tie_class{};
+        *pos_get{},*rot_get{},*spawn{},*prefix_get{},*path_combine{},*network_destroy{},*local_destroy{},*view_get{},*scene_valid{},*scene_loaded{};
+    Class *player_class{},*manager_class{},*inventory_class{},*tie_class{};
     explicit Runtime(const Api& a):api(a),player(a),manager(a),inventory(a){}
     const Method* ResolveMethod(const char* ns,const char* c,const char* n,int count=0){return api.FindMethod(api.Find(ns,c),n,count);}
     Object* Ref(Object* o,const char* field){
@@ -118,13 +129,20 @@ struct Runtime {
     }
     bool Alive(Object* o){if(!o)return false;void* args[]={o};bool ok=false;auto* b=api.Call(alive,nullptr,args,&ok);return ok&&b&&*static_cast<bool*>(api.object_unbox(b));}
     bool Active(Object* o){return Alive(o)&&api.Value<bool>(active,o,false);}
-    bool Owned(Object* o,const char* field){Root pv(api,Ref(o,field));return Alive(pv.Get())&&api.Value<bool>(mine,pv.Get(),false);}
+    bool InHierarchy(Object* o){if(!Alive(o))return false;Root object_go(api,api.Call(go,o));return Alive(object_go.Get())&&api.Value<bool>(go_active,object_go.Get(),false);}
+    bool Owned(Object* o,const char* field){
+        if(!o)return false;
+        Root pv(api,Ref(o,field));
+        if(!pv.Get()&&view_get)pv.Set(api.Call(view_get,o));
+        return Alive(pv.Get())&&api.Value<bool>(mine,pv.Get(),false);
+    }
     template<class T> bool Set(const Method* m,Object* o,T value){if(!m||!o)return false;void* args[]={&value};bool ok=false;api.Call(m,o,args,&ok);return ok;}
     template<class F> bool Each(Class* c,F&& fn){
         if(!c)return true;
         const auto* type=api.class_get_type(c);Root reflection(api,type?api.type_get_object(type):nullptr);
         if(!reflection.Get())return false;
-        int inactive=0,sort=0;void* args[]={reflection.Get(),&inactive,&sort};bool ok=false;
+        // Inspect disabled scripts too; callers require an active GameObject.
+        int inactive=1,sort=0;void* args[]={reflection.Get(),&inactive,&sort};bool ok=false;
         Root array(api,api.Call(find,nullptr,args,&ok));if(!ok||!array.Get())return false;
         Root count(api,api.Call(length,array.Get(),nullptr,&ok));if(!ok||!count.Get())return false;
         const int n=*static_cast<int*>(api.object_unbox(count.Get()));if(n<0||n>512)return false;
@@ -158,13 +176,15 @@ struct Runtime {
         anim_get=ResolveMethod("UnityEngine","Animator","get_speed");anim_set=ResolveMethod("UnityEngine","Animator","set_speed",1);
         current_room=ResolveMethod("Photon.Pun","PhotonNetwork","get_CurrentRoom");master=ResolveMethod("Photon.Pun","PhotonNetwork","get_IsMasterClient");queue=ResolveMethod("Photon.Pun","PhotonNetwork","get_IsMessageQueueRunning");
         get_scene=ResolveMethod("UnityEngine.SceneManagement","SceneManager","GetActiveScene");mine=ResolveMethod("Photon.Pun","PhotonView","get_IsMine");
+        scene_valid=ResolveMethod("UnityEngine.SceneManagement","Scene","IsValidInternal",1);scene_loaded=ResolveMethod("UnityEngine.SceneManagement","Scene","GetIsLoadedInternal",1);
+        view_get=ResolveMethod("Photon.Pun","MonoBehaviourPun","get_photonView");
         name_get=ResolveMethod("UnityEngine","Object","get_name");pos_get=ResolveMethod("UnityEngine","Transform","get_position");rot_get=ResolveMethod("UnityEngine","Transform","get_rotation");
         spawn=ResolveMethod("Photon.Pun","PhotonNetwork","Instantiate",5);path_combine=ResolveMethod("System.IO","Path","Combine",2);
         prefix_get=ResolveMethod("<PrivateImplementationDetails>{B6FBF95C-D343-4B5E-9090-977A04841BC0}","a","bvx");
         network_destroy=ExactDestroy();local_destroy=ResolveMethod("UnityEngine","Object","Destroy",1);
-        player_class=api.Find("","playerController");inventory_class=api.Find("","HandlePickUpItemInteractions");tie_class=api.Find("","HandItemTie");
+        player_class=api.Find("","playerController");manager_class=api.Find("","playerManager");inventory_class=api.Find("","HandlePickUpItemInteractions");tie_class=api.Find("","HandItemTie");
         for(size_t k=0;k<kEnemyCount;++k)classes[k]=api.Find("",specs[k].klass);
-        const Method* required[]={find,length,item,alive,active,enabled_get,enabled_set,go,go_active,transform,scale_get,scale_set,current_room,master,queue,get_scene,mine};
+        const Method* required[]={find,length,item,alive,active,enabled_get,enabled_set,go,go_active,transform,scale_get,scale_set,current_room,master,queue,get_scene,scene_valid,scene_loaded,mine};
         return player_class&&std::all_of(std::begin(required),std::end(required),[](auto* m){return m!=nullptr;});
     }
     void Clear(bool restore){
@@ -285,7 +305,7 @@ struct Runtime {
     void Spawn(int id,double now){
         if(!snap.spawn_ready||now<next_spawn){snap.status=u8"Eşya oluşturma hazır değil veya bir saniyelik bekleme sürüyor.";return;}
         const auto it=std::find_if(prefabs.begin(),prefabs.end(),[&](const auto& p){return p->id==id;});
-        if(it==prefabs.end()||!Owned(inventory.Get(),"pv")){snap.status=u8"Eşya seçimi bu oyuncu oturumuna ait değil.";return;}
+        if(it==prefabs.end()||!InHierarchy(inventory.Get())||!Owned(inventory.Get(),"pv")){snap.status=u8"Eşya seçimi bu oyuncu oturumuna ait değil.";return;}
         Root point(api,Ref(inventory.Get(),"dropPointTransform"));if(!Alive(point.Get())||!Alive((*it)->object.Get()))return;
         bool ok=false;Root prefix(api,api.Call(prefix_get,nullptr,nullptr,&ok));if(!ok||!prefix.Get())return;
         Root name(api,reinterpret_cast<Object*>(api.string_new((*it)->name.c_str())));if(!name.Get())return;
@@ -324,6 +344,7 @@ struct Runtime {
         if(paused){Clear(false);scene=-1;room_id=player_id=0;gameplay_bridge::Publish(snap);return;}
         if(!initialized){initialized=true;valid=Resolve();}
         if(!valid){snap.status=u8"Oyun API bağlantısı bulunamadı; bu sürümde kontroller kullanılamıyor.";gameplay_bridge::Clear();gameplay_bridge::Publish(snap);return;}
+        const bool previously_ready=snap.ready;
         // Root handles may be replaced during discovery. Hooks must never read
         // an old handle while a managed call reenters this update.
         protect=false;protected_player=0;protected_manager=0;
@@ -332,29 +353,75 @@ struct Runtime {
             snap.status=u8"Oyun ağ kuyruğu duraklatıldı; kontroller bekliyor.";
             gameplay_bridge::Publish(snap);return;
         }
-        Root room(api,api.Call(current_room));const int current_scene=api.Value<Scene>(get_scene,nullptr,Scene{-1}).handle;
+        Root room(api,api.Call(current_room));int current_scene=0;
+        const bool scene_ready=ReadScene(api,get_scene,scene_valid,scene_loaded,current_scene);
+        if(!scene_ready){
+            Clear(false);scene=-1;room_id=player_id=0;
+            snap.status=u8"Oyun sahnesinin yüklenmesi bekleniyor.";
+            gameplay_bridge::Publish(snap);return;
+        }
         const auto current_room_id=reinterpret_cast<uintptr_t>(room.Get());
         if(current_scene!=scene||current_room_id!=room_id){Clear(false);scene=current_scene;room_id=current_room_id;++generation;}
         const double now=gameplay_bridge::Now();
-        if(now>=next_scan||!Alive(player.Get())){
-            next_scan=now+1;
-            Root candidate(api);bool ambiguous=false;
-            Each(player_class,[&](Object* o){if(Active(o)&&Owned(o,"qsa")){if(candidate.Get())ambiguous=true;candidate.Set(o);}});
+        if(now>=next_scan){
+            Root candidate(api),candidate_manager(api);bool ambiguous=false,manager_ambiguous=false;
+            int seen=0,hierarchical=0;
+            const auto consider=[&](Object* o){
+                if(!o||api.object_get_class(o)!=player_class)return;
+                ++seen;
+                if(!InHierarchy(o))return;
+                ++hierarchical;
+                if(!Owned(o,"qsa"))return;
+                if(candidate.Get()&&candidate.Get()!=o)ambiguous=true;
+                candidate.Set(o);
+            };
+            const bool player_scan=Each(player_class,consider);
+            // A disabled controller may also be referenced by its own manager.
+            const bool manager_scan=Each(manager_class,[&](Object* o){
+                if(!InHierarchy(o)||!Owned(o,"raf"))return;
+                Root controller(api,Ref(o,"playerControllerInstance"));consider(controller.Get());
+                if(controller.Get()&&controller.Get()==candidate.Get()){
+                    if(candidate_manager.Get()&&candidate_manager.Get()!=o)manager_ambiguous=true;
+                    candidate_manager.Set(o);
+                }
+            });
             if(ambiguous)candidate.Set(nullptr);
             const auto id=reinterpret_cast<uintptr_t>(candidate.Get());
             if(id!=player_id){Clear(true);player_id=id;++generation;}
             player.Set(candidate.Get());manager.Set(Ref(player.Get(),"qry"));
+            if(!manager.Get()&&player.Get()&&!manager_ambiguous)manager.Set(candidate_manager.Get());
+            player_issue=ambiguous?u8"Birden fazla yerel maç karakteri var; yeniden doğma işlemi bekleniyor.":
+                !player_scan&&!manager_scan?u8"Maç oyuncusu araması tamamlanamadı.":
+                !seen?u8"Bu sahnede maç karakteri yok; bekleme odasında maç oyuncusu oluşmaz.":
+                !hierarchical?u8"Maç karakterinin sahnede etkinleşmesi bekleniyor.":
+                !player.Get()?u8"Maç karakterinin sana ait olduğu henüz doğrulanamadı.":"";
             Root inv(api);ambiguous=false;
-            Each(inventory_class,[&](Object* o){if(Active(o)&&Owned(o,"pv")){if(inv.Get())ambiguous=true;inv.Set(o);}});
+            const bool inventory_scan=Each(inventory_class,[&](Object* o){if(InHierarchy(o)&&Owned(o,"pv")){if(inv.Get()&&inv.Get()!=o)ambiguous=true;inv.Set(o);}});
             inventory.Set(ambiguous?nullptr:inv.Get());Catalog();
+            inventory_issue=ambiguous?u8"Birden fazla yerel envanter bulundu; yeniden doğma işlemi bekleniyor.":
+                !inventory_scan?u8"Maç envanteri araması tamamlanamadı.":
+                !inventory.Get()?u8"Kendi maç envanterin bulunamadı; eşya oluşturma maç içinde açılır.":"";
             if(room.Get())Discover();
+            next_scan=now+1;
         }
         const bool authority=room.Get()&&api.Value<bool>(master,nullptr,false);
         if(was_authority&&!authority){for(auto& a:actors)Restore(*a);settings={};}
-        was_authority=authority;snap.context=generation;snap.ready=room.Get()&&Active(player.Get())&&current_scene>=0;
-        snap.authority=authority;snap.god_ready=snap.ready&&god_hooks_ready&&Alive(manager.Get());
-        snap.spawn_ready=snap.ready&&Active(inventory.Get())&&spawn&&prefix_get&&path_combine&&pos_get&&rot_get&&name_get&&!prefabs.empty();
-        if(!snap.ready){protect=false;gameplay_bridge::Clear();snap.status=u8"Kendi maç karakterin bekleniyor.";}
+        // Enemy controls need the room/scene and owned enemy, not a player
+        // controller. Spawn and God Mode keep their own stricter requirements.
+        was_authority=authority;snap.context=generation;snap.ready=room.Get()!=nullptr;
+        const bool own_player=InHierarchy(player.Get())&&Owned(player.Get(),"qsa");
+        const bool own_inventory=InHierarchy(inventory.Get())&&Owned(inventory.Get(),"pv");
+        const bool own_manager=InHierarchy(manager.Get())&&Owned(manager.Get(),"raf");
+        snap.authority=authority;snap.god_ready=snap.ready&&own_player&&god_hooks_ready&&own_manager;
+        const bool spawn_api=spawn&&prefix_get&&path_combine&&pos_get&&rot_get&&name_get;
+        snap.spawn_ready=snap.ready&&own_inventory&&spawn_api&&!prefabs.empty();
+        snap.spawn_status=!snap.ready?u8"Bir oyun odasına gir.":!own_inventory?(inventory_issue.empty()?u8"Envanter sahipliği yeniden doğrulanıyor.":inventory_issue):
+            !spawn_api?u8"Bu sürümün eşya oluşturma bağlantısı eksik.":prefabs.empty()?u8"Oyunun eşya prefab listesini yüklemesi bekleniyor.":u8"Eşya oluşturma hazır.";
+        snap.god_status=!snap.ready?u8"Bir oyun odasına gir.":!own_player?(player_issue.empty()?u8"Oyuncu sahipliği yeniden doğrulanıyor.":player_issue):
+            !own_manager?u8"Kendi karakterinin oyun yöneticisi bekleniyor.":!god_hooks_ready?u8"Ölüm koruması bağlantılarının tamamı kurulamadı.":u8"Kendi karakterin için God Mode hazır.";
+        if(!snap.god_ready)snap.god=false;
+        if(!snap.ready){protect=false;gameplay_bridge::Clear();snap.status=u8"Oyun odasına girmen bekleniyor.";}
+        else if(!previously_ready||snap.status==u8"Oyun sahnesi bekleniyor.")snap.status=u8"Oda ve sahne hazır. Her kontrol kendi hedefi bulunduğunda açılır.";
         for(const auto& command:gameplay_bridge::Take()){
             if(!snap.ready||command.context!=generation||now-command.queued>3)continue;
             if(command.kind==gameplay_bridge::Kind::Spawn){Spawn(command.item,now);continue;}
@@ -369,7 +436,6 @@ struct Runtime {
         protect=snap.god&&snap.god_ready;protected_player=player.h;protected_manager=manager.h;protected_scene=scene;protected_room=room_id;
         if(authority&&snap.ready)for(auto& a:actors)Apply(*a);
         for(size_t k=0;k<kEnemyCount;++k){const int count=snap.enemies[k].count;snap.enemies[k]=settings[k];snap.enemies[k].count=count;}
-        if(snap.ready&&snap.status==u8"Oyun sahnesi bekleniyor.")snap.status=u8"Oyun kontrolleri hazır.";
         gameplay_bridge::Publish(snap);
     }
 };
@@ -381,9 +447,12 @@ void Install(const Api& api){
     if(!api.domain_get||!api.class_get_field_from_name||!api.field_get_value||!api.gchandle_new)return;
     auto* player=api.Find("","playerController");auto* manager=api.Find("","playerManager");if(!player||!manager)return;
     scene_method=api.FindMethod(api.Find("UnityEngine.SceneManagement","SceneManager"),"GetActiveScene",0);if(!scene_method)return;
+    auto* scene_class=api.Find("UnityEngine.SceneManagement","Scene");
+    scene_valid_method=api.FindMethod(scene_class,"IsValidInternal",1);scene_loaded_method=api.FindMethod(scene_class,"GetIsLoadedInternal",1);
     room_method=api.FindMethod(api.Find("Photon.Pun","PhotonNetwork"),"get_CurrentRoom",0);
     mine_method=api.FindMethod(api.Find("Photon.Pun","PhotonView"),"get_IsMine",0);
-    player_view=api.class_get_field_from_name(player,"qsa");if(!room_method||!mine_method||!player_view)return;
+    view_method=api.FindMethod(api.Find("Photon.Pun","MonoBehaviourPun"),"get_photonView",0);
+    player_view=api.class_get_field_from_name(player,"qsa");if(!room_method||!mine_method||(!player_view&&!view_method)||!scene_valid_method||!scene_loaded_method)return;
     const bool a=Hook(api.FindMethod(manager,"die",0),reinterpret_cast<void*>(Die),original_die);
     const bool b=Hook(api.FindMethod(player,"RPC_playerKilledByAI",0),reinterpret_cast<void*>(AiDeath),original_ai);
     const bool c=Hook(api.FindMethod(player,"RPC_playerDiesBySpider",0),reinterpret_cast<void*>(SpiderDeath),original_spider);

@@ -149,12 +149,26 @@ bu dosya çalışma anı adres yapılandırması değildir. Aynı ariteye sahip
 Renderer yalnız sayısal ayarları ve oturum kimlikli komutları kuyruğa koyar.
 Unity çağrıları Unity karesinde yapılır; eski oda/karakterden gelen ve üç saniyeden
 eski komutlar atılır. Yeni oda/sahne/karakter oturumunda ayarlar sıfırlanır.
-Desteklenmeyen metadata veya henüz oluşmamış karakterde kontroller kapalı kalır.
+Sahne kimliği pozitif indeks sayılmaz; geçerlilik ve yüklenme Unity'nin kendi
+`Scene.IsValidInternal`/`GetIsLoadedInternal` metotlarıyla doğrulanır.
+Kapalı bir script, etkin GameObject üzerindeki kendi oyuncunu bulmayı engellemez.
+Özel PhotonView önbelleği boşsa miras alınan `get_photonView` kullanılır;
+ayrıca kendi playerManager nesnesinin playerControllerInstance bağı okunur.
+Belirsiz veya başka oyuncuya ait karakter seçilmez.
+Düşman kontrolleri oyuncu keşfinden bağımsızdır; oda yöneticisi ve düşmanın
+sahipliği doğrulanır. Eşya için kendi envanterin, God Mode için kendi karakterin
+ve yöneticin gerekir. Bekleme odasında maç karakteri/envanteri bulunmayabilir.
+Pasif eşya/God Mode düğmeleri bekleme nedenini gösterir; hazır olunca eski
+bekleme yazısı temizlenir. Oyuncu araması saniyede bir tekrarlanır.
+Desteklenmeyen metadata veya bulunamayan ilgili hedefte o kontrol kapalı kalır.
 God Mode bağlantılarından biri eksikse bu düğme etkinleştirilmez.
 
 Yeni host testleri kapalı God Mode'un özgün çağrıları iletmesini; oyuncu, oda,
 sahne ve iş parçacığı sınırlarını; coroutine ve GC handle davranışını; hızın
 üst üste çarpılmamasını ve geri yüklemeyi; eski UI komutlarının reddini denetler.
+Ayrıca negatif fakat geçerli sahneleri, yüklenmemiş/geçersiz sahnelerin reddini,
+kapalı script üzerindeki etkin GameObject'i ve PhotonView önbelleği boşken
+sahiplik denetiminin korunmasını kapsar.
 Yerel build/C++ test derlemesi çalıştırılmadı; GitHub CI ve cihaz davranışı
 ayrıca doğrulanmalıdır.
 

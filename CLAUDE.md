@@ -36,6 +36,12 @@ libmultiplayermod.so dosyasıdır. Derleme GitHub Actions üzerinden yapılır.
   diğer tüm çağrıları asıl metotlara iletin. Coroutine MoveNext ABI'sini koruyun.
   Dokunma callback'lerinde render karesinin yerel değişkenlerini referansla
   yakalamayın; oturum, seçim ve komut değerlerini kopyalayın.
+  Scene.handle opak, işaretli bir kimliktir; pozitiflik koşulu koymayın.
+  Geçerlilik/yüklenmeyi Unity API'siyle sınayın. Kendi oyuncunu keşfederken
+  Behaviour.enabled yerine GameObject.activeInHierarchy ve Photon sahipliği
+  arayın; özel view önbelleği boşsa MonoBehaviourPun.get_photonView kullanın.
+  Düşman/eşya/God kontrollerinin hedef koşullarını ayrı tutun ve pasiflik
+  nedenini gösterin; bekleme durumundan hazır durumuna geçişte yazıyı yenileyin.
 - Dobby bu paket için uyarlanmıştır. Bağımlılık lisanslarını ve ImGui'nin
   mevcut context kaybı uzantısını koruyun.
 - Kullanıcı açıkça istemedikçe yerel build veya C++ test derlemesi çalıştırmayın.
