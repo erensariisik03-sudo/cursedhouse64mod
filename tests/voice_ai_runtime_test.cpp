@@ -68,9 +68,9 @@ int main(){
  voice_ai::float_class=CL(&single);voice_ai::hook_api=&a;voice_ai::buf_field=FL(&buffer_field);voice_ai::eos_field=FL(&end_field);voice_ai::original_frame=OriginalFrame;
  N link{&unity_class},frame{&unity_class};for(float& f:buffer.data)f=.1f;
  {auto list=std::make_shared<voice_ai::Streams>();list->push_back(std::make_shared<voice_ai::Stream>(a,O(&link),2,16000,1,"Ali"));std::atomic_store(&voice_ai::streams,std::shared_ptr<const voice_ai::Streams>(list));}
- voice_ai::capture=true;voice_ai::FrameHook(O(&link),O(&frame),nullptr);voice_ai::segments.Flush(voice_ai::Now()+1);voice_ai_core::Utterance u;assert(voice_ai::segments.Take(u)&&u.actor==2&&u.samples.size()==6400&&frame_forwards==1);
+ voice_ai::capture=true;for(int i=0;i<5;++i)voice_ai::FrameHook(O(&link),O(&frame),nullptr);voice_ai::segments.Flush(voice_ai::Now()+1);voice_ai_core::Utterance u;assert(voice_ai::segments.Take(u)&&u.actor==2&&u.samples.size()==32000&&frame_forwards==5); // 5 x 0.4 s = the 2 s minimum
  stale_audio=true;voice_ai::capture=true;voice_ai::FrameHook(O(&link),O(&frame),nullptr);voice_ai::segments.Flush(voice_ai::Now()+2);assert(!voice_ai::segments.Take(u));stale_audio=false;
- voice_ai::capture=false;voice_ai::FrameHook(O(&link),O(&frame),nullptr);assert(frame_forwards==3);voice_ai::segments.Flush(voice_ai::Now()+2);assert(!voice_ai::segments.Take(u));
+ voice_ai::capture=false;voice_ai::FrameHook(O(&link),O(&frame),nullptr);assert(frame_forwards==7);voice_ai::segments.Flush(voice_ai::Now()+2);assert(!voice_ai::segments.Take(u));
  std::atomic_store(&voice_ai::streams,std::shared_ptr<const voice_ai::Streams>(std::make_shared<voice_ai::Streams>()));assert(roots.empty());
  std::cout<<"Voice native runtime: mic shutoff before clip, direct clip source/readback, external mic re-enable blocked, remembered mute restore, local playback mute, setup failure and stale-room fail-closed, pinned PCM with runtime array header and original frame forwarding: PASS\n";
 }

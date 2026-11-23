@@ -237,7 +237,7 @@ bool Speak(const std::string& text, std::string& wav) {
         if (code < 0) { env->DeleteGlobalRef(g_tts); g_tts = nullptr; g_tts_retry_ms = MsNow() + 30000; return false; } // motor yok / Türkçe yüklü değil / paket görünürlüğü
         env->CallIntMethod(g_tts, set_lang, locale); Bad(env);
         // Erkek ton: Android'de cinsiyet alanı yok; perdeyi düşür, hızı biraz yavaşlat.
-        env->CallIntMethod(g_tts, set_pitch, 0.72f); Bad(env);
+        env->CallIntMethod(g_tts, set_pitch, 0.6f); Bad(env);
         env->CallIntMethod(g_tts, set_rate, 0.95f); Bad(env);
         g_tts_ready = true;
     }

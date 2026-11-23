@@ -192,7 +192,7 @@ struct Runtime {
   Root text(a,reinterpret_cast<Object*>(a.string_new(line.c_str())));void* args[]={text.Get()};bool ok=false;a.Call(input_set,input.Get(),args,&ok);if(!ok)return false;a.Call(chat_send,chat.Get(),nullptr,&ok);bool sent=ok;Root after(a,a.Call(input_text,input.Get()));if(!after.Get())return false;
   std::string current=a.Utf8(reinterpret_cast<String*>(after.Get()));if(current==line){void* restore[]={old.Get()};a.Call(input_set,input.Get(),restore);return false;}return sent&&current.empty()&&reinterpret_cast<uintptr_t>(a.Call(current_room))==room_id;
  }
- void Queue(Request q){if(requests.size()>=4||!Allowed(q.name)||cfg.key.empty())return;q.epoch=epoch;q.room=room_id;q.key=cfg.key;q.system=cfg.system;q.own_name=cfg.own_name;q.strict=cfg.all&&cfg.strict;q.voice=settings.output==1;q.history=history;requests.push_back(std::move(q));}
+ void Queue(Request q){if(!Allowed(q.name)||cfg.key.empty())return;q.epoch=epoch;q.room=room_id;q.key=cfg.key;q.system=cfg.system;q.own_name=cfg.own_name;q.strict=cfg.all&&cfg.strict;q.voice=settings.output==1;q.history=history;if(!requests.empty()&&Merge(requests.back(),q))return;if(requests.size()>=3)requests.pop_front();requests.push_back(std::move(q));}
 public:
  void Abort(){Reset(true);valid=false;}
  explicit Runtime(const Api& api):a(api),room_root(a),manager(a),recorder(a),lease_owner(a),old_clip(a),clip(a),local_go(a),local_source(a){}
