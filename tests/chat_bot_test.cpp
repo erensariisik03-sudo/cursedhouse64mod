@@ -220,6 +220,12 @@ int main() {
     assert(chat_bot_fx::Lines(chat_bot_fx::Event::Profile,u8"İmam",true).back().find(u8"MODEL: İMAM")!=std::string::npos);
     // Kalıcı ayar
     {
+        assert(BuildSystem(0,"",45,false).find("yalnızca SKIP")==std::string::npos);
+        assert(BuildSystem(0,"",45,false).find("Kahkaha")!=std::string::npos);
+        assert(BuildSystem(0,"",45,true).find("yalnızca SKIP")!=std::string::npos);
+        assert(ParseConfig("").message_filter);
+        assert(!ParseConfig("messagefilter=0\n").message_filter);
+        Config off;off.message_filter=false;assert(!ParseConfig(SerializeConfig(off)).message_filter);
         Config c; c.key = "AIza\\x"; c.mode = 2; c.all = true; c.custom = "satır1\nsatır2";
         const auto back = ParseConfig(SerializeConfig(c));
         assert(back.key == c.key && back.mode == 2 && back.all && back.custom == c.custom);

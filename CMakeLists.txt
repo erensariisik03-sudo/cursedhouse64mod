@@ -23,11 +23,12 @@ target_link_libraries(imgui PUBLIC android log EGL GLESv3)
 set(DOBBY_DEBUG OFF CACHE BOOL "" FORCE)
 set(DOBBY_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
 set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(NearBranch ON CACHE BOOL "" FORCE) # Required for safe four-byte property getter hooks.
 set(Plugin.SymbolResolver OFF CACHE BOOL "" FORCE)
 set(Plugin.ImportTableReplace OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/dobby EXCLUDE_FROM_ALL)
 add_library(multiplayermod SHARED src/keyboard_api.cpp src/keyboard_ui.cpp
-    src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/ad_block.cpp src/auto_join.cpp src/chat_bot_http.cpp src/gameplay.cpp src/unity_keyboard.cpp)
+    src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/voice_ai.cpp src/ad_block.cpp src/auto_join.cpp src/chat_bot_http.cpp src/gameplay.cpp src/unity_keyboard.cpp)
 target_include_directories(multiplayermod PRIVATE include src)
 target_compile_definitions(multiplayermod PRIVATE MM_AUTO_UNITY=$<BOOL:${MM_AUTO_UNITY}>)
 target_compile_options(multiplayermod PRIVATE -Wall -Wextra -Wno-unused-parameter -fexceptions)

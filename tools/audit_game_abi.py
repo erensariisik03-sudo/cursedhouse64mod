@@ -4,6 +4,21 @@ import argparse,hashlib,json,re,struct,subprocess
 from pathlib import Path
 # Names/arity only. Field offsets and native RVAs below are evidence, never runtime configuration.
 SPECS={
+ ('','HandleFallDemage'):({'Update':0,'hnl':0,'hno':0,'hnm':0},['pv','rfe']),
+ ('','Door'):({'ewl':0},['doorOpen','doorMoving','doorLocked']),
+ ('','NoiseObjectFallsMulti'):({'ffp':0},['spawnObject']),('','NoiseObjectFallsMultiGrandpa'):({'fga':0},['spawnObject']),
+ ('','FirstPersonController'):({'hjs':0},['pv','walkSpeed','crouchSpeed']),
+ ('','DaysManager'):({},[]),
+ ('','FootStepsController'):({'OnSteppedFloor':0},['pv']),
+ ('UnityEngine','Physics'):({'Linecast':5},[]),('UnityEngine','RaycastHit'):({'get_collider':0},[]),
+ ('','HandleLocalSeeTargetToggling'):({'hpg':2,'RPC_SyncToggleGrannySeeTarget':1},['pv','grannySeeTarget']),
+ ('','EnemyEye'):({'eli':0,'GetPlayers':0,'CheckForPlayersInView':0},['pka','daysManager','grannyUpdateParseRate','seeRange']),('','EnemyEyeGrandpa'):({'dwz':0,'GetPlayers':0,'CheckForPlayersInView':0},['pdz','grandpaUpdateParseRate','seeRange']),
+ ('','EnemyAIGrannyMulti'):({'eim':0,'ein':0},['pv','targetTransform','enemyEye']),
+ ('','EnemyAIGrandpaMulti'):({'duo':0,'dup':0},['pv','targetTransform','enemyEye']),
+ ('','SpiderMomAIController'):({'inb':0,'inf':0,'inh':1,'ims':0,'inc':0},['pv','rnx','target','eatingPlayer','isPlayerInView']),
+ ('','HandlePlayerChestExplosion'):({'hup':2,'RPC_SyncPlayerDeathExplosion':2},['pv']),
+ ('','playerController'):({'RPC_playerExplosionDeath':0,'RPC_playPlayerBurningOnDeath':0},['qsa']),
+ ('Photon.Pun','PhotonMessageInfo'):({},['timeInt','Sender','photonView']),
  ('','fm.<RequestAsync>d__2'):({'MoveNext':0,'SetStateMachine':1},[]),
  ('','fi'):({'cvb':0,'cvd':0,'cvf':0,'cvz':0,'cwa':0,'cwb':0},['oly']),
  ('','et'):({'cqj':0},[]),('','ew'):({'crj':0,'crk':1,'crh':0,'cri':1},[]),
@@ -28,6 +43,27 @@ SPECS={
  ('Photon.Pun','PhotonNetwork'):({'get_IsConnectedAndReady':0,'get_LocalPlayer':0,'get_CurrentRoom':0,'get_IsMessageQueueRunning':0},[]),
  ('Photon.Realtime','Player'):({'get_CustomProperties':0},[]),
 }
+VOICE_SPECS={
+ ('','VoiceChatManager'):({'gpy':0,'gqc':0},['recorder','punVoiceClient']),
+ ('Photon.Voice.Unity','RemoteVoiceLink'):({'OnDecodedFrameFloatAction':1},['VoiceInfo']),
+ ('Photon.Voice','VoiceInfo'):({'get_SamplingRate':0,'get_Channels':0},[]),
+ ('Photon.Voice','FrameOut<T>'):({},['<Buf>k__BackingField','<EndOfStream>k__BackingField']),
+ ('Photon.Voice.PUN','PhotonVoiceView'):({'get_SpeakerInUse':0},['photonView']),
+ ('Photon.Voice.Unity','Speaker'):({'get_RemoteVoice':0},[]),
+ ('Photon.Voice.Unity','VoiceConnection'):({'get_Client':0},[]),
+ ('Photon.Realtime','LoadBalancingClient'):({'get_InRoom':0},[]),
+ ('Photon.Realtime','RoomInfo'):({'get_CustomProperties':0},[]),
+ ('ExitGames.Client.Photon','Hashtable'):({'get_Item':1},[]),
+ ('Photon.Voice.Unity','Recorder'):({'StartRecording':0,'get_RecordingEnabled':0,'set_RecordingEnabled':1,'get_TransmitEnabled':0,'set_TransmitEnabled':1,'get_SourceType':0,'set_SourceType':1,'get_AudioClip':0,'set_AudioClip':1,'get_LoopAudioClip':0,'set_LoopAudioClip':1,'get_VoiceDetection':0,'set_VoiceDetection':1},['sourceType','recordingEnabled']),
+ ('UnityEngine','AudioClip'):({'Create':6,'SetData':2},[]),
+ ('UnityEngine','AudioSource'):({'set_clip':1,'set_loop':1,'set_spatialBlend':1,'Play':0,'Stop':0},[]),
+ ('UnityEngine','GameObject'):({'.ctor':0,'AddComponent':1},[]),
+ ('UnityEngine','Object'):({'Destroy':1},[]),
+ ('Photon.Realtime','Player'):({'get_ActorNumber':0,'get_NickName':0},[]),
+ ('Photon.Pun','PhotonView'):({'get_IsMine':0,'get_Owner':0},[])
+}
+for key,(methods,fields) in VOICE_SPECS.items():
+ prior_methods,prior_fields=SPECS.setdefault(key,({},[]));prior_methods.update(methods);prior_fields.extend(f for f in fields if f not in prior_fields)
 def digest(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def argc(text):
  if not text.strip():return 0

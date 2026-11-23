@@ -1,3 +1,5 @@
+#include "chat_bot_bridge.h"
+#include "voice_ai_bridge.h"
 #include "keyboard_ui.h"
 #include "keyboard_catalog.h"
 #include "chat_shortcut.h"
@@ -31,7 +33,7 @@ void Click(const char* label) {
 }
 void Direct(const char* label){
  assert(items.count(label));const auto p=items.at(label).GetCenter();
- assert(keyboard_ui::TouchDown(p.x,p.y));keyboard_ui::TouchUp();
+ if(!keyboard_ui::TouchDown(p.x,p.y)){std::cerr<<"Untappable key "<<label<<" y="<<p.y<<"\n";std::abort();}keyboard_ui::TouchUp();
 }
 void Key(ImGuiKey key) { auto& io=ImGui::GetIO();io.AddKeyEvent(key,true);Frame();io.AddKeyEvent(key,false);Frame(); }
 void Expect(const std::string& text) {
@@ -177,23 +179,74 @@ int main() {
   assert(items.count("AI")&&items.count("Kıyafet")&&!items.count("Reklam"));
   Direct("Kıyafet");Frame();Frame();assert(items.count("Çık-gir: herkese uygula"));
   Direct("AI");Frame();Frame();assert(items.count("API anahtarı gir")&&!items.count("Çık-gir: herkese uygula"));
+  // AI controls are focused subpages rather than one tall block.
+  {chat_bot_bridge::Snapshot bot;bot.chat_ready=bot.has_key=true;bot.players={"Ali","Ayşe"};chat_bot_bridge::Publish(bot);
+   voice_ai_bridge::Snapshot voice;voice.ready=true;voice_ai_bridge::Publish(voice);Frame();Frame();
+   assert(items.count("Kişiler")&&items.count("Kişilik")&&items.count("Yanıt ayarları")&&items.count("Sesli AI")&&!items.count("Mesaj filtresi: AÇIK"));
+   Direct("Kişiler");Frame();Frame();Direct("Ali");auto bot_command=chat_bot_bridge::Take();assert(bot_command.select&&bot_command.name=="Ali");Frame();Frame();Direct(u8"← AI bölümleri");Frame();Frame();
+   Direct("Sesli AI");Frame();Frame();assert(items.count("Ses → Ses")&&items.count("Metin → Ses")&&items.count("Ses → Metin"));Direct("Metin → Ses");Frame();Frame();assert(voice_ai_bridge::desired.input==1&&voice_ai_bridge::desired.output==1);
+   Direct("Sesli AI KAPALI - aç");Frame();Frame();assert(voice_ai_bridge::desired.enabled);Direct("Konuşmayı durdur");Frame();Frame();assert(voice_ai_bridge::cancel);
+   Direct(u8"← AI bölümleri");Frame();Frame();
+   {std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired={};voice_ai_bridge::cancel=false;voice_ai_bridge::texts.clear();}
+  }
   // Oyun paneli: bölüm listesi -> tek bölüm -> geriyle tam liste.
   Direct("Oyun");Frame();Frame();
-  for(auto label:{"Eşya spawn","Düşman durdur","Düşman öldür","God Mode","Hayalet modu","Infinity Ammo"})assert(items.count(label));
+  for(auto label:{"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Karakter hızı"})assert(items.count(label));
+  assert(!items.count("Infinity Ammo"));
   {
     gameplay_bridge::Snapshot tools;tools.ready=true;tools.context=77;tools.ghost_ready=tools.infinity_ready=true;gameplay_bridge::Publish(tools);Frame();Frame();
     Direct("Hayalet modu");Frame();Frame();Direct("Hayalet modu KAPALI - aç");
     auto queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::Ghost&&queued.front().context==77&&queued.front().flag);
+    tools.ghost=true;gameplay_bridge::Publish(tools);Frame();Frame();assert(!items.count("Yüksel")&&!items.count("Alçal"));
     Frame();Frame();
-    Direct(u8"← Bölümlere dön");Frame();Frame();Direct("Infinity Ammo");Frame();Frame();Direct("Infinity Ammo KAPALI - aç");
-    queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::InfinityAmmo&&queued.front().context==77&&queued.front().flag);
+    tools.god_ready=true;gameplay_bridge::Publish(tools);
+    Direct(u8"← Bölümlere dön");Frame();Frame();Direct("God Mode");Frame();Frame();Direct("God Mode KAPALI - aç");
+    queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::God&&queued.front().context==77&&queued.front().flag);
+    tools.god=tools.infinity=true;gameplay_bridge::Publish(tools);Frame();Frame();
+    assert(!items.count("Infinity Ammo AÇIK - kapat"));Direct("God Mode AÇIK - kapat");
+    queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::God&&!queued.front().flag);
+    Frame();Frame();Direct(u8"← Bölümlere dön");
+    tools.player_speed_ready=true;gameplay_bridge::Publish(tools);Frame();Frame();Direct("Karakter hızı");Frame();Frame();Direct("2x hız");
+    queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::PlayerSpeed&&queued.front().factor==2&&queued.front().context==77);
+    tools.player_speed=2;gameplay_bridge::Publish(tools);Frame();Frame();Direct("Normal hız (1x)");queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().factor==1);
+    Frame();Frame();Direct(u8"← Bölümlere dön");Frame();Frame();
+    tools.vote.ready=true;tools.vote.local=1;tools.vote.players={{1,"Host"},{2,"Ali"}};gameplay_bridge::Publish(tools);Frame();Frame();Direct("Oyuncu atma");Frame();Frame();
+    assert(!items.count("Host (#1)"));Direct("Ali (#2)");Frame();Frame();Direct("Seçili oyuncu için oylama başlat");
+    queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::StartVote&&queued.front().item==2&&queued.front().seconds==10&&queued.front().context==77);
     gameplay_bridge::Publish({});Frame();Frame();Direct(u8"← Bölümlere dön");Frame();Frame();
   }
-  Direct("Düşman durdur");Frame();Frame();
+  {
+    gameplay_bridge::Snapshot clone_view;clone_view.ready=true;clone_view.context=77;
+    for(auto& enemy:clone_view.enemies){enemy.clone_ready=enemy.pause_ready=true;enemy.count=3;}gameplay_bridge::Publish(clone_view);Frame();Frame();
+    Direct("Düşman öldür");Frame();Frame();Direct("Klonla");Frame();Frame();
+    assert(items.count("Granny")&&items.count("Grandpa")&&items.count("MomSpider"));
+    assert(!items.count("Rat")&&!items.count("Spider")&&!items.count("Crow"));
+    assert(!items.count("Ayarlar")&&!items.count("Süre"));
+    Direct("Grandpa");Frame();Frame();assert(gameplay_bridge::Take().empty());
+    Direct("Seçiliyi klonla");auto clone_command=gameplay_bridge::Take();
+    assert(clone_command.size()==1&&clone_command[0].kind==gameplay_bridge::Kind::CloneEnemy&&clone_command[0].enemy==1);
+    Frame();Frame();Direct("Durdur");auto pause=gameplay_bridge::Take();
+    assert(pause.size()==1&&pause[0].kind==gameplay_bridge::Kind::PauseEnemy&&pause[0].enemy==1&&pause[0].flag);
+    clone_view.enemies[1].paused=true;gameplay_bridge::Publish(clone_view);Frame();Frame();Direct("Devam et");pause=gameplay_bridge::Take();
+    assert(pause.size()==1&&pause[0].kind==gameplay_bridge::Kind::PauseEnemy&&pause[0].enemy==1&&!pause[0].flag);
+    Frame();Frame();Direct("MomSpider");Frame();Frame();Direct("Durdur");pause=gameplay_bridge::Take();
+    assert(pause.size()==1&&pause[0].enemy==2&&pause[0].flag);
+    Frame();Frame();
+    Direct(u8"← Bölümlere dön");Frame();Frame();
+  }
+  {
+    gameplay_bridge::Snapshot progression;progression.ready=progression.authority=progression.difficulty_ready=true;progression.context=77;progression.difficulty=2;
+    gameplay_bridge::Publish(progression);Frame();Frame();assert(items.count("Zorluk"));Direct("Zorluk");Frame();Frame();Direct("Extreme");
+    auto command=gameplay_bridge::Take();assert(command.size()==1&&command[0].kind==gameplay_bridge::Kind::Difficulty&&command[0].item==3&&command[0].context==77);
+    Frame();Frame();Direct(u8"← Bölümlere dön");Frame();Frame();
+  }
+  assert(!items.count("Düşman durdur"));
+  Direct("Düşman öldür");Frame();Frame();Direct("Klonla");Frame();Frame();
+  assert(!items.count("Ayarlar")&&!items.count("Süre"));
   assert(items.count(u8"← Bölümlere dön")&&items.count("Granny"));
   assert(!items.count("Eşya spawn")&&!items.count("Düşman öldür")&&!items.count("God Mode"));
   Direct(u8"← Bölümlere dön");Frame();Frame();
-  for(auto label:{"Eşya spawn","Düşman durdur","Düşman öldür","God Mode"})assert(items.count(label));
+  for(auto label:{"Eşya spawn","Düşman öldür","God Mode"})assert(items.count(label));
   Direct("Eşya spawn");Frame();Frame();
   assert(items.count("Seçili eşyayı oluştur")&&!items.count("Düşman durdur"));
   {

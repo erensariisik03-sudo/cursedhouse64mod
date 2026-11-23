@@ -48,6 +48,15 @@ struct Api {
     const Type* (*method_get_param)(const Method*,uint32_t);
     Object* (*array_new)(Class*,uintptr_t); // optional, normal SDK RPC argument arrays
     bool (*method_is_generic)(const Method*); // optional, exclude generic overload definitions
+    void (*field_set_value_object)(Object*,Field*,Object*); // optional managed reference write with GC barrier
+    int32_t (*class_value_size)(Class*,uint32_t*); // optional value-type ABI validation
+    Field* (*class_get_fields)(Class*,void**); // optional clone reference repair
+    const char* (*field_get_name)(Field*);
+    uint32_t (*field_get_flags)(Field*);
+    uintptr_t (*array_length)(Object*);
+    uint32_t (*array_object_header_size)();
+    int32_t (*array_element_size)(Class*);
+    Class* (*class_get_element_class)(Class*);
     bool Load(void* library);
     Class* Find(const char* namespc, const char* name) const;
     const Method* FindMethod(Class* klass, const char* name, int count) const;

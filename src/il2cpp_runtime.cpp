@@ -19,8 +19,12 @@ bool Api::Load(void* library) {
     OPTIONAL(field_get_value) OPTIONAL(field_set_value) OPTIONAL(class_get_type) OPTIONAL(type_get_object)
     OPTIONAL(field_get_type) OPTIONAL(class_from_type)
     OPTIONAL(class_get_methods) OPTIONAL(method_get_param_count) OPTIONAL(method_get_param)
+    OPTIONAL(array_length) OPTIONAL(array_object_header_size) OPTIONAL(array_element_size) OPTIONAL(class_get_element_class)
     OPTIONAL(array_new)
     OPTIONAL(method_is_generic)
+    OPTIONAL(field_set_value_object)
+    OPTIONAL(class_value_size)
+    OPTIONAL(class_get_fields) OPTIONAL(field_get_name) OPTIONAL(field_get_flags)
 #undef OPTIONAL
     return true;
 }

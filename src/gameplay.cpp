@@ -1,11 +1,14 @@
 #include "gameplay.h"
 #include "gameplay_bridge.h"
 #include "gameplay_catalog.h"
+#include "chat_bot_core.h"
+#include "chat_send_gate.h"
 #include "dobby.h"
 #include <android/log.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <thread>
@@ -90,7 +93,10 @@ bool LocalGodTarget(Object* target){
     if(std::this_thread::get_id()!=unity_thread||!protect||!hook_api||!protected_state||!target)return false;
     return ModernProtected(hook_api->gchandle_get_target(protected_state),true)&&hook_api->Call(local_player_method)==target;
 }
-bool BlockHit(Object* o,Object* target){return LocalGodTarget(target)||(ModernProtected(o)&&target&&hook_api->Call(local_player_method)==target);}
+// The victim hit RPC broadcasts death events before checking its target and
+// starts a deferred fatal coroutine. Enemy attack animations run separately
+// in the enemy controller; forwarding this RPC is not needed for its swing.
+bool BlockHit(Object* object,Object* target){return LocalGodTarget(target)||(ModernProtected(object)&&target&&hook_api->Call(local_player_method)==target);}
 #define OWN_HIT(name,original) void name(Object* o,Object* target,uint8_t entity,const Method* m){if(!BlockHit(o,target))original(o,target,entity,m);}
 OWN_HIT(Bat,original_bat) OWN_HIT(Eat,original_eat) OWN_HIT(Bite,original_bite)
 OWN_HIT(BatRpc,original_bat_rpc) OWN_HIT(EatRpc,original_eat_rpc) OWN_HIT(BiteRpc,original_bite_rpc)
@@ -143,11 +149,14 @@ void InstallModern(const Api& api){
     modern_hooks_ready=ready&&script_view;
 }
 bool ghost_enabled=false,ammo_enabled=false,ghost_hook_ready=false,ammo_hooks_ready=false;
+float ghost_height=0;bool ghost_height_ready=false;
 Handle tool_movement=0,tool_fall=0,tool_crossbow=0,tool_shotgun=0,tool_inventory=0;
-Field *movement_view=nullptr,*movement_controller=nullptr,*movement_velocity=nullptr,*fall_view=nullptr,
+Field *movement_view=nullptr,*movement_controller=nullptr,*movement_velocity=nullptr,*movement_camera=nullptr,*fall_view=nullptr,
       *crossbow_view=nullptr,*crossbow_loaded=nullptr,*shotgun_view=nullptr,*shotgun_manager=nullptr,*shotgun_loaded=nullptr,*inventory_view=nullptr;
-const Method *tool_transform=nullptr,*tool_position=nullptr,*tool_set_position=nullptr,*tool_delta=nullptr,*tool_hand=nullptr,*tool_go_transform=nullptr,*tool_is_child=nullptr;
+const Method *tool_transform=nullptr,*tool_position=nullptr,*tool_rotation=nullptr,*tool_set_position=nullptr,*tool_delta=nullptr,*tool_hand=nullptr,*tool_go_transform=nullptr,*tool_is_child=nullptr;
 Unary original_motion=nullptr,original_fall_update=nullptr,original_cross_fire=nullptr,original_shot_fire=nullptr;
+Unary original_fall_landing=nullptr,original_fall_fatal=nullptr,original_fall_hurt=nullptr;
+Field* fall_elapsed=nullptr;bool fall_god_ready=false;uint64_t fall_blocked=0;
 using ControllerMove=int(*)(Object*,Vec3,const Method*);
 ControllerMove original_controller_move=nullptr;
 std::array<Unary,gameplay_bridge::kEnemies> original_enemy_update{};
@@ -155,11 +164,225 @@ std::array<bool,gameplay_bridge::kEnemies> enemy_update_ready{};
 using EnemyTrigger=void(*)(Object*,Object*,const Method*);
 std::array<EnemyTrigger,4> original_enemy_trigger{};
 bool EnemyPaused(Object* object,size_t kind);
-template<size_t K> void EnemyUpdate(Object* object,const Method* method){if(!EnemyPaused(object,K))original_enemy_update[K](object,method);}
-template<size_t K> void PausedEnemyTrigger(Object* object,Object* collider,const Method* method){if(!EnemyPaused(object,K))original_enemy_trigger[K](object,collider,method);}
+void GuardGodEnemy(Object* object,size_t kind);
+void CompletedEnemyFrame(Object* object,size_t kind);
+void ReportNoise(Object* object);
+void ReportFootstep(Object* object);
+Unary original_footstep=nullptr;bool footstep_hook_ready=false;
+void FootstepEmitted(Object* object,const Method* method){
+    if(std::this_thread::get_id()!=unity_thread||!hook_api){original_footstep(object,method);return;}
+    Root source(*hook_api,object);original_footstep(object,method);ReportFootstep(source.Get());
+}
+using NoiseRoutine=Object*(*)(Object*,const Method*);
+std::array<NoiseRoutine,2> original_noise{};std::array<bool,2> noise_hooks_ready{};
+template<size_t K> Object* NoiseEmitted(Object* object,const Method* method){
+    if(std::this_thread::get_id()!=unity_thread||!hook_api)return original_noise[K](object,method);
+    Root source(*hook_api,object),result(*hook_api,original_noise[K](object,method));ReportNoise(source.Get());return result.Get();
+}
+
+// Scoped item assistance uses the native raycast, prerequisite and interaction
+// event paths. Only the local inventory's temporary enum changes; no item is
+// equipped, consumed or granted and the real held item is restored on exit.
+bool FieldType(const Api& api,Field* field,const char* space,const char* name);
+using SightRequest=void(*)(Object*,bool,bool,const Method*);
+using SightRpc=void(*)(Object*,bool,const Method*);
+SightRequest original_sight_request=nullptr;SightRpc original_sight_rpc=nullptr;
+bool sight_hooks_ready=false;
+bool OverrideSight(Object* object,bool requested,bool remember);
+bool IgnoreOwnCollider(Object* collider,size_t kind);
+void SightRequestHook(Object* o,bool on,bool sync,const Method* m){original_sight_request(o,OverrideSight(o,on,true)?false:on,sync,m);}
+void SightRpcHook(Object* o,bool on,const Method* m){original_sight_rpc(o,OverrideSight(o,on,false)?false:on,m);}
+void InstallSight(const Api& api){
+    auto* c=api.Find("","HandleLocalSeeTargetToggling");if(!c)return;
+    const auto* request=api.FindMethod(c,"hpg",2);const auto* rpc=api.FindMethod(c,"RPC_SyncToggleGrannySeeTarget",1);
+    if(!request||!rpc||!api.method_get_param||!api.class_from_type||!FieldType(api,api.class_get_field_from_name(c,"pv"),"Photon.Pun","PhotonView")||!FieldType(api,api.class_get_field_from_name(c,"grannySeeTarget"),"UnityEngine","GameObject"))return;
+    for(auto* method:{request,rpc})for(unsigned i=0;i<(method==request?2u:1u);++i){auto* t=api.class_from_type(api.method_get_param(method,i));if(!t||std::strcmp(api.class_get_namespace(t),"System")||std::strcmp(api.class_get_name(t),"Boolean"))return;}
+    const bool a=Hook(request,reinterpret_cast<void*>(SightRequestHook),original_sight_request);
+    const bool b=Hook(rpc,reinterpret_cast<void*>(SightRpcHook),original_sight_rpc);sight_hooks_ready=a&&b;
+    __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG sight-hooks ready=%d",sight_hooks_ready);
+}
+Field *assist_hand=nullptr,*assist_target=nullptr;
+bool assist_hooks_ready=false;
+Unary original_interaction_ray=nullptr;
+using RefGetter=Object*(*)(Object*,const Method*);
+RefGetter original_requirements=nullptr;
+Move original_require_placing=nullptr;
+bool CanAssistInventory(Object* object);
+bool AssistRequirement(Object* target,Object* requirements);
+bool AssistedTarget(Object* target);
+struct AssistScope {
+    Root inventory,target;uint8_t before=0,last=0;bool changed=false,assisted=false;
+    explicit AssistScope(Object* o):inventory(*hook_api,o),target(*hook_api){hook_api->field_get_value(o,assist_hand,&before);last=before;}
+    ~AssistScope(){if(changed){uint8_t now=0;hook_api->field_get_value(inventory.Get(),assist_hand,&now);if(now==last)hook_api->field_set_value(inventory.Get(),assist_hand,&before);}}
+};
+thread_local AssistScope* assist_scope=nullptr;
+void InteractionRay(Object* o,const Method* m){
+    if(assist_scope||!CanAssistInventory(o)){original_interaction_ray(o,m);return;}
+    AssistScope scope(o);
+    struct Enter {AssistScope* previous;explicit Enter(AssistScope* s):previous(assist_scope){assist_scope=s;}~Enter(){assist_scope=previous;}} enter(&scope);
+    original_interaction_ray(o,m);
+}
+Object* InteractionRequirements(Object* o,const Method* m){Object* list=original_requirements(o,m);if(assist_scope)AssistRequirement(o,list);return list;}
+bool InteractionPlacing(Object* o,const Method* m){return AssistedTarget(o)?false:original_require_placing(o,m);}
+std::array<std::array<Unary,3>,2> original_difficulty_helpers{};
+std::array<bool,2> difficulty_helpers_ready{};
+thread_local Handle difficulty_target=0;
+template<size_t Kind,size_t Helper> void DifficultyHelper(Object* o,const Method* m){
+    if(std::this_thread::get_id()==unity_thread&&difficulty_target&&hook_api&&hook_api->gchandle_get_target(difficulty_target)==o)return;
+    original_difficulty_helpers[Kind][Helper](o,m);
+}
+void InstallProgression(const Api& api){
+    auto* inv=api.Find("","HandlePickUpItemInteractions");auto* world=api.Find("","WorldInteractable");
+    assist_hand=inv?api.class_get_field_from_name(inv,"currentObjectInHand"):nullptr;
+    assist_target=inv?api.class_get_field_from_name(inv,"rgn"):nullptr;
+    if(FieldType(api,assist_hand,"","PickUpObject")&&assist_target&&api.class_value_size){
+        uint32_t alignment=0;auto* type=api.class_from_type(api.field_get_type(assist_hand));
+        if(type&&api.class_value_size(type,&alignment)==1){
+            const bool a=Hook(api.FindMethod(inv,"hqw",0),reinterpret_cast<void*>(InteractionRay),original_interaction_ray);
+            const bool b=DobbyHookNear(Entry(api.FindMethod(world,"fge",0)),reinterpret_cast<void*>(InteractionRequirements),reinterpret_cast<void**>(&original_requirements))==0&&original_requirements;
+            const bool c=DobbyHookNear(Entry(api.FindMethod(world,"fgj",0)),reinterpret_cast<void*>(InteractionPlacing),reinterpret_cast<void**>(&original_require_placing))==0&&original_require_placing;
+            assist_hooks_ready=a&&b&&c;
+        }
+    }
+    // The human difficulty initializer normally resets combat and chooses a
+    // random route before setting speeds. Suppress only these three helpers
+    // during our rooted, host-only refresh; normal starts are forwarded.
+    const char* helper_names[2][3]={{"eim","eil","ein"},{"duo","dun","dup"}};
+    void* helper_hooks[2][3]={{reinterpret_cast<void*>(DifficultyHelper<0,0>),reinterpret_cast<void*>(DifficultyHelper<0,1>),reinterpret_cast<void*>(DifficultyHelper<0,2>)},{reinterpret_cast<void*>(DifficultyHelper<1,0>),reinterpret_cast<void*>(DifficultyHelper<1,1>),reinterpret_cast<void*>(DifficultyHelper<1,2>)}};
+    for(size_t k=0;k<2;++k){auto* c=api.Find("",k?"EnemyAIGrandpaMulti":"EnemyAIGrannyMulti");bool ready=true;
+        for(size_t j=0;j<3;++j)ready=Hook(api.FindMethod(c,helper_names[k][j],0),helper_hooks[k][j],original_difficulty_helpers[k][j])&&ready;
+        difficulty_helpers_ready[k]=ready;
+    }
+}
+bool FrozenEnemyPose(Object* transform,bool local,Vec3* position,Quat* rotation);
+using PositionSetter=void(*)(Object*,Vec3,const Method*);
+using RotationSetter=void(*)(Object*,Quat,const Method*);
+using PoseSetter=void(*)(Object*,Vec3,Quat,const Method*);
+PositionSetter original_position=nullptr,original_local_position=nullptr;
+RotationSetter original_rotation=nullptr,original_local_rotation=nullptr;
+PoseSetter original_pose=nullptr;
+void EnemyPosition(Object* o,Vec3 p,const Method* m){FrozenEnemyPose(o,false,&p,nullptr);original_position(o,p,m);}
+void EnemyLocalPosition(Object* o,Vec3 p,const Method* m){FrozenEnemyPose(o,true,&p,nullptr);original_local_position(o,p,m);}
+void EnemyRotation(Object* o,Quat q,const Method* m){FrozenEnemyPose(o,false,nullptr,&q);original_rotation(o,q,m);}
+void EnemyLocalRotation(Object* o,Quat q,const Method* m){FrozenEnemyPose(o,true,nullptr,&q);original_local_rotation(o,q,m);}
+void EnemyPose(Object* o,Vec3 p,Quat q,const Method* m){FrozenEnemyPose(o,false,&p,&q);original_pose(o,p,q,m);}
+bool vote_listening=false;
+void VoteMessage(Object* sender,const std::string& line,int32_t sent);
+struct MessageInfo {int32_t time;uint32_t padding;Object* sender;Object* view;};
+static_assert(sizeof(MessageInfo)==24&&offsetof(MessageInfo,sender)==8);
+using GasEvent=void(*)(Object*,Object*,Object*,const Method*);
+using ExplosionRpc=void(*)(Object*,bool,MessageInfo,const Method*);
+GasEvent original_gas_event=nullptr;
+ExplosionRpc original_explosion_rpc=nullptr;
+Unary original_legacy_explosion=nullptr,original_legacy_burning=nullptr;
+Field* explosion_view=nullptr;
+bool explosion_hooks_ready=false,legacy_explosion_ready=false;
+uint64_t gas_blocked=0,gas_forwarded=0;
+double gas_log_next=0;
+void TraceGas(const char* entry,bool blocked){
+    if(std::this_thread::get_id()!=unity_thread)return;
+    if(blocked)++gas_blocked;else ++gas_forwarded;
+    const double now=gameplay_bridge::Now();if(now<gas_log_next)return;gas_log_next=now+1;
+    __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG gas entry=%s blocked=%d total_blocked=%llu total_forwarded=%llu god=%d",entry,blocked,static_cast<unsigned long long>(gas_blocked),static_cast<unsigned long long>(gas_forwarded),protect);
+}
+bool OwnExplosion(Object* object){
+    // Match the victim component's PhotonView to the already rooted local
+    // state manager. A gas can's owner/sender is not necessarily its victim.
+    if(!object||!explosion_view||!hook_api||std::this_thread::get_id()!=unity_thread||!protect)return false;
+    if(!LocalGodTarget(hook_api->Call(local_player_method)))return false;
+    Object *pv=nullptr,*state_pv=nullptr;
+    hook_api->field_get_value(object,explosion_view,&pv);
+    hook_api->field_get_value(hook_api->gchandle_get_target(protected_state),state_view,&state_pv);
+    Root victim(*hook_api,pv),local(*hook_api,state_pv);
+    return victim.Get()&&victim.Get()==local.Get()&&hook_api->Value<bool>(mine_method,victim.Get(),false);
+}
+void GasExplosionEvent(Object* object,Object* sender,Object* args,const Method* method){
+    const bool block=OwnExplosion(object);TraceGas("local-event",block);
+    if(!block)original_gas_event(object,sender,args,method);
+}
+void PlayerExplosionRpc(Object* object,bool chest,MessageInfo info,const Method* method){
+    const bool block=!chest&&OwnExplosion(object);if(!chest)TraceGas("victim-rpc",block);
+    if(!block)original_explosion_rpc(object,chest,info,method);
+}
+void LegacyExplosion(Object* object,const Method* method){const bool block=Protected(object);TraceGas("legacy-rpc",block);if(!block)original_legacy_explosion(object,method);}
+void LegacyBurning(Object* object,const Method* method){if(!Protected(object))original_legacy_burning(object,method);}
+bool ExplosionRpcAbi(const Api& api,const Method* method){
+    if(!method||!api.method_get_param_count||!api.method_get_param||!api.class_from_type||!api.class_value_size||api.method_get_param_count(method)!=2)return false;
+    auto* flag=api.class_from_type(api.method_get_param(method,0));auto* info=api.class_from_type(api.method_get_param(method,1));
+    if(!flag||!info||std::strcmp(api.class_get_namespace(flag),"System")||std::strcmp(api.class_get_name(flag),"Boolean")||std::strcmp(api.class_get_namespace(info),"Photon.Pun")||std::strcmp(api.class_get_name(info),"PhotonMessageInfo"))return false;
+    uint32_t alignment=0;return api.class_value_size(info,&alignment)==sizeof(MessageInfo)&&alignment==alignof(MessageInfo);
+}
+void InstallExplosion(const Api& api){
+    auto* type=api.Find("","HandlePlayerChestExplosion");
+    explosion_view=type?api.class_get_field_from_name(type,"pv"):nullptr;
+    const auto* rpc=api.FindMethod(type,"RPC_SyncPlayerDeathExplosion",2);
+    if(FieldType(api,explosion_view,"Photon.Pun","PhotonView")&&ExplosionRpcAbi(api,rpc)){
+        const bool a=Hook(api.FindMethod(type,"hup",2),reinterpret_cast<void*>(GasExplosionEvent),original_gas_event);
+        const bool b=Hook(rpc,reinterpret_cast<void*>(PlayerExplosionRpc),original_explosion_rpc);
+        explosion_hooks_ready=a&&b;
+    }
+    auto* legacy=api.Find("","playerController");
+    const bool a=Hook(api.FindMethod(legacy,"RPC_playerExplosionDeath",0),reinterpret_cast<void*>(LegacyExplosion),original_legacy_explosion);
+    const bool b=Hook(api.FindMethod(legacy,"RPC_playPlayerBurningOnDeath",0),reinterpret_cast<void*>(LegacyBurning),original_legacy_burning);
+    legacy_explosion_ready=a&&b;
+    __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG explosion-hooks modern=%d legacy=%d",explosion_hooks_ready,legacy_explosion_ready);
+}
+using ReceiveMessage=void(*)(Object*,Object*,MessageInfo,const Method*);
+ReceiveMessage original_receive=nullptr;bool vote_receive_ready=false;
+const Method *vote_utf8=nullptr,*vote_decode=nullptr,*vote_length=nullptr;
+const Method* ByteDecoder(const Api& api,Class* klass){
+    if(!api.class_get_methods||!api.method_get_param_count||!api.method_get_param)return nullptr;
+    for(int depth=0;klass&&depth<32;++depth,klass=api.class_get_parent(klass)){
+        void* it=nullptr;const Method* found=nullptr;
+        for(int n=0;n<1024;++n){const auto* m=api.class_get_methods(klass,&it);if(!m)break;
+            if(std::strcmp(api.method_get_name(m),"GetString")||api.method_get_param_count(m)!=1)continue;
+            auto* t=api.class_from_type(api.method_get_param(m,0));
+            if(!t||std::strcmp(api.class_get_namespace(t),"System")||std::strcmp(api.class_get_name(t),"Byte[]"))continue;
+            if(found)return nullptr;
+            found=m;
+        }if(found)return found;
+    }return nullptr;
+}
+void ReceiveVoteMessage(Object* self,Object* bytes,MessageInfo info,const Method* method){
+    if(std::this_thread::get_id()!=unity_thread||!hook_api||!vote_listening){original_receive(self,bytes,info,method);return;}
+    Root payload(*hook_api,bytes),sender(*hook_api,info.sender);
+    original_receive(self,bytes,info,method);
+    if(!vote_listening||!payload.Get()||!sender.Get())return;
+    const int size=hook_api->Value<int>(vote_length,payload.Get(),-1);if(size<1||size>8192)return;
+    Root encoding(*hook_api,hook_api->Call(vote_utf8));if(!encoding.Get())return;
+    if(!vote_decode)vote_decode=ByteDecoder(*hook_api,hook_api->object_get_class(encoding.Get()));
+    if(!vote_decode)return;
+    void* args[]={payload.Get()};bool ok=false;Root text(*hook_api,hook_api->Call(vote_decode,encoding.Get(),args,&ok));
+    if(ok&&text.Get())VoteMessage(sender.Get(),hook_api->Utf8(reinterpret_cast<String*>(text.Get())),info.time);
+}
+void InstallVoteReceiver(const Api& api){
+    vote_utf8=api.FindMethod(api.Find("System.Text","Encoding"),"get_UTF8",0);
+    vote_length=api.FindMethod(api.Find("System","Array"),"get_Length",0);
+    const auto* method=api.FindMethod(api.Find("","ChatManager"),"RPC_GetMessage",2);
+    if(!vote_utf8||!vote_length||!method||!api.method_get_param||!api.class_from_type||!api.class_value_size)return;
+    auto* info=api.class_from_type(api.method_get_param(method,1));
+    if(!info||std::strcmp(api.class_get_namespace(info),"Photon.Pun")||std::strcmp(api.class_get_name(info),"PhotonMessageInfo"))return;
+    uint32_t alignment=0;if(api.class_value_size(info,&alignment)!=static_cast<int32_t>(sizeof(MessageInfo))||alignment!=alignof(MessageInfo))return;
+    vote_receive_ready=Hook(method,reinterpret_cast<void*>(ReceiveVoteMessage),original_receive);
+}
+template<size_t K> void EnemyUpdate(Object* object,const Method* method){if(!EnemyPaused(object,K)){GuardGodEnemy(object,K);original_enemy_update[K](object,method);CompletedEnemyFrame(object,K);GuardGodEnemy(object,K);}}
+template<size_t K> void PausedEnemyTrigger(Object* object,Object* collider,const Method* method){if(!EnemyPaused(object,K)&&!IgnoreOwnCollider(collider,K))original_enemy_trigger[K](object,collider,method);}
 using VictimAction=void(*)(Object*,Object*,const Method*);
 VictimAction original_mom_grab=nullptr;
 bool Finite(Vec3 v);
+bool FlightMotion(Vec3 motion,Quat camera,Quat body,Vec3& delta){
+    if(!Finite(motion))return false;
+    const auto forward=[](Quat q,Vec3& f){
+        const float n=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;if(!std::isfinite(n)||n<.0001f)return false;
+        f={2*(q.x*q.z+q.w*q.y)/n,2*(q.y*q.z-q.w*q.x)/n,1-2*(q.x*q.x+q.y*q.y)/n};return Finite(f);
+    };
+    Vec3 look{},yaw{};if(!forward(camera,look))return false;
+    float length=std::sqrt(look.x*look.x+look.z*look.z);
+    if(length>.01f)yaw={look.x/length,0,look.z/length};
+    else{if(!forward(body,yaw))return false;length=std::sqrt(yaw.x*yaw.x+yaw.z*yaw.z);if(length<.01f)return false;yaw={yaw.x/length,0,yaw.z/length};}
+    const float ahead=motion.x*yaw.x+motion.z*yaw.z,side=motion.x*yaw.z-motion.z*yaw.x;
+    delta={look.x*ahead+yaw.z*side,look.y*ahead,look.z*ahead-yaw.x*side};return Finite(delta);
+}
 bool WorldMatches(){
     if(std::this_thread::get_id()!=unity_thread||!hook_api||!protected_room)return false;
     int scene=0;if(!ReadScene(*hook_api,scene_method,scene_valid_method,scene_loaded_method,scene)||scene!=protected_scene)return false;
@@ -188,8 +411,14 @@ int GhostControllerMove(Object* object,Vec3 motion,const Method* method){
                 Root t(*hook_api,hook_api->Call(tool_transform,object));bool ok=false;
                 Root boxed(*hook_api,hook_api->Call(tool_position,t.Get(),nullptr,&ok));
                 if(ok&&boxed.Get()){
-                    Vec3 p=*static_cast<Vec3*>(hook_api->object_unbox(boxed.Get()));p.x+=motion.x;p.y+=motion.y;p.z+=motion.z;
-                    if(Finite(p)){void* args[]={&p};hook_api->Call(tool_set_position,t.Get(),args,&ok);if(ok)return 0;}
+                    Object* raw_camera=nullptr;hook_api->field_get_value(movement,movement_camera,&raw_camera);Root camera(*hook_api,raw_camera);
+                    Root camera_q(*hook_api,hook_api->Call(tool_rotation,camera.Get(),nullptr,&ok));if(!ok||!camera_q.Get())return original_controller_move(object,motion,method);
+                    Root body_q(*hook_api,hook_api->Call(tool_rotation,t.Get(),nullptr,&ok));if(!ok||!body_q.Get())return original_controller_move(object,motion,method);
+                    Vec3 delta{},p=*static_cast<Vec3*>(hook_api->object_unbox(boxed.Get()));
+                    if(FlightMotion(motion,*static_cast<Quat*>(hook_api->object_unbox(camera_q.Get())),*static_cast<Quat*>(hook_api->object_unbox(body_q.Get())),delta)){
+                        p.x+=delta.x;p.z+=delta.z;p.y=(ghost_height_ready?ghost_height:p.y)+delta.y;
+                        if(Finite(p)){void* args[]={&p};hook_api->Call(tool_set_position,t.Get(),args,&ok);if(ok){ghost_height=p.y;ghost_height_ready=true;return 0;}}
+                    }
                 }
             }
         }
@@ -197,13 +426,22 @@ int GhostControllerMove(Object* object,Vec3 motion,const Method* method){
     return original_controller_move(object,motion,method);
 }
 void FallUpdate(Object* o,const Method* m){if(std::this_thread::get_id()!=unity_thread||!ghost_enabled||!ToolOwner(o,tool_fall,fall_view))original_fall_update(o,m);}
+bool OwnFallProtected(Object* o){return std::this_thread::get_id()==unity_thread&&protect&&ToolOwner(o,tool_fall,fall_view);}
+void FallLanding(Object* o,const Method* m){
+    // Preserve grounded/landing bookkeeping. Only the own God player's verified
+    // native damage evaluator sees zero accumulated fall time.
+    if(OwnFallProtected(o)&&fall_elapsed){float elapsed=0;hook_api->field_get_value(o,fall_elapsed,&elapsed);if(elapsed>0)++fall_blocked;float zero=0;hook_api->field_set_value(o,fall_elapsed,&zero);}
+    original_fall_landing(o,m);
+}
+void FallFatal(Object* o,const Method* m){if(!OwnFallProtected(o))original_fall_fatal(o,m);}
+void FallHurt(Object* o,const Method* m){if(!OwnFallProtected(o))original_fall_hurt(o,m);}
 bool FieldType(const Api& api,Field* field,const char* ns,const char* name){
     if(!field||!api.field_get_type||!api.class_from_type)return false;
     auto* c=api.class_from_type(api.field_get_type(field));return c&&!std::strcmp(api.class_get_namespace(c),ns)&&!std::strcmp(api.class_get_name(c),name);
 }
 void InfiniteFire(Object* o,const Method* m,bool cross){
     const auto original=cross?original_cross_fire:original_shot_fire;
-    if(std::this_thread::get_id()!=unity_thread||!ammo_enabled||!ToolOwner(o,cross?tool_crossbow:tool_shotgun,cross?crossbow_view:shotgun_view)||!tool_inventory){original(o,m);return;}
+    if(std::this_thread::get_id()!=unity_thread||!protect||!ammo_enabled||!ToolOwner(o,cross?tool_crossbow:tool_shotgun,cross?crossbow_view:shotgun_view)||!tool_inventory){original(o,m);return;}
     auto* inv=hook_api->gchandle_get_target(tool_inventory);
     if(!ToolOwner(inv,tool_inventory,inventory_view)||hook_api->Value<uint8_t>(tool_hand,inv,0)!=(cross?9:25)){original(o,m);return;}
     Object* manager=o;if(!cross)hook_api->field_get_value(o,shotgun_manager,&manager);
@@ -228,14 +466,21 @@ void MomGrab(Object* o,Object* target,const Method* m){if(!LocalVictim(target))o
 void InstallTools(const Api& api){
     auto* movement=api.Find("","FirstPersonController");auto* fall=api.Find("","HandleFallDemage");auto* cross=api.Find("","HandleCrossBow");auto* shot=api.Find("","HandleShotgun");auto* manager=api.Find("","ShotgunManager");auto* inv=api.Find("","HandlePickUpItemInteractions");
     const auto field=[&](Class* c,const char* n){return c?api.class_get_field_from_name(c,n):nullptr;};
-    movement_view=field(movement,"pv");movement_controller=field(movement,"controller");movement_velocity=field(movement,"rdp");fall_view=field(fall,"pv");
+    movement_view=field(movement,"pv");movement_controller=field(movement,"controller");movement_velocity=field(movement,"rdp");movement_camera=field(movement,"cameraTrans");fall_view=field(fall,"pv");
     crossbow_view=field(cross,"pv");crossbow_loaded=field(cross,"haveSyringe");shotgun_view=field(shot,"pv");shotgun_manager=field(shot,"shotgunManager");shotgun_loaded=field(manager,"shotgunLoaded");inventory_view=field(inv,"pv");
+    fall_elapsed=field(fall,"rfe");
+    if(fall_view&&FieldType(api,fall_elapsed,"System","Single")){
+        const bool a=Hook(api.FindMethod(fall,"hnl",0),reinterpret_cast<void*>(FallLanding),original_fall_landing);
+        const bool b=Hook(api.FindMethod(fall,"hno",0),reinterpret_cast<void*>(FallFatal),original_fall_fatal);
+        const bool c=Hook(api.FindMethod(fall,"hnm",0),reinterpret_cast<void*>(FallHurt),original_fall_hurt);fall_god_ready=a&&b&&c;
+    }
     const auto method=[&](const char* ns,const char* c,const char* n,int count=0){return api.FindMethod(api.Find(ns,c),n,count);};
     tool_transform=method("UnityEngine","Component","get_transform");tool_position=method("UnityEngine","Transform","get_position");tool_set_position=method("UnityEngine","Transform","set_position",1);tool_delta=method("UnityEngine","Time","get_deltaTime");tool_hand=api.FindMethod(inv,"hrl",0);
+    tool_rotation=method("UnityEngine","Transform","get_rotation");
     tool_go_transform=method("UnityEngine","GameObject","get_transform");tool_is_child=method("UnityEngine","Transform","IsChildOf",1);
     const bool mom_guard=Hook(api.FindMethod(api.Find("","SpiderMomAIController"),"inh",1),reinterpret_cast<void*>(MomGrab),original_mom_grab);
     modern_hooks_ready=modern_hooks_ready&&mom_guard;
-    if(movement_view&&movement_controller&&fall_view&&tool_transform&&tool_position&&tool_set_position&&tool_delta&&FieldType(api,movement_velocity,"UnityEngine","Vector3")){
+    if(movement_view&&movement_controller&&fall_view&&tool_transform&&tool_position&&tool_rotation&&tool_set_position&&tool_delta&&FieldType(api,movement_velocity,"UnityEngine","Vector3")&&FieldType(api,movement_camera,"UnityEngine","Transform")){
         const bool a=Hook(api.FindMethod(movement,"hjs",0),reinterpret_cast<void*>(Motion),original_motion);
         const bool b=Hook(api.FindMethod(fall,"Update",0),reinterpret_cast<void*>(FallUpdate),original_fall_update);
         const bool c=Hook(method("UnityEngine","CharacterController","Move",1),reinterpret_cast<void*>(GhostControllerMove),original_controller_move);
@@ -261,6 +506,12 @@ constexpr Spec specs[kEnemyCount]={
     {"pj",nullptr,"qgy","ratAnim",{nullptr,nullptr,nullptr},{nullptr,nullptr,nullptr}}
 };
 void InstallEnemyUpdates(const Api& api){
+    auto* t=api.Find("UnityEngine","Transform");
+    Hook(api.FindMethod(t,"set_position",1),reinterpret_cast<void*>(EnemyPosition),original_position);
+    Hook(api.FindMethod(t,"set_localPosition",1),reinterpret_cast<void*>(EnemyLocalPosition),original_local_position);
+    Hook(api.FindMethod(t,"set_rotation",1),reinterpret_cast<void*>(EnemyRotation),original_rotation);
+    Hook(api.FindMethod(t,"set_localRotation",1),reinterpret_cast<void*>(EnemyLocalRotation),original_local_rotation);
+    Hook(api.FindMethod(t,"SetPositionAndRotation",2),reinterpret_cast<void*>(EnemyPose),original_pose);
     void* replacements[]={reinterpret_cast<void*>(EnemyUpdate<0>),reinterpret_cast<void*>(EnemyUpdate<1>),reinterpret_cast<void*>(EnemyUpdate<2>),reinterpret_cast<void*>(EnemyUpdate<3>),reinterpret_cast<void*>(EnemyUpdate<4>),reinterpret_cast<void*>(EnemyUpdate<5>)};
     void* triggers[]={reinterpret_cast<void*>(PausedEnemyTrigger<0>),reinterpret_cast<void*>(PausedEnemyTrigger<1>),reinterpret_cast<void*>(PausedEnemyTrigger<2>),reinterpret_cast<void*>(PausedEnemyTrigger<3>)};
     for(size_t k=0;k<kEnemyCount;++k){
@@ -291,44 +542,83 @@ struct Actor {
     std::vector<Scalar> speed_fields,animation_fields;
     float nav_base=0,nav_last=0,anim_base=1,anim_last=1;
     bool nav_changed=false,anim_changed=false;
-    bool stop_changed=false,stop_before=false,scale_changed=false;
+    double attack_release=0;
+    bool scale_changed=false,pose_frozen=false,local_pose_frozen=false;
+    Vec3 frozen_position{},frozen_local_position{};Quat frozen_rotation{},frozen_local_rotation{};
     Vec3 scale_before{},scale_last{};
     std::vector<std::unique_ptr<AnimationNode>> animations;
     std::vector<std::unique_ptr<ScaleNode>> visuals;
-    Field* no_hit=nullptr;bool no_hit_changed=false,no_hit_before=false;
     Actor(const Api& a,Object* p,size_t k):object(a,p),nav(a),animator(a),transform(a),kind(k){}
 };
 struct Prefab {int id;Root object;std::string name;Prefab(const Api& a,int i,Object* o,std::string n):id(i),object(a,o),name(std::move(n)){} };
 struct CloneRecord {
-    Root object,view;Vec3 position;double born,next=0;unsigned attempts=0;bool finished=false;
-    CloneRecord(const Api& api,Object* o,Object* pv,Vec3 p,double now):object(api,o),view(api,pv),position(p),born(now){}
+    Root object,view,controller;Vec3 position;double born,next=0;unsigned attempts=0,completed_frames=0;bool finished=false,route_initialized=false,placement_ready=false,behavior_ready=false;
+    Vec3 observed_position{};bool observation_ready=false;double probe_next=0;unsigned probes=0;
+    const char* sense_issue="new";double health_next=0,still_since=0,attack_since=0;Vec3 health_position{};bool health_observed=false;unsigned recoveries=0;
+    double last_seen=0,door_next=0,investigate_until=0,arrived_at=0;unsigned heard=0;bool investigating=false;Vec3 noise_position{};
+    Enemy settings{};size_t kind=0,waypoint=0;double sense_next=0,players_next=0,bind_next=0;unsigned senses=0,sense_errors=0,bind_tries=0;bool has_target=false;bool custom_settings=false,client_patrol=false,client_routes_prepared=false,client_nav_enabled=false;double route_next=0;
+    CloneRecord(const Api& api,Object* o,Object* pv,Vec3 p,double now):object(api,o),view(api,pv),controller(api),position(p),born(now){}
     Object* Get()const{return object.Get();}
 };
+struct DoorCooldown {Root object;double next;DoorCooldown(const Api& a,Object* o,double n):object(a,o),next(n){}};
 struct Runtime {
     const Api& api;
     bool initialized=false,valid=false,busy=false;
     int scene=-1;uintptr_t room_id=0,player_id=0,modern_id=0,inventory_id=0;uint64_t generation=0;
     double next_scan=0;
-    Root player,manager,inventory,attacked,player_state,script,movement,fall_damage,crossbow,shotgun;
+    Root player,manager,inventory,attacked,player_state,script,movement,fall_damage,crossbow,shotgun,sight,sight_target,speed_owner;
+    std::vector<Scalar> player_speeds;
+    bool sight_applied=false,sight_normal=true,sight_internal=false,sight_restore_pending=false;
+    double sight_next=0;
+    unsigned sight_sends=0,target_releases=0;
     std::array<Class*,kEnemyCount> classes{};
     std::array<Enemy,kEnemyCount> settings{};
     std::vector<std::unique_ptr<Actor>> actors;
     std::vector<std::unique_ptr<Prefab>> prefabs;
     std::vector<std::unique_ptr<CloneRecord>> clones;
+    std::vector<std::unique_ptr<DoorCooldown>> doors;
+    std::vector<std::unique_ptr<Root>> noise_markers;
+    Class* door_class{};std::array<Class*,2> noise_classes{};
+    const Method *door_open{},*door_line{},*hit_collider{};size_t hit_size=0;
+    float noise_radius=20;double footsteps_next=0;double noise_next=0,noise_time=0;unsigned noise_serial=0;Vec3 noise_position{};bool noise_baseline=false;
+    const Method *nav_update_pos{},*nav_update_rot{};
+    Class *nav_class{};
     bool ghost_active=false,cross_visual=false,shot_visual=false,cross_button_saved=false,shot_button_saved=false;
     Vec3 ghost_origin{};
     gameplay_bridge::Snapshot snap;
+    double diagnostic_next=0;uint64_t diagnostic_context=0;unsigned diagnostic_flags=~0u;
+    void Diagnostics(){
+        const unsigned flags=unsigned(snap.ready)|(unsigned(snap.authority)<<1)|(unsigned(snap.god_ready)<<2)|(unsigned(snap.god)<<3)|(unsigned(snap.infinity_ready)<<4)|(unsigned(snap.infinity)<<5)|(unsigned(snap.explosion_ready)<<6)|(unsigned(snap.invisible)<<7);
+        const double now=gameplay_bridge::Now();
+        if(now<diagnostic_next&&flags==diagnostic_flags&&snap.context==diagnostic_context)return;
+        diagnostic_next=now+5;diagnostic_flags=flags;diagnostic_context=snap.context;
+        __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG state context=%llu scene=%d ready=%d host=%d god_ready=%d god=%d gas_ready=%d ammo_ready=%d ammo=%d actors=%zu clones=%zu gas_blocked=%llu gas_forwarded=%llu",static_cast<unsigned long long>(snap.context),scene,snap.ready,snap.authority,snap.god_ready,snap.god,snap.explosion_ready,snap.infinity_ready,snap.infinity,actors.size(),clones.size(),static_cast<unsigned long long>(gas_blocked),static_cast<unsigned long long>(gas_forwarded));
+        __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG ai invisible_ready=%d invisible=%d sight_sends=%u target_releases=%u fall_ready=%d fall_blocked=%llu",snap.invisible_ready,snap.invisible,sight_sends,target_releases,snap.fall_ready,static_cast<unsigned long long>(fall_blocked));
+    }
+    void SetGod(bool on){
+        if(snap.god!=on)sight_next=0;
+        snap.god=on&&snap.god_ready;gameplay_bridge::SyncGodAmmo(snap);
+        snap.status=snap.god?u8"God Mode açık.":u8"God Mode kapalı.";
+    }
+    room_vote::Session ballot;double vote_scan=0,vote_notice_next=0;int vote_sent_yes=-1,vote_sent_no=-1;
+    std::string vote_result_notice;double vote_result_deadline=0,vote_result_next=0;
     std::string player_issue=u8"Maç karakteri bekleniyor.",inventory_issue=u8"Maç envanteri bekleniyor.";
     const Method *find{},*length{},*item{},*alive{},*active{},*enabled_get{},*enabled_set{},*go{},*go_active{},
-        *transform{},*scale_get{},*scale_set{},*nav_get{},*nav_set{},*nav_stop_get{},*nav_stop_set{},*nav_onmesh{},
+        *transform{},*scale_get{},*scale_set{},*nav_get{},*nav_set{},*local_pos_get{},*local_rot_get{},
         *anim_get{},*anim_set{},*current_room{},*master{},*queue{},*get_scene{},*mine{},*name_get{},
         *pos_get{},*rot_get{},*spawn{},*prefix_get{},*path_combine{},*network_destroy{},*local_destroy{},*view_get{},*scene_valid{},*scene_loaded{},
         *children{},*go_transform{},*is_child{},*hand_get{},*hand_pick{},*resources_load{},*rpc{},*view_id{},*find_all{},*nav_sample{},*pos_set{},*rot_set{},*active_set{},*active_get{},*cross_images{},*cross_arrow{},
-        *room_spawn{},*master_client{},*actor_number{},*owner_number{},*transfer_owner{},*nav_warp{};
+        *room_spawn{},*master_client{},*actor_number{},*owner_number{},*transfer_owner{},*nav_destination{},*nav_has_path{},*nav_pending{},
+        *vote_players{},*vote_nick{},*vote_local{},*vote_time{},*vote_send{},*vote_text{},*vote_set{},*vote_focused{},
+        *parent_get{},*child_count{},*child_get{},*get_component{},*anim_controller_get{},*clip_length{},*nav_velocity{},*anim_bool{},*anim_float{};
+    Field *vote_input_field{},*vote_allowed_field{};
+    Class* vote_chat_class{};
+    Field* difficulty_field=nullptr;
+    std::array<const Method*,3> difficulty_refresh{};
     Class *player_class{},*manager_class{},*inventory_class{},*tie_class{},*attack_class{},*state_class{},*animator_class{},*animation_class{},*view_class{},*shotgun_class{},*pun_class{},
-        *script_class{},*movement_class{},*fall_class{},*crossbow_class{},*weapon_class{},*pickup_class{};
+        *script_class{},*movement_class{},*fall_class{},*crossbow_class{},*weapon_class{},*pickup_class{},*sight_class{};
     std::array<Class*,3> clone_managers{};
-    explicit Runtime(const Api& a):api(a),player(a),manager(a),inventory(a),attacked(a),player_state(a),script(a),movement(a),fall_damage(a),crossbow(a),shotgun(a){}
+    explicit Runtime(const Api& a):api(a),player(a),manager(a),inventory(a),attacked(a),player_state(a),script(a),movement(a),fall_damage(a),crossbow(a),shotgun(a),sight(a),sight_target(a),speed_owner(a){}
     const Method* ResolveMethod(const char* ns,const char* c,const char* n,int count=0){return api.FindMethod(api.Find(ns,c),n,count);}
     Object* Ref(Object* o,const char* field){
         if(!o||!field)return nullptr;
@@ -388,6 +678,28 @@ struct Runtime {
             found=m;
         }return found;
     }
+    const Method* ExactAnimator(const char* name,const char* value_type){
+        if(!api.class_get_methods||!api.method_get_param_count||!api.method_get_param)return nullptr;
+        auto* c=api.Find("UnityEngine","Animator");void* it=nullptr;const Method* result=nullptr;
+        for(int n=0;c&&n<256;++n){auto* m=api.class_get_methods(c,&it);if(!m)break;
+            if(std::strcmp(api.method_get_name(m),name)||api.method_get_param_count(m)!=2)continue;
+            auto* id=api.class_from_type(api.method_get_param(m,0));auto* value=api.class_from_type(api.method_get_param(m,1));
+            if(!id||!value||std::strcmp(api.class_get_namespace(id),"System")||std::strcmp(api.class_get_name(id),"Int32")||std::strcmp(api.class_get_namespace(value),"System")||std::strcmp(api.class_get_name(value),value_type))continue;
+            if(result)return nullptr;
+            result=m;
+        }return result;
+    }
+    const Method* ExactComponent(){
+        if(!api.class_get_methods||!api.method_get_param_count||!api.method_get_param||!api.method_is_generic)return nullptr;
+        auto* c=api.Find("UnityEngine","Component");void* it=nullptr;const Method* found=nullptr;
+        for(int n=0;c&&n<1024;++n){auto* m=api.class_get_methods(c,&it);if(!m)break;
+            if(std::strcmp(api.method_get_name(m),"GetComponent")||api.method_get_param_count(m)!=1||api.method_is_generic(m))continue;
+            auto* p=api.class_from_type(api.method_get_param(m,0));
+            if(!p||std::strcmp(api.class_get_namespace(p),"System")||std::strcmp(api.class_get_name(p),"Type"))continue;
+            if(found)return nullptr;
+            found=m;
+        }return found;
+    }
     const Method* ExactNavSample(){
         if(!api.class_get_methods||!api.method_get_param_count||!api.method_get_param)return nullptr;
         auto* c=api.Find("UnityEngine.AI","NavMesh");if(!c)return nullptr;
@@ -433,7 +745,25 @@ struct Runtime {
         go=ResolveMethod("UnityEngine","Component","get_gameObject");go_active=ResolveMethod("UnityEngine","GameObject","get_activeInHierarchy");transform=ResolveMethod("UnityEngine","Component","get_transform");
         scale_get=ResolveMethod("UnityEngine","Transform","get_localScale");scale_set=ResolveMethod("UnityEngine","Transform","set_localScale",1);
         nav_get=ResolveMethod("UnityEngine.AI","NavMeshAgent","get_speed");nav_set=ResolveMethod("UnityEngine.AI","NavMeshAgent","set_speed",1);
-        nav_stop_get=ResolveMethod("UnityEngine.AI","NavMeshAgent","get_isStopped");nav_stop_set=ResolveMethod("UnityEngine.AI","NavMeshAgent","set_isStopped",1);nav_onmesh=ResolveMethod("UnityEngine.AI","NavMeshAgent","get_isOnNavMesh");
+        // This player's stripped Unity build has no isStopped/isOnNavMesh/Warp
+        // metadata. Use its actual speed/enabled/path API, never gate on a
+        // missing optional method returning a false fallback.
+        nav_has_path=ResolveMethod("UnityEngine.AI","NavMeshAgent","get_hasPath");nav_pending=ResolveMethod("UnityEngine.AI","NavMeshAgent","get_pathPending");
+        local_pos_get=ResolveMethod("UnityEngine","Transform","get_localPosition");local_rot_get=ResolveMethod("UnityEngine","Transform","get_localRotation");
+        parent_get=ResolveMethod("UnityEngine","Transform","get_parent");child_count=ResolveMethod("UnityEngine","Transform","get_childCount");child_get=ResolveMethod("UnityEngine","Transform","GetChild",1);
+        get_component=ExactComponent();
+        door_class=api.Find("","Door");door_open=api.FindMethod(door_class,"ewl",0);
+        door_line=ResolveMethod("UnityEngine","Physics","Linecast",5);hit_collider=ResolveMethod("UnityEngine","RaycastHit","get_collider");
+        auto* hit_type=api.Find("UnityEngine","RaycastHit");uint32_t hit_alignment=0;
+        if(hit_type&&api.class_value_size){const int bytes=api.class_value_size(hit_type,&hit_alignment);if(bytes>0&&bytes<=512&&hit_alignment<=alignof(std::max_align_t))hit_size=size_t(bytes);}
+        noise_classes={api.Find("","NoiseObjectFallsMulti"),api.Find("","NoiseObjectFallsMultiGrandpa")};
+        nav_class=api.Find("UnityEngine.AI","NavMeshAgent");
+        nav_update_pos=ResolveMethod("UnityEngine.AI","NavMeshAgent","set_updatePosition",1);
+        nav_update_rot=ResolveMethod("UnityEngine.AI","NavMeshAgent","set_updateRotation",1);
+        clip_length=ResolveMethod("UnityEngine","AnimationClip","get_length");
+        nav_velocity=ResolveMethod("UnityEngine.AI","NavMeshAgent","get_velocity");
+        anim_bool=ExactAnimator("SetBool","Boolean");anim_float=ExactAnimator("SetFloat","Single");
+        anim_controller_get=ResolveMethod("UnityEngine","Animator","get_runtimeAnimatorController");
         anim_get=ResolveMethod("UnityEngine","Animator","get_speed");anim_set=ResolveMethod("UnityEngine","Animator","set_speed",1);
         current_room=ResolveMethod("Photon.Pun","PhotonNetwork","get_CurrentRoom");master=ResolveMethod("Photon.Pun","PhotonNetwork","get_IsMasterClient");queue=ResolveMethod("Photon.Pun","PhotonNetwork","get_IsMessageQueueRunning");
         get_scene=ResolveMethod("UnityEngine.SceneManagement","SceneManager","GetActiveScene");mine=ResolveMethod("Photon.Pun","PhotonView","get_IsMine");
@@ -451,7 +781,12 @@ struct Runtime {
         spawn=ResolveMethod("Photon.Pun","PhotonNetwork","Instantiate",5);path_combine=ResolveMethod("System.IO","Path","Combine",2);
         room_spawn=ResolveMethod("Photon.Pun","PhotonNetwork","InstantiateRoomObject",5);
         master_client=ResolveMethod("Photon.Pun","PhotonNetwork","get_MasterClient");actor_number=ResolveMethod("Photon.Realtime","Player","get_ActorNumber");
-        owner_number=ResolveMethod("Photon.Pun","PhotonView","get_OwnerActorNr");transfer_owner=ExactTransfer();nav_warp=ResolveMethod("UnityEngine.AI","NavMeshAgent","Warp",1);
+        owner_number=ResolveMethod("Photon.Pun","PhotonView","get_OwnerActorNr");transfer_owner=ExactTransfer();nav_destination=ResolveMethod("UnityEngine.AI","NavMeshAgent","SetDestination",1);
+        vote_players=ResolveMethod("Photon.Pun","PhotonNetwork","get_PlayerList");vote_nick=ResolveMethod("Photon.Realtime","Player","get_NickName");
+        vote_local=ResolveMethod("Photon.Pun","PhotonNetwork","get_LocalPlayer");vote_time=ResolveMethod("Photon.Pun","PhotonNetwork","get_ServerTimestamp");
+        vote_chat_class=api.Find("","ChatManager");vote_send=api.FindMethod(vote_chat_class,"SendMessage",0);
+        vote_input_field=vote_chat_class?api.class_get_field_from_name(vote_chat_class,"inputField"):nullptr;vote_allowed_field=vote_chat_class?api.class_get_field_from_name(vote_chat_class,"canSendMessage"):nullptr;
+        vote_text=ResolveMethod("TMPro","TMP_InputField","get_text");vote_set=ResolveMethod("TMPro","TMP_InputField","set_text",1);vote_focused=ResolveMethod("TMPro","TMP_InputField","get_isFocused");
         prefix_get=ResolveMethod("<PrivateImplementationDetails>{B6FBF95C-D343-4B5E-9090-977A04841BC0}","a","bvx");
         network_destroy=ExactDestroy();local_destroy=ResolveMethod("UnityEngine","Object","Destroy",1);
         player_class=api.Find("","playerController");manager_class=api.Find("","playerManager");inventory_class=api.Find("","HandlePickUpItemInteractions");tie_class=api.Find("","HandItemTie");
@@ -459,17 +794,70 @@ struct Runtime {
         animator_class=api.Find("UnityEngine","Animator");animation_class=api.Find("UnityEngine","Animation");view_class=api.Find("Photon.Pun","PhotonView");
         pun_class=api.Find("Photon.Pun","MonoBehaviourPun");
         script_class=api.Find("","PlayerScriptManager");movement_class=api.Find("","FirstPersonController");fall_class=api.Find("","HandleFallDemage");crossbow_class=api.Find("","HandleCrossBow");weapon_class=api.Find("","HandleShotgun");pickup_class=api.Find("","PickupItem");
+        sight_class=api.Find("","HandleLocalSeeTargetToggling");
         clone_managers={api.Find("","GrannyManager"),api.Find("","GrandpaManager"),api.Find("","SpiderMomManager")};
+        auto* rooms=api.Find("","PhotonRoomsManager");difficulty_field=rooms?api.class_get_field_from_name(rooms,"Difficulty"):nullptr;
+        if(!FieldType(api,difficulty_field,"","GameDifficulty")||!api.field_static_get_value||!api.field_static_set_value||!api.class_value_size)difficulty_field=nullptr;
+        if(difficulty_field){uint32_t alignment=0;auto* type=api.class_from_type(api.field_get_type(difficulty_field));if(!type||api.class_value_size(type,&alignment)!=1)difficulty_field=nullptr;}
+        difficulty_refresh={ResolveMethod("","EnemyAIGrannyMulti","eik"),ResolveMethod("","EnemyAIGrandpaMulti","dum"),ResolveMethod("","SpiderMomAIController","imw")};
         for(size_t k=0;k<kEnemyCount;++k)classes[k]=api.Find("",specs[k].klass);
         const Method* required[]={find,length,item,alive,active,enabled_get,enabled_set,go,go_active,transform,scale_get,scale_set,current_room,master,queue,get_scene,scene_valid,scene_loaded,mine};
         return (player_class||attack_class)&&std::all_of(std::begin(required),std::end(required),[](auto* m){return m!=nullptr;});
     }
+    bool ProgressionHost(){return snap.ready&&snap.authority&&WorldMatches()&&api.Value<bool>(master,nullptr,false);}
+    bool AssistWorld(Object* target,Object* list){
+        if(!assist_scope||!CanAssistInventory(assist_scope->inventory.Get())||!target||!list)return false;
+        Object* active_target=nullptr;api.field_get_value(assist_scope->inventory.Get(),assist_target,&active_target);
+        Root current(api,active_target),requirements(api,list);
+        if(current.Get()!=target||!InHierarchy(target)||std::strcmp(api.class_get_name(api.object_get_class(target)),"WorldInteractable")||std::strcmp(api.class_get_namespace(api.object_get_class(target)),""))return false;
+        auto* klass=api.object_get_class(list);const auto* count=api.FindMethod(klass,"get_Count",0);const auto* get=api.FindMethod(klass,"get_Item",1);
+        const int n=api.Value<int>(count,list,-1);if(n<1||n>32||!get)return false;
+        uint8_t candidate=0,current_hand=0;api.field_get_value(assist_scope->inventory.Get(),assist_hand,&current_hand);bool found=false;
+        for(int i=0;i<n;++i){void* args[]={&i};bool ok=false;Root item(api,api.Call(get,list,args,&ok));if(!ok||!item.Get())return false;
+            const auto value=*static_cast<uint8_t*>(api.object_unbox(item.Get()));if(i==0)candidate=value;if(value==current_hand)found=true;}
+        // Empty hands accepted by the actual list need no fabricated item.
+        if(!found){api.field_set_value(assist_scope->inventory.Get(),assist_hand,&candidate);uint8_t check=0;api.field_get_value(assist_scope->inventory.Get(),assist_hand,&check);if(check!=candidate)return false;assist_scope->changed=true;assist_scope->last=candidate;}
+        assist_scope->target.Set(target);assist_scope->assisted=true;return true;
+    }
+    bool RefreshDifficulty(Actor& actor){
+        if(!ProgressionHost()||actor.kind>2||!difficulty_refresh[actor.kind]||(actor.kind<2&&!difficulty_helpers_ready[actor.kind])||!InHierarchy(actor.object.Get())||!Owned(actor.object.Get(),specs[actor.kind].pv))return false;
+        // Scoped helper hooks retain human combat, target and route state.
+        // Mom's initializer also appends routes: run with a disposable list and
+        // restore its real route list on every exit, preserving chase/targets.
+        Root routes(api),temporary(api);Field* route_field=nullptr;
+        if(actor.kind==2){
+            if(!api.object_new||!api.field_set_value_object)return false;
+            route_field=api.class_get_field_from_name(api.object_get_class(actor.object.Get()),"wayPoints");routes.Set(Ref(actor.object.Get(),"wayPoints"));
+            if(!route_field||!routes.Get())return false;
+            auto* type=api.object_get_class(routes.Get());const auto* ctor=api.FindMethod(type,".ctor",0);if(!ctor)return false;
+            temporary.Set(api.object_new(type));if(!temporary.Get())return false;bool ok=false;api.Call(ctor,temporary.Get(),nullptr,&ok);if(!ok)return false;
+        }
+        struct RouteRestore{const Api& api;Object* actor;Field* field;Root& original;~RouteRestore(){if(field)api.field_set_value_object(actor,field,original.Get());}} route_restore{api,actor.object.Get(),route_field,routes};
+        if(route_field)api.field_set_value_object(actor.object.Get(),route_field,temporary.Get());
+        struct DifficultyScope {Handle previous;explicit DifficultyScope(Handle target):previous(difficulty_target){difficulty_target=target;}~DifficultyScope(){difficulty_target=previous;}} scope(actor.object.h);
+        bool ok=false;api.Call(difficulty_refresh[actor.kind],actor.object.Get(),nullptr,&ok);if(!ok)return false;
+        for(auto* fields:{&actor.speed_fields,&actor.animation_fields})for(auto& field:*fields){float value=0;api.field_get_value(actor.object.Get(),field.field,&value);if(!std::isfinite(value)||value<0)return false;field.base=value;field.changed=false;}
+        float speed=PositiveField(actor.object.Get(),actor.kind==2?"wanderSpeed":"grannysVarSpeed");
+        if(speed>0&&Alive(actor.nav.Get())){actor.nav_base=speed;if(Set(nav_set,actor.nav.Get(),settings[actor.kind].paused?0.f:speed)){actor.nav_last=settings[actor.kind].paused?0.f:speed;actor.nav_changed=settings[actor.kind].paused;}}
+        return true;
+    }
+    void ChangeDifficulty(int selection){
+        if(selection<0||selection>5||!difficulty_field||!snap.difficulty_ready||!ProgressionHost()){snap.status=u8"Maç zorluğunu yalnız gerçek oda sahibi değiştirebilir.";return;}
+        uint8_t before=0;api.field_static_get_value(difficulty_field,&before);uint8_t value=uint8_t(selection);api.field_static_set_value(difficulty_field,&value);uint8_t check=255;api.field_static_get_value(difficulty_field,&check);
+        if(check!=value){api.field_static_set_value(difficulty_field,&before);snap.status=u8"Zorluk yazımı doğrulanamadı.";return;}
+        unsigned updated=0,pending=0;for(auto& actor:actors)if(actor->kind<3){if(RefreshDifficulty(*actor))++updated;else ++pending;}
+        snap.difficulty=selection;snap.status=u8"Zorluk uygulandı; AI güncellenen: "+std::to_string(updated)+u8", bekleyen: "+std::to_string(pending)+u8". Sahne/eşya presetleri yeniden kurulmaz.";
+    }
     void Clear(bool restore){
+        ReleaseSight(true);sight.Set(nullptr);sight_target.Set(nullptr);sight_applied=false;
+        vote_listening=false;ballot.Clear();vote_scan=vote_notice_next=0;vote_sent_yes=vote_sent_no=-1;
+        vote_result_notice.clear();vote_result_deadline=vote_result_next=0;
         protect=false;ghost_enabled=ammo_enabled=false;protected_player=0;protected_manager=0;protected_attack=protected_state=protected_script=0;
         tool_movement=tool_fall=tool_crossbow=tool_shotgun=tool_inventory=0;
         DisableTools(restore);
-        if(restore)for(auto& actor:actors){Restore(*actor);CombatGuard(*actor,false);}
-        actors.clear();prefabs.clear();clones.clear();player.Set(nullptr);manager.Set(nullptr);inventory.Set(nullptr);attacked.Set(nullptr);player_state.Set(nullptr);
+        if(restore){for(auto& clone:clones)StopClientPatrol(*clone);for(auto& actor:actors){Restore(*actor);CombatGuard(*actor,false);}}
+        actors.clear();prefabs.clear();clones.clear();doors.clear();noise_markers.clear();noise_baseline=false;noise_next=noise_time=footsteps_next=0;noise_radius=20;noise_serial=0;
+        player.Set(nullptr);manager.Set(nullptr);inventory.Set(nullptr);attacked.Set(nullptr);player_state.Set(nullptr);
         script.Set(nullptr);movement.Set(nullptr);fall_damage.Set(nullptr);crossbow.Set(nullptr);shotgun.Set(nullptr);
         settings={};snap={};next_scan=0;gameplay_bridge::Clear();
         modern_id=inventory_id=0;
@@ -524,37 +912,53 @@ struct Runtime {
         }
     }
     void Restore(Actor& a){
+        a.pose_frozen=a.local_pose_frozen=false;
         FreezeAnimations(a,false);ScaleVisuals(a,1);
         const bool fields_changed=std::any_of(a.speed_fields.begin(),a.speed_fields.end(),[](const auto& f){return f.changed;})||
             std::any_of(a.animation_fields.begin(),a.animation_fields.end(),[](const auto& f){return f.changed;});
-        if(!fields_changed&&!a.nav_changed&&!a.anim_changed&&!a.stop_changed&&!a.scale_changed)return;
+        if(!fields_changed&&!a.nav_changed&&!a.anim_changed&&!a.scale_changed)return;
         if(!Alive(a.object.Get()))return;
         ScalarApply(a,a.speed_fields,1);ScalarApply(a,a.animation_fields,1);
         // Never disable the AI to pause it: OnDisable unregisters game events
         // and may terminate coroutines. The update hook freezes its decision loop.
-        if(Alive(a.nav.Get())&&api.Value<bool>(nav_onmesh,a.nav.Get(),false)){
+        if(Alive(a.nav.Get())&&api.Value<bool>(enabled_get,a.nav.Get(),false)){
             if(a.nav_changed){if(!Near(api.Value<float>(nav_get,a.nav.Get(),-1),a.nav_last)||Set(nav_set,a.nav.Get(),a.nav_base))a.nav_changed=false;}
-            if(a.stop_changed&&Set(nav_stop_set,a.nav.Get(),a.stop_before))a.stop_changed=false;
         }
         if(Alive(a.animator.Get())&&a.anim_changed&&Near(api.Value<float>(anim_get,a.animator.Get(),-1),a.anim_last))Set(anim_set,a.animator.Get(),a.anim_base);
         if(Alive(a.transform.Get())&&a.scale_changed&&Near(api.Value<Vec3>(scale_get,a.transform.Get()),a.scale_last))Set(scale_set,a.transform.Get(),a.scale_before);
         a.anim_changed=a.scale_changed=false;
     }
+    Enemy EffectiveSettings(const Actor& actor){
+        Enemy result=settings[actor.kind];
+        for(const auto& clone:clones)if(clone->custom_settings&&clone->controller.Get()==actor.object.Get()){
+            result.speed=clone->settings.speed;result.size=clone->settings.size;break;
+        }
+        return result;
+    }
     void Apply(Actor& a){
-        const auto& cfg=settings[a.kind];
+        const auto cfg=EffectiveSettings(a);
         if(!cfg.paused&&Near(cfg.speed,1)&&Near(cfg.animation,1)&&Near(cfg.size,1)){Restore(a);return;}
         if(!Alive(a.object.Get()))return;
-        ScalarApply(a,a.speed_fields,cfg.speed);ScalarApply(a,a.animation_fields,cfg.animation);
+        if(!Alive(a.nav.Get())&&specs[a.kind].nav)a.nav.Set(Ref(a.object.Get(),specs[a.kind].nav));
+        ScalarApply(a,a.speed_fields,cfg.paused?0.f:cfg.speed);ScalarApply(a,a.animation_fields,cfg.animation);
         FreezeAnimations(a,cfg.paused);ScaleVisuals(a,cfg.size);
-        if(Alive(a.nav.Get())&&nav_get&&nav_set&&api.Value<bool>(nav_onmesh,a.nav.Get(),false)){
+        if(cfg.paused&&Alive(a.transform.Get())){
+            if(!a.pose_frozen)a.pose_frozen=Pose(a.transform.Get(),a.frozen_position,a.frozen_rotation);
+            if(!a.local_pose_frozen&&local_pos_get&&local_rot_get){
+                bool p_ok=false,q_ok=false;Root p(api,api.Call(local_pos_get,a.transform.Get(),nullptr,&p_ok)),q(api,api.Call(local_rot_get,a.transform.Get(),nullptr,&q_ok));
+                if(p_ok&&q_ok&&p.Get()&&q.Get()){
+                    a.frozen_local_position=*static_cast<Vec3*>(api.object_unbox(p.Get()));a.frozen_local_rotation=*static_cast<Quat*>(api.object_unbox(q.Get()));a.local_pose_frozen=Finite(a.frozen_local_position);
+                }
+            }
+            if(a.pose_frozen){Set(pos_set,a.transform.Get(),a.frozen_position);Set(rot_set,a.transform.Get(),a.frozen_rotation);}
+        }else a.pose_frozen=a.local_pose_frozen=false;
+        if(Alive(a.nav.Get())&&nav_get&&nav_set&&api.Value<bool>(enabled_get,a.nav.Get(),false)){
             const float now=api.Value<float>(nav_get,a.nav.Get(),-1);
             if(std::isfinite(now)&&now>=0){
                 if(!a.nav_changed||!Near(now,a.nav_last))a.nav_base=now;
-                const float value=std::clamp(a.nav_base*cfg.speed,0.f,100.f);
+                const float value=cfg.paused?0.f:std::clamp(a.nav_base*cfg.speed,0.f,100.f);
                 if(Set(nav_set,a.nav.Get(),value)){a.nav_last=value;a.nav_changed=true;}
             }
-            if(cfg.paused&&!a.stop_changed){a.stop_before=api.Value<bool>(nav_stop_get,a.nav.Get(),false);a.stop_changed=Set(nav_stop_set,a.nav.Get(),true);}
-            if(!cfg.paused&&a.stop_changed&&Set(nav_stop_set,a.nav.Get(),a.stop_before))a.stop_changed=false;
         }
         if(Alive(a.animator.Get())&&anim_get&&anim_set){
             const float now=api.Value<float>(anim_get,a.animator.Get(),-1);
@@ -584,7 +988,6 @@ struct Runtime {
                 auto actor=std::make_unique<Actor>(api,o,k);
                 actor->nav.Set(Ref(o,specs[k].nav));actor->animator.Set(Ref(o,specs[k].animator));actor->transform.Set(api.Call(transform,o));
                 FloatFields(*actor,specs[k].speed,actor->speed_fields);FloatFields(*actor,specs[k].animation,actor->animation_fields);
-                if(k<2){auto* field=api.class_get_field_from_name(api.object_get_class(o),"dontHitPlayer");if(FieldType(api,field,"System","Boolean"))actor->no_hit=field;}
                 BuildVisuals(*actor);
                 actors.push_back(std::move(actor));
             });
@@ -726,17 +1129,69 @@ struct Runtime {
         if(!Pose(camera.Get(),ignored,camera_q)||!FrontPose(p,camera_q,distance,position,rotation))return FrontPose(p,body_q,distance,position,rotation);
         return true;
     }
-    bool MoveGhost(float step,bool return_to_start=false){
+    bool ReturnGhost(){
         if(!snap.ghost_ready||!ghost_active)return false;
         Root body(api,BodyTransform());Vec3 p{};Quat q{};if(!Pose(body.Get(),p,q))return false;
-        if(return_to_start)p=ghost_origin;else p.y+=step;
+        p=ghost_origin;
         if(!Finite(p)||!Set(pos_set,body.Get(),p))return false;
-        if(return_to_start)snap.ghost=false;
+        ghost_height=p.y;ghost_height_ready=true;
+        snap.ghost=false;
         return true;
     }
     void ResetVerticalVelocity(){
         if(!movement_velocity||!Alive(movement.Get()))return;
         Vec3 v{};api.field_get_value(movement.Get(),movement_velocity,&v);if(Finite(v)){v.y=0;api.field_set_value(movement.Get(),movement_velocity,&v);}
+    }
+    bool SightOwned(){
+        if(!sight_hooks_ready||!WorldMatches()||!InHierarchy(sight.Get())||!Owned(sight.Get(),"pv"))return false;
+        Root pv(api,Ref(sight.Get(),"pv")),own(api,Ref(inventory.Get(),"pv"));
+        if(!pv.Get()||!own.Get()||pv.Get()!=own.Get())return false;
+        Root target(api,Ref(sight.Get(),"grannySeeTarget")),owner_t(api,api.Call(transform,sight.Get()));
+        Root target_t(api,target.Get()?api.Call(go_transform,target.Get()):nullptr);
+        return Alive(target.Get())&&Alive(owner_t.Get())&&Alive(target_t.Get())&&owner_t.Get()!=target_t.Get()&&ChildOf(target_t.Get(),owner_t.Get());
+    }
+    bool SendSight(bool on,bool network){
+        const auto* method=api.FindMethod(sight_class,"hpg",2);if(!method)return false;
+        struct Internal{bool& flag;bool saved;explicit Internal(bool& f):flag(f),saved(f){flag=true;}~Internal(){flag=saved;}} internal(sight_internal);
+        void* args[]={&on,&network};bool ok=false;api.Call(method,sight.Get(),args,&ok);
+        if(ok&&network)++sight_sends;
+        return ok;
+    }
+    void ReleaseSight(bool restore){
+        if(sight_applied&&restore&&SightOwned()&&Ref(sight.Get(),"grannySeeTarget")==sight_target.Get()){
+            if(sight_restore_pending&&gameplay_bridge::Now()<sight_next)return;
+            const bool local=SendSight(sight_normal,false),network=SendSight(sight_normal,true);
+            __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG sight restore=%d local=%d network_call=%d",sight_normal,local,network);
+            if(!local||!network){sight_restore_pending=true;sight_next=gameplay_bridge::Now()+1;return;}
+        }
+        sight_applied=sight_restore_pending=false;sight_next=0;sight_target.Set(nullptr);snap.invisible=false;
+    }
+    bool OverrideSightRequest(Object* o,bool requested,bool remember){
+        if(sight_internal||o!=sight.Get()||!sight_applied||!snap.ready||!snap.god||!snap.god_ready||!SightOwned())return false;
+        if(remember)sight_normal=requested;
+        return true;
+    }
+    void UpdateSight(){
+        snap.invisible_ready=SightOwned();
+        if(sight_applied&&Ref(sight.Get(),"grannySeeTarget")!=sight_target.Get())ReleaseSight(false);
+        if(!snap.god||!snap.god_ready||!snap.ready||!snap.invisible_ready){ReleaseSight(true);snap.invisible_status=snap.invisible_ready?u8"AI görünmezliği God Mode ile açılır.":u8"AI görünmezliği: kendi hedef bağlantın bekleniyor.";return;}
+        if(sight_restore_pending){sight_restore_pending=false;sight_next=0;}
+        const double now=gameplay_bridge::Now();
+        if(!sight_applied){
+            sight_target.Set(Ref(sight.Get(),"grannySeeTarget"));
+            bool ok=false;Root state(api,api.Call(active_get,sight_target.Get(),nullptr,&ok));
+            if(!ok||!state.Get())return;
+            sight_normal=*static_cast<bool*>(api.object_unbox(state.Get()));sight_applied=true;sight_next=0;
+        }
+        // Immediate local application plus the game's own unbuffered RPC.
+        // Periodic refresh covers late peers and host changes without a frame flood.
+        const bool visible=api.Value<bool>(active_get,sight_target.Get(),true);
+        if(visible||now>=sight_next){
+            const bool local=SendSight(false,false),network=SendSight(false,true);sight_next=now+(local&&network?3:1);
+            __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG sight hidden=1 local=%d network_call=%d sends=%u",local,network,sight_sends);
+        }
+        snap.invisible=!api.Value<bool>(active_get,sight_target.Get(),true);
+        snap.invisible_status=snap.invisible?u8"AI görünmezliği açık; ağ güncellemesi gönderiliyor.":u8"AI hedefinin kapanması bekleniyor.";
     }
     void AmmoVisuals(bool enabled){
         if(!enabled&&!cross_visual&&!shot_visual)return;
@@ -755,26 +1210,131 @@ struct Runtime {
             const bool loaded=shot_on||ReadBool(manager.Get(),shotgun_loaded);if(Alive(ammo.Get()))Set(active_set,ammo.Get(),loaded);shot_visual=shot_on;
         }
     }
+    void ReleasePlayerSpeed(bool restore){
+        if(restore&&WorldMatches()&&InHierarchy(speed_owner.Get())&&Owned(speed_owner.Get(),"pv"))for(auto& f:player_speeds){
+            float current=0;api.field_get_value(speed_owner.Get(),f.field,&current);
+            if(f.changed&&Near(current,f.last))api.field_set_value(speed_owner.Get(),f.field,&f.base);
+        }
+        player_speeds.clear();speed_owner.Set(nullptr);snap.player_speed_ready=false;snap.player_speed=1;
+    }
+    bool PlayerSpeedReady(){
+        if(!snap.ready||!InHierarchy(movement.Get())||!Owned(movement.Get(),"pv"))return false;
+        for(const char* name:{"walkSpeed","crouchSpeed"}){
+            auto* f=api.class_get_field_from_name(api.object_get_class(movement.Get()),name);if(!FieldType(api,f,"System","Single"))return false;
+            float value=0;api.field_get_value(movement.Get(),f,&value);if(!std::isfinite(value)||value<=0||value>500)return false;
+        }return true;
+    }
+    void UpdatePlayerSpeed(){
+        snap.player_speed_ready=PlayerSpeedReady();
+        if(!snap.player_speed_ready){ReleasePlayerSpeed(true);return;}
+        if(speed_owner.Get()!=movement.Get()){
+            const float requested=snap.player_speed;ReleasePlayerSpeed(true);snap.player_speed=requested;snap.player_speed_ready=true;speed_owner.Set(movement.Get());
+            for(const char* name:{"walkSpeed","crouchSpeed"}){auto* f=api.class_get_field_from_name(api.object_get_class(movement.Get()),name);float v=0;api.field_get_value(movement.Get(),f,&v);player_speeds.push_back({f,v,v,false});}
+        }
+        for(auto& f:player_speeds){
+            float current=0;api.field_get_value(speed_owner.Get(),f.field,&current);if(!std::isfinite(current)||current<=0)continue;
+            if(!f.changed||!Near(current,f.last))f.base=current;
+            const float value=f.base*snap.player_speed;
+            if(snap.player_speed==1){if(f.changed&&Near(current,f.last))api.field_set_value(speed_owner.Get(),f.field,&f.base);f.changed=false;}
+            else if(std::isfinite(value)&&value>0&&value<=500){float next=value;api.field_set_value(speed_owner.Get(),f.field,&next);f.last=next;f.changed=true;}
+        }
+    }
     void DisableTools(bool restore){
-        ghost_enabled=ammo_enabled=false;
+        ReleasePlayerSpeed(restore);
+        ghost_enabled=ammo_enabled=false;ghost_height_ready=false;
         if(restore){if(ghost_active)ResetVerticalVelocity();AmmoVisuals(false);}
         ghost_active=cross_visual=shot_visual=false;
     }
     void UpdateTools(){
-        if(snap.ghost&&!ghost_active){Root body(api,BodyTransform());Quat q{};if(Pose(body.Get(),ghost_origin,q)){ghost_active=true;ResetVerticalVelocity();}else{snap.ghost=false;snap.status=u8"Hayalet modu başlangıç konumunu okuyamadı.";}}
-        if(!snap.ghost&&ghost_active){ResetVerticalVelocity();ghost_active=false;}
+        UpdatePlayerSpeed();
+        gameplay_bridge::SyncGodAmmo(snap);
+        UpdateSight();
+        if(snap.ghost&&!ghost_active){Root body(api,BodyTransform());Quat q{};if(Pose(body.Get(),ghost_origin,q)){ghost_active=true;ghost_height=ghost_origin.y;ghost_height_ready=true;ResetVerticalVelocity();}else{snap.ghost=false;snap.status=u8"Hayalet modu başlangıç konumunu okuyamadı.";}}
+        if(!snap.ghost&&ghost_active){ResetVerticalVelocity();ghost_active=false;ghost_height_ready=false;}
+        if(snap.ghost&&ghost_active&&snap.ghost_ready){
+            ResetVerticalVelocity();Root body(api,BodyTransform());Vec3 p{};Quat q{};
+            if(ghost_height_ready&&Pose(body.Get(),p,q)&&!Near(p.y,ghost_height)){p.y=ghost_height;Set(pos_set,body.Get(),p);}
+        }
         AmmoVisuals(snap.infinity&&snap.infinity_ready);
-        ghost_enabled=snap.ghost&&ghost_active&&snap.ghost_ready;ammo_enabled=snap.infinity&&snap.infinity_ready;
+        ghost_enabled=snap.ghost&&ghost_active&&snap.ghost_ready;ammo_enabled=protect&&snap.infinity;
+    }
+    float PositiveField(Object* o,const char* name){
+        auto* field=api.class_get_field_from_name(api.object_get_class(o),name);
+        if(!FieldType(api,field,"System","Single"))return 0;
+        float value=0;api.field_get_value(o,field,&value);return std::isfinite(value)&&value>0&&value<100?value:0;
+    }
+    bool Flag(Object* object,const char* name){
+        if(!object)return false;
+        auto* f=api.class_get_field_from_name(api.object_get_class(object),name);
+        return FieldType(api,f,"System","Boolean")&&ReadBool(object,f);
+    }
+    bool ReleaseHiddenTarget(Actor& actor){
+        if(actor.kind>2||settings[actor.kind].paused||!snap.authority||!WorldMatches()||!api.Value<bool>(master,nullptr,false)||!InHierarchy(actor.object.Get())||!Owned(actor.object.Get(),specs[actor.kind].pv)||!go_active)return false;
+        auto* ai=actor.object.Get();
+        for(const char* name:{"hitByArrow","hitByGun","hitByCar","hitByPepper","hitByPepperStart","bastuKilled","freeze","gotHitByWeapon"})if(Flag(ai,name))return false;
+        Root eye(api,actor.kind<2?Ref(ai,"enemyEye"):ai),selected(api,Ref(eye.Get(),actor.kind==0?"pka":actor.kind==1?"pdz":"rnx"));
+        if(!selected.Get())return false;
+        Root target(api,Ref(ai,"targetTransform"));if(!target.Get())target.Set(Ref(ai,"target"));
+        Root target_go(api,target.Get()?api.Call(go,target.Get()):nullptr);
+        const bool local_hidden=snap.god&&snap.god_ready&&snap.invisible&&selected.Get()==api.Call(local_player_method);
+        if(!local_hidden&&(!Alive(target_go.Get())||api.Value<bool>(go_active,target_go.Get(),true)))return false;
+        const auto* clear=api.FindMethod(api.object_get_class(eye.Get()),actor.kind==0?"eli":actor.kind==1?"dwz":"inb",0);
+        const auto* reset=api.FindMethod(api.object_get_class(ai),actor.kind==0?"eim":actor.kind==1?"duo":"inf",0);
+        const auto* route=actor.kind<2?api.FindMethod(api.object_get_class(ai),actor.kind==0?"ein":"dup",0):nullptr;
+        if(!clear||!reset||(actor.kind<2&&!route))return false;
+        // Use native per-instance target/animation cleanup, then let native
+        // perception choose a different visible player. No scene reinitialization.
+        bool ok=false;api.Call(clear,eye.Get(),nullptr,&ok);if(!ok)return false;
+        if(actor.kind<2){
+            api.Call(reset,ai,nullptr,&ok);if(!ok)return false;
+            for(const char* name:{"seePlayer","playerGetCaught","attackingPlayer","startAttack","grannyGonnaSmack","inTrigger","aboutKillingCollider","startWalk","stopWalk"})BoolField(ai,name,false);
+            BoolField(ai,"GrannyMoving",true);SetReference(ai,"targetTransform",nullptr,"Transform");
+            api.Call(route,ai,nullptr,&ok);
+        }else{BoolField(ai,"eatingPlayer",false);api.Call(reset,ai,nullptr,&ok);}
+        actor.attack_release=0;++target_releases;
+        __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG ai release-hidden kind=%zu native_ok=%d total=%u",actor.kind,ok,target_releases);
+        return true;
     }
     void CombatGuard(Actor& actor,bool enabled){
-        if(!enabled&&!actor.no_hit_changed)return;
-        if(!actor.no_hit||!Alive(actor.object.Get()))return;
-        bool local_target=false;
-        if(enabled){Root target(api,Ref(actor.object.Get(),"targetTransform"));if(!target.Get())target.Set(Ref(actor.object.Get(),"target"));Root body(api,BodyTransform());
-            if(Alive(target.Get())&&Alive(body.Get())){void* args[]={body.Get()};bool ok=false;Root match(api,api.Call(is_child,target.Get(),args,&ok));local_target=target.Get()==body.Get()||(ok&&match.Get()&&*static_cast<bool*>(api.object_unbox(match.Get())));}
+        if(ReleaseHiddenTarget(actor))return;
+        // Let the original attack play. A protected player's missing death
+        // callback otherwise leaves this enemy permanently caught/eating.
+        if(!enabled){actor.attack_release=0;return;}
+        if(actor.kind>2||settings[actor.kind].paused||!snap.authority||!api.Value<bool>(master,nullptr,false)||!WorldMatches()||!Alive(actor.object.Get())){actor.attack_release=0;return;}
+        Root body(api,BodyTransform());if(!Alive(body.Get()))return;
+        Root eye(api,actor.kind<2?Ref(actor.object.Get(),"enemyEye"):nullptr);
+        Root selected(api,actor.kind<2?Ref(eye.Get(),actor.kind==0?"pka":"pdz"):Ref(actor.object.Get(),"rnx"));
+        Root local(api,api.Call(local_player_method));
+        if(selected.Get()&&selected.Get()!=local.Get()){actor.attack_release=0;return;}
+        Root target(api,Ref(actor.object.Get(),"targetTransform"));if(!target.Get())target.Set(Ref(actor.object.Get(),"target"));
+        const bool own=selected.Get()?selected.Get()==local.Get():Alive(target.Get())&&ChildOf(target.Get(),body.Get());
+        if(!own){actor.attack_release=0;return;}
+        for(const char* name:{"hitByArrow","hitByGun","hitByCar","bastuKilled","freeze","gotHitByWeapon"})
+            if(Flag(actor.object.Get(),name)){actor.attack_release=0;return;}
+        const bool attacking=actor.kind<2?(Flag(actor.object.Get(),"playerGetCaught")||Flag(actor.object.Get(),"attackingPlayer")):Flag(actor.object.Get(),"eatingPlayer");
+        if(!attacking){actor.attack_release=0;return;}
+        const double now=gameplay_bridge::Now();
+        if(!actor.attack_release){
+            // AnimatorStateInfo getters were stripped. Use the actual victim
+            // clip when available, with a bounded fallback, not a guessed ABI.
+            float duration=3.5f;
+            Root clip(api,Ref(script.Get(),"playerHurtAnim"));
+            if(!clip.Get()&&actor.kind==2)clip.Set(Ref(actor.object.Get(),"momHitAnim"));
+            if(clip.Get()&&clip_length){float length=api.Value<float>(clip_length,clip.Get(),0);if(std::isfinite(length)&&length>0)duration=std::clamp(length+.35f,3.5f,12.f);}
+            actor.attack_release=now+duration;return;
         }
-        if(local_target){const bool now=ReadBool(actor.object.Get(),actor.no_hit);if(!actor.no_hit_changed||!now)actor.no_hit_before=now;bool yes=true;api.field_set_value(actor.object.Get(),actor.no_hit,&yes);actor.no_hit_changed=true;}
-        else if(actor.no_hit_changed){if(ReadBool(actor.object.Get(),actor.no_hit))api.field_set_value(actor.object.Get(),actor.no_hit,&actor.no_hit_before);actor.no_hit_changed=false;}
+        if(now<actor.attack_release)return;
+        actor.attack_release=0;
+        if(actor.kind<2){
+            for(const char* name:{"playerGetCaught","grannyGonnaSmack","attackingPlayer","startAttack","inTrigger","aboutKillingCollider","stopWalk","startWalk"})BoolField(actor.object.Get(),name,false);
+            BoolField(actor.object.Get(),"GrannyMoving",true);
+        }else BoolField(actor.object.Get(),"eatingPlayer",false);
+        // Retain the selected player, eye, chase flags and destination. No
+        // forced patrol, target erasure or global event is needed to resume.
+        Root nav(api,Ref(actor.object.Get(),specs[actor.kind].nav));
+        float speed=PositiveField(actor.object.Get(),actor.kind<2?"grannysVarSpeed":"chaseSpeed");
+        if(speed<=0&&actor.kind==2)speed=PositiveField(actor.object.Get(),"wanderSpeed");
+        if(speed>0)Set(nav_set,nav.Get(),speed);
     }
     void Kill(size_t kind){
         settings[kind]={};for(auto& a:actors)if(a->kind==kind)Restore(*a);
@@ -803,7 +1363,7 @@ struct Runtime {
         snap.status=sent?(kind==4?u8"Karganın normal vurulma akışı istendi; uçuşu bitince işlenebilir. Etki yereldir.":u8"Oyunun normal vurulma/ölüm isteği gönderildi. Süreyi, ragdoll ve yeniden doğmayı oyun yönetir."):u8"Bu düşman için doğrulanmış ölüm isteği bulunamadı; Kaldır seçeneğini kullanabilirsin.";
         next_scan=0;
     }
-    void Clone(size_t kind){
+    void Clone(size_t kind,const Enemy& configuration=Enemy{},float distance=4){
         clones.erase(std::remove_if(clones.begin(),clones.end(),[&](const auto& p){return !Alive(p->Get());}),clones.end());
         if(kind>=3||clones.size()>=8){snap.status=kind>=3?u8"Bu düşmanın doğrulanmış klon prefabı yok.":u8"Bu oturumda en fazla sekiz canlı klon oluşturulabilir.";return;}
         const char* fields[]={"grannyPrefab","grandpaPrefab","spiderMomPrefab"};
@@ -814,7 +1374,7 @@ struct Runtime {
         Root text(api,api.Call(name_get,prefab.Get()));if(!text.Get())return;
         const auto name=api.Utf8(reinterpret_cast<String*>(text.Get()));
         if(name.empty()||name.size()>160)return;
-        Vec3 position{};Quat q{};if(!InFront(position,q)){snap.status=u8"Kendi oyuncunun ön konumu okunamadı.";return;}
+        Vec3 position{};Quat q{};if(!InFront(position,q,distance)){snap.status=u8"Kendi oyuncunun ön konumu okunamadı.";return;}
         NavHit hit{};float radius=1.8f;int areas=-1;void* sample[]={&position,&hit,&radius,&areas};bool sampled=false;Root found(api,api.Call(nav_sample,nullptr,sample,&sampled));
         const float dx=hit.position.x-position.x,dz=hit.position.z-position.z;
         if(!sampled||!found.Get()||!*static_cast<bool*>(api.object_unbox(found.Get()))||!hit.hit||!Finite(hit.position)||dx*dx+dz*dz>.35f*.35f){snap.status=u8"Tam önünde yürünebilir zemin bulunamadı; klon oluşturulmadı.";return;}
@@ -828,17 +1388,575 @@ struct Runtime {
         // Validate the freshly instantiated hierarchy's actual registered view.
         Root pv(api);Children(created.Get(),view_class,[&](Object* view){if(!pv.Get()&&api.Value<int>(view_id,view,0)>0&&api.Value<bool>(mine,view,false))pv.Set(view);});
         const int id=pv.Get()?api.Value<int>(view_id,pv.Get(),0):0;
-        if(!controller.Get()||ambiguous_controller||!Alive(pv.Get())||id<=0||!api.Value<bool>(mine,pv.Get(),false)){
+        if(!controller.Get()||ambiguous_controller||(!Alive(pv.Get())||id<=0||!api.Value<bool>(mine,pv.Get(),false))){
             void* args[]={created.Get()};api.Call(id>0&&api.Value<bool>(mine,pv.Get(),false)?network_destroy:local_destroy,nullptr,args);
             snap.status=u8"Klonun AI/ağ kimliği doğrulanamadı; oluşturulan nesne temizlendi.";return;
         }
         Root t(api,api.Call(go_transform,created.Get()));Set(pos_set,t.Get(),position);Set(rot_set,t.Get(),q);
         clones.push_back(std::make_unique<CloneRecord>(api,created.Get(),pv.Get(),position,gameplay_bridge::Now()));
+        clones.back()->controller.Set(controller.Get());clones.back()->settings=configuration;clones.back()->custom_settings=true;clones.back()->kind=kind;
+        Discover();for(auto& actor:actors)if(actor->object.Get()==controller.Get())Apply(*actor);
         snap.status=u8"Klon oluşturuldu. AI başlangıcı ve oda sahibiyle kontrol eşleşmesi bekleniyor.";next_scan=0;
+    }
+    bool SetReference(Object* object,const char* name,Object* value,const char* type,const char* namespc="UnityEngine"){
+        if(!api.field_set_value_object||!object||(value&&!Alive(value)))return false;
+        auto* field=api.class_get_field_from_name(api.object_get_class(object),name);
+        if(!FieldType(api,field,namespc,type))return false;
+        api.field_set_value_object(object,field,value);Object* after=nullptr;api.field_get_value(object,field,&after);return after==value;
+    }
+    bool Derives(Class* c,const char* namespc,const char* name){
+        for(int i=0;c&&i<32;++i,c=api.class_get_parent?api.class_get_parent(c):nullptr)
+            if(!std::strcmp(api.class_get_namespace(c),namespc)&&!std::strcmp(api.class_get_name(c),name))return true;
+        return false;
+    }
+    bool ChildOf(Object* t,Object* root){
+        if(!t||!root)return false;
+        if(t==root)return true;
+        void* args[]={root};return t&&root&&ChildOfCall(t,args);
+    }
+    bool ChildOfCall(Object* t,void** args){bool ok=false;Root v(api,api.Call(is_child,t,args,&ok));return ok&&v.Get()&&*static_cast<bool*>(api.object_unbox(v.Get()));}
+    Object* MapCloneTransform(Object* original,Object* copy,Object* node){
+        if(!parent_get||!child_count||!child_get||!name_get)return nullptr;
+        Root cursor(api,node);std::vector<int> path;std::vector<std::string> labels;
+        for(int depth=0;cursor.Get()!=original&&depth<32;++depth){
+            Root parent(api,api.Call(parent_get,cursor.Get()));if(!Alive(parent.Get()))return nullptr;
+            const int n=api.Value<int>(child_count,parent.Get(),-1);if(n<0||n>256)return nullptr;
+            int index=-1;for(int i=0;i<n;++i){void* args[]={&i};Root child(api,api.Call(child_get,parent.Get(),args));if(child.Get()==cursor.Get()){index=i;break;}}
+            if(index<0)return nullptr;
+            Root label(api,api.Call(name_get,cursor.Get()));if(!label.Get())return nullptr;
+            path.push_back(index);labels.push_back(api.Utf8(reinterpret_cast<String*>(label.Get())));cursor.Set(parent.Get());
+        }
+        if(cursor.Get()!=original)return nullptr;
+        cursor.Set(copy);
+        for(size_t i=path.size();i>0;--i){
+            const int count=api.Value<int>(child_count,cursor.Get(),-1);if(count<0||count>256)return nullptr;
+            Root child(api);int matches=0;
+            for(int index=0;index<count;++index){void* args[]={&index};Root candidate(api,api.Call(child_get,cursor.Get(),args));
+                Root name(api,Alive(candidate.Get())?api.Call(name_get,candidate.Get()):nullptr);
+                if(name.Get()&&api.Utf8(reinterpret_cast<String*>(name.Get()))==labels[i-1]){++matches;child.Set(candidate.Get());}
+            }
+            // Scene/prefab siblings may differ; accept only one matching path.
+            if(matches!=1)return nullptr;
+            cursor.Set(child.Get());
+        }return cursor.Get();
+    }
+    bool RepairCloneReferences(Object* source,Object* copy,Object* original_root,Object* copy_root){
+        if(!api.class_get_fields||!api.field_get_name||!api.field_get_flags||!api.field_set_value_object||!get_component)return false;
+        if(api.object_get_class(source)!=api.object_get_class(copy))return false;
+        void* it=nullptr;
+        for(int n=0;n<256;++n){auto* f=api.class_get_fields(api.object_get_class(source),&it);if(!f)break;
+            if(api.field_get_flags(f)&(0x10|0x20|0x40))continue; // static, readonly, literal
+            const char* name=api.field_get_name(f);if(!name)continue;
+            if(!std::strcmp(name,"pv")||!std::strcmp(name,"target")||!std::strcmp(name,"targetTransform")||!std::strcmp(name,"playerPos")||!std::strcmp(name,"Player")||!std::strcmp(name,"player")||!std::strcmp(name,"playerFollowing")||!std::strcmp(name,"whoHasTeddy")||!std::strcmp(name,"localPlayerPosFollow"))continue;
+            auto* type=api.class_from_type(api.field_get_type(f));if(!type)continue;
+            if(Derives(type,"Photon.Pun","PhotonView"))continue; // never copy network identity
+            const bool gameobject=Derives(type,"UnityEngine","GameObject"),component=Derives(type,"UnityEngine","Component");if(!gameobject&&!component)continue;
+            Object *before=nullptr,*from=nullptr;api.field_get_value(copy,f,&before);api.field_get_value(source,f,&from);
+            Root prior(api,before),value(api,from);if(!Alive(value.Get())||(Alive(prior.Get())&&prior.Get()!=value.Get()))continue;
+            Root src_t(api,api.Call(gameobject?go_transform:transform,value.Get()));if(!Alive(src_t.Get()))continue;
+            Root mapped(api);
+            if(ChildOf(src_t.Get(),original_root)){
+                Root dst_t(api,MapCloneTransform(original_root,copy_root,src_t.Get()));if(!Alive(dst_t.Get()))continue;
+                auto* actual=api.object_get_class(value.Get());
+                if(gameobject)mapped.Set(api.Call(go,dst_t.Get()));
+                else if(Derives(actual,"UnityEngine","Transform"))mapped.Set(dst_t.Get());
+                else{
+                    Root reflected(api,api.type_get_object(api.class_get_type(actual)));void* args[]={reflected.Get()};
+                    Root check(api,api.Call(get_component,src_t.Get(),args));if(check.Get()!=value.Get())continue;
+                    mapped.Set(api.Call(get_component,dst_t.Get(),args));
+                }
+                if(!Alive(mapped.Get())||api.object_get_class(mapped.Get())!=actual)continue;
+            }else mapped.Set(value.Get()); // external scene reference; never share mutable lists
+            if(mapped.Get()!=prior.Get()){
+                api.field_set_value_object(copy,f,mapped.Get());Object* after=nullptr;api.field_get_value(copy,f,&after);if(after!=mapped.Get())return false;
+            }
+        }return true;
+    }
+    bool BindCloneComponent(Object* root,Object* owner,const char* name){
+        auto* f=api.class_get_field_from_name(api.object_get_class(owner),name);if(!f)return false;
+        auto* type=api.class_from_type(api.field_get_type(f));if(!type||!Derives(type,"UnityEngine","Component"))return false;
+        Root value(api,Ref(owner,name)),t(api,value.Get()?api.Call(transform,value.Get()):nullptr),rt(api,api.Call(go_transform,root));
+        if(Alive(t.Get())&&ChildOf(t.Get(),rt.Get()))return true;
+        Root selected(api);bool ambiguous=false;
+        if(!Children(root,type,[&](Object* o){if(selected.Get()&&selected.Get()!=o)ambiguous=true;selected.Set(o);})||ambiguous||!selected.Get())return false;
+        return SetReference(owner,name,selected.Get(),api.class_get_name(type),api.class_get_namespace(type));
+    }
+    bool BindSceneComponent(Object* owner,const char* name){
+        if(Alive(Ref(owner,name)))return true;
+        auto* f=api.class_get_field_from_name(api.object_get_class(owner),name);if(!f)return false;
+        auto* type=api.class_from_type(api.field_get_type(f));if(!type||!Derives(type,"UnityEngine","Component"))return false;
+        Root found(api);bool ambiguous=false;
+        if(!Each(type,[&](Object* o){if(!InHierarchy(o))return;if(found.Get()&&found.Get()!=o)ambiguous=true;found.Set(o);})||ambiguous||!found.Get())return false;
+        return SetReference(owner,name,found.Get(),api.class_get_name(type),api.class_get_namespace(type));
+    }
+    bool PrepareCloneBehavior(Object* ai,size_t kind){
+        if(kind>2||!Alive(ai))return false;
+        Root source(api),copy_root(api,api.Call(transform,ai)),root_go(api,api.Call(go,ai)),own_view(api,Ref(ai,"pv"));
+        for(const auto& clone:clones)if(clone->controller.Get()==ai){
+            own_view.Set(clone->view.Get());root_go.Set(clone->object.Get());copy_root.Set(api.Call(go_transform,root_go.Get()));break;
+        }
+        if(!Alive(copy_root.Get())||!Alive(root_go.Get())||!Alive(own_view.Get()))return false;
+        if(!SetReference(ai,"pv",own_view.Get(),"PhotonView","Photon.Pun"))return false;
+        for(const auto& actor:actors){
+            if(actor->kind!=kind||actor->object.Get()==ai||!InHierarchy(actor->object.Get()))continue;
+            Root v(api,Ref(actor->object.Get(),"pv"));
+            if(std::any_of(clones.begin(),clones.end(),[&](const auto& c){return c->view.Get()==v.Get();}))continue;
+            source.Set(actor->object.Get());break;
+        }
+        // Original actors are optional. A player may remove them before
+        // cloning; serialized prefab references and this hierarchy are primary.
+        Root original_root(api),original_eye(api);
+        if(source.Get()){
+            original_root.Set(api.Call(transform,source.Get()));Root view(api,Ref(source.Get(),"pv")),vr(api,view.Get()?api.Call(transform,view.Get()):nullptr);
+            if(Alive(vr.Get())&&ChildOf(original_root.Get(),vr.Get()))original_root.Set(vr.Get());
+            RepairCloneReferences(source.Get(),ai,original_root.Get(),copy_root.Get());
+            original_eye.Set(kind<2?Ref(source.Get(),"enemyEye"):source.Get());
+        }
+        if(kind<2&&!BindCloneComponent(root_go.Get(),ai,"enemyEye"))return false;
+        if(!BindCloneComponent(root_go.Get(),ai,specs[kind].animator))return false;
+        Root eye(api,kind<2?Ref(ai,"enemyEye"):ai),animator(api,Ref(ai,specs[kind].animator));
+        if(original_eye.Get())RepairCloneReferences(original_eye.Get(),eye.Get(),original_root.Get(),copy_root.Get());
+        if(!SetReference(eye.Get(),"pv",own_view.Get(),"PhotonView","Photon.Pun"))return false;
+        if(kind<2){
+            if(!SetReference(eye.Get(),kind==0?"enemyAIGrannyMulti":"enemyAIGrandpaMulti",ai,specs[kind].klass,""))return false;
+            Root t(api,api.Call(transform,eye.Get()));if(!SetReference(eye.Get(),"myTransform",t.Get(),"Transform"))return false;
+            if(kind==0&&!BindSceneComponent(eye.Get(),"daysManager"))return false;
+        }
+        if(!BindCloneComponent(root_go.Get(),eye.Get(),"cam"))return false;
+        for(const char* name:{"seeRange",kind==1?"grandpaUpdateParseRate":"grannyUpdateParseRate"}){
+            auto* f=api.class_get_field_from_name(api.object_get_class(eye.Get()),name);if(!FieldType(api,f,"System","Single"))continue;
+            float value=0,from=0;api.field_get_value(eye.Get(),f,&value);if(original_eye.Get())api.field_get_value(original_eye.Get(),f,&from);
+            if((!std::isfinite(value)||value<=0)&&std::isfinite(from)&&from>0&&from<1000)api.field_set_value(eye.Get(),f,&from);
+        }
+        auto* mask=api.class_get_field_from_name(api.object_get_class(eye.Get()),"viewMask");
+        if(original_eye.Get()&&FieldType(api,mask,"UnityEngine","LayerMask")&&api.class_value_size){
+            auto* type=api.class_from_type(api.field_get_type(mask));uint32_t alignment=0;
+            if(api.class_value_size(type,&alignment)==sizeof(int)&&alignment<=alignof(int)){
+                int current=0,from=0;api.field_get_value(eye.Get(),mask,&current);api.field_get_value(original_eye.Get(),mask,&from);if(!current&&from)api.field_set_value(eye.Get(),mask,&from);
+            }
+        }
+        for(Object* component:{eye.Get(),animator.Get()}){
+            Root t(api,api.Call(transform,component));if(!Alive(t.Get())||!ChildOf(t.Get(),copy_root.Get()))return false;
+            for(int depth=0;t.Get()!=copy_root.Get()&&depth<32;++depth){
+                Root object(api,api.Call(go,t.Get()));if(!Alive(object.Get()))return false;
+                if(!api.Value<bool>(go_active,object.Get(),false)&&!Set(active_set,object.Get(),true))return false;
+                t.Set(api.Call(parent_get,t.Get()));if(!Alive(t.Get()))return false;
+            }
+            if(t.Get()!=copy_root.Get())return false;
+        }
+        if(!Set(enabled_set,eye.Get(),true)||!Set(enabled_set,animator.Get(),true))return false;
+        float speed=api.Value<float>(anim_get,animator.Get(),-1);if(!std::isfinite(speed)||speed<0)return false;
+        if(speed==0&&!Set(anim_set,animator.Get(),1.f))return false;
+        if(anim_controller_get){Root controller(api,api.Call(anim_controller_get,animator.Get()));if(!Alive(controller.Get()))return false;}
+        // These are the game's own per-instance target-list initializers. Do
+        // not replay Start/OnEnable or raise a global event for every enemy.
+        const auto* targets=api.FindMethod(api.object_get_class(ai),kind==0?"ekr":kind==1?"dwi":"ims",0);
+        const auto* players=api.FindMethod(api.object_get_class(eye.Get()),kind<2?"GetPlayers":"ims",0);
+        if(!targets||!players)return false;
+        bool ok=false;api.Call(targets,ai,nullptr,&ok);if(!ok)return false;
+        if(players!=targets)api.Call(players,eye.Get(),nullptr,&ok);
+        return ok;
+    }
+    bool EnsureCloneLocomotion(CloneRecord& clone){
+        auto* ai=clone.controller.Get();if(!Alive(ai)||clone.kind>=kEnemyCount)return false;
+        Root root(api,api.Call(go_transform,clone.object.Get())),ai_root(api,api.Call(transform,ai));
+        if(!Alive(root.Get())||!Alive(ai_root.Get())||!ChildOf(ai_root.Get(),root.Get()))return false;
+        if(!Alive(clone.view.Get())||!api.Value<bool>(mine,clone.view.Get(),false))return false;
+        const auto bind=[&](const char* field,Class* type,const char* name,const char* space){
+            if(!field||!type)return false;
+            Root value(api,Ref(ai,field));
+            if(value.Get()){Root t(api,api.Call(transform,value.Get()));if(Alive(t.Get())&&ChildOf(t.Get(),root.Get()))return true;}
+            Root chosen(api);bool ambiguous=false;
+            if(!Children(clone.object.Get(),type,[&](Object* component){if(chosen.Get()&&chosen.Get()!=component)ambiguous=true;chosen.Set(component);})||ambiguous||!chosen.Get())return false;
+            return SetReference(ai,field,chosen.Get(),name,space);
+        };
+        if(!bind(specs[clone.kind].nav,nav_class,"NavMeshAgent","UnityEngine.AI")||!bind(specs[clone.kind].animator,animator_class,"Animator","UnityEngine"))return false;
+        Root nav(api,Ref(ai,specs[clone.kind].nav)),animator(api,Ref(ai,specs[clone.kind].animator));
+        if(!Set(enabled_set,nav.Get(),true))return false;
+        if(nav_update_pos&&!Set(nav_update_pos,nav.Get(),true))return false;
+        if(nav_update_rot&&!Set(nav_update_rot,nav.Get(),true))return false;
+        Set(enabled_set,animator.Get(),true);
+        const float speed=api.Value<float>(anim_get,animator.Get(),-1);
+        if(speed==0)Set(anim_set,animator.Get(),1.f);
+        return true;
+    }
+    void ProbeClone(CloneRecord& clone,double now){
+        if(clone.kind>=kEnemyCount||now<clone.probe_next||clone.probes>=9)return;
+        clone.probe_next=now+1;++clone.probes;
+        Root t(api,api.Call(go_transform,clone.object.Get())),nav(api,Ref(clone.controller.Get(),specs[clone.kind].nav));
+        Vec3 p{};Quat q{};const bool position_ok=Pose(t.Get(),p,q);
+        bool moved=false;if(position_ok&&clone.observation_ready){const float dx=p.x-clone.observed_position.x,dz=p.z-clone.observed_position.z;moved=dx*dx+dz*dz>.0025f;}
+        if(position_ok&&!clone.observation_ready){clone.observed_position=p;clone.observation_ready=true;}
+        const bool nav_on=Alive(nav.Get())&&api.Value<bool>(enabled_get,nav.Get(),false);
+        const float speed=nav_on?api.Value<float>(nav_get,nav.Get(),-1):-1;
+        const bool path=nav_on&&api.Value<bool>(nav_has_path,nav.Get(),false),pending=nav_on&&api.Value<bool>(nav_pending,nav.Get(),false);
+        __android_log_print(ANDROID_LOG_INFO,"multiplayermod","clone probe kind=%zu master=%d nav=%d speed=%.2f path=%d pending=%d route=%d behavior=%d moved=%d frames=%u senses=%u target=%d",clone.kind,api.Value<bool>(master,nullptr,false),nav_on,double(speed),path,pending,clone.route_initialized,clone.behavior_ready,moved,clone.completed_frames,clone.senses,clone.has_target);
+        if(clone.probes==9&&!moved&&!settings[clone.kind].paused){
+            snap.status=std::string(gameplay_bridge::kNames[clone.kind])+u8" klonu yürüdüğü doğrulanamadı. Nav: "+(nav_on?"on":"off")+u8", hız: "+std::to_string(speed)+u8", rota: "+(path?"var":pending?"bekliyor":"yok")+u8". Ayrıntı clone probe kaydında.";
+        }
+    }
+    bool SenseClone(CloneRecord& clone,double now){
+        // Poll the game's actual per-instance perception. A populated player
+        // list alone never runs the sight test or enters native chase/attack.
+        if(clone.kind>2||settings[clone.kind].paused||!WorldMatches()||!snap.authority||!api.Value<bool>(master,nullptr,false)||!Alive(clone.view.Get())||!api.Value<bool>(mine,clone.view.Get(),false)||!InHierarchy(clone.controller.Get()))return false;
+        const auto blocked=[&](const char* reason){if(std::strcmp(clone.sense_issue,reason)){clone.sense_issue=reason;__android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG clone sense-blocked kind=%zu reason=%s",clone.kind,reason);}return false;};
+        auto* ai=clone.controller.Get();
+        for(const char* name:{"gotHitByWeapon","eatingPlayer","playerGetCaught","attackingPlayer","hitByArrow","hitByGun","hitByCar","hitByPepperStart","bastuKilled","freeze"})if(Flag(ai,name))return false;
+        if(now<clone.sense_next)return false;
+        clone.sense_next=now+.25;
+        if(!clone.behavior_ready&&now>=clone.bind_next){
+            if(clone.bind_tries<1000000)++clone.bind_tries;
+            clone.bind_next=now+(clone.bind_tries<12?2:10);clone.behavior_ready=PrepareCloneBehavior(ai,clone.kind);
+            __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG clone bind kind=%zu ready=%d attempt=%u",clone.kind,clone.behavior_ready,clone.bind_tries);
+        }
+        if(Ref(ai,"pv")!=clone.view.Get())return blocked("controller-view");
+        Root sensor(api,clone.kind<2?Ref(ai,"enemyEye"):ai);
+        Root root(api,api.Call(go_transform,clone.object.Get())),sensor_root(api,sensor.Get()?api.Call(transform,sensor.Get()):nullptr);
+        if(!Alive(sensor.Get())||!Alive(root.Get())||!Alive(sensor_root.Get())||!ChildOf(sensor_root.Get(),root.Get()))return blocked("sensor-hierarchy");
+        if(clone.kind<2){
+            if(Ref(sensor.Get(),clone.kind==0?"enemyAIGrannyMulti":"enemyAIGrandpaMulti")!=ai)return blocked("sensor-controller");
+            if(Ref(sensor.Get(),"pv")!=clone.view.Get())return blocked("sensor-view");
+            for(const char* name:{"cam","myTransform"})if(!Alive(Ref(sensor.Get(),name)))return blocked(name);
+            if(clone.kind==0&&!Alive(Ref(sensor.Get(),"daysManager")))return blocked("daysManager");
+            if(PositiveField(sensor.Get(),"seeRange")<=0)return blocked("seeRange");
+        }else if(!Alive(Ref(ai,"cam"))||!Alive(Ref(ai,"agent")))return blocked("mom-camera-agent");
+        Root camera(api,Ref(sensor.Get(),"cam")),camera_t(api,api.Call(transform,camera.Get()));
+        if(!Alive(camera_t.Get())||!ChildOf(camera_t.Get(),root.Get()))return blocked("camera-hierarchy");
+        const auto* refresh=api.FindMethod(api.object_get_class(sensor.Get()),clone.kind<2?"GetPlayers":"ims",0);
+        const auto* check=api.FindMethod(api.object_get_class(sensor.Get()),clone.kind<2?"CheckForPlayersInView":"inc",0);
+        if(!refresh||!check)return blocked("sight-method");
+        bool ok=false;
+        if(now>=clone.players_next){api.Call(refresh,sensor.Get(),nullptr,&ok);if(!ok){++clone.sense_errors;return blocked("native-exception");}clone.players_next=now+2;}
+        if(clone.kind<2&&!Ref(sensor.Get(),"seeTargets"))return blocked("player-list");
+        api.Call(check,sensor.Get(),nullptr,&ok);
+        if(!ok){++clone.sense_errors;return blocked("native-exception");}
+        clone.sense_issue="ready";++clone.senses;
+        const bool target=clone.kind<2?(Ref(sensor.Get(),clone.kind==0?"pka":"pdz")&&Flag(ai,"seePlayer")):(Ref(ai,"rnx")&&Flag(ai,"isPlayerInView"));
+        if(target){clone.last_seen=now;clone.investigating=false;}
+        else if(clone.has_target&&now-clone.last_seen>=2){
+            if(ReturnClonePatrol(clone)){clone.has_target=false;__android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG clone lost-sight kind=%zu patrol=1",clone.kind);}
+        }
+        // A brief occlusion keeps native pursuit; a sustained loss releases
+        // this clone's target through the game's own per-instance cleanup.
+        const bool chasing=target||clone.has_target;
+        if(chasing!=clone.has_target){
+            clone.has_target=chasing;
+            __android_log_print(ANDROID_LOG_INFO,"multiplayermod","clone perception kind=%zu target=%d native_checks=%u",clone.kind,target,clone.senses);
+            if(target)snap.status=std::string(gameplay_bridge::kNames[clone.kind])+u8" klonu görüş kontrolünde oyuncu hedefi edindi; takip/saldırıyı oyunun AI'si yürütür.";
+        }
+        return true;
+    }
+    bool CloneControlled(CloneRecord& clone){
+        if(clone.kind>2||settings[clone.kind].paused||!WorldMatches()||!InHierarchy(clone.controller.Get())||!Alive(clone.view.Get())||!api.Value<bool>(mine,clone.view.Get(),false))return false;
+        for(const char* n:{"gotHitByWeapon","eatingPlayer","playerGetCaught","attackingPlayer","grannyGonnaSmack","hitByArrow","hitByGun","hitByCar","hitByPepper","hitByPepperStart","bastuKilled","freeze"})if(Flag(clone.controller.Get(),n))return false;
+        return true;
+    }
+    bool ReturnClonePatrol(CloneRecord& clone){
+        auto* ai=clone.controller.Get();Root sensor(api,clone.kind<2?Ref(ai,"enemyEye"):ai);
+        if(!Alive(sensor.Get()))return false;
+        const auto* clear=api.FindMethod(api.object_get_class(sensor.Get()),clone.kind==0?"eli":clone.kind==1?"dwz":"inb",0);
+        const auto* reset=api.FindMethod(api.object_get_class(ai),clone.kind==0?"eim":clone.kind==1?"duo":"inf",0);
+        const auto* route=clone.kind<2?api.FindMethod(api.object_get_class(ai),clone.kind==0?"ein":"dup",0):nullptr;
+        if(!clear||!reset||(clone.kind<2&&!route))return false;
+        bool ok=false;api.Call(clear,sensor.Get(),nullptr,&ok);if(!ok)return false;
+        api.Call(reset,ai,nullptr,&ok);if(!ok)return false;
+        if(clone.kind<2){BoolField(ai,"seePlayer",false);SetReference(ai,"targetTransform",nullptr,"Transform");api.Call(route,ai,nullptr,&ok);}
+        clone.route_next=0;return ok;
+    }
+    void CaptureNoise(Object* source,double now,float radius=20){
+        if(!snap.ready||!WorldMatches()||!InHierarchy(source))return;
+        Root t(api,api.Call(transform,source));Vec3 p{};Quat q{};if(!Pose(t.Get(),p,q))return;
+        const float dx=p.x-noise_position.x,dz=p.z-noise_position.z;
+        if(noise_serial&&now-noise_time<.4&&dx*dx+dz*dz<1&&radius<=noise_radius)return;
+        noise_position=p;noise_time=now;noise_radius=radius;++noise_serial;
+        __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG clone sound-event serial=%u at=%.2f,%.2f,%.2f",noise_serial,double(p.x),double(p.y),double(p.z));
+    }
+    void CaptureFootstep(Object* source,double now){
+        if(now<footsteps_next||!snap.ready||!WorldMatches()||!InHierarchy(source)||!Alive(Ref(source,"pv")))return;
+        footsteps_next=now+.5;CaptureNoise(source,now,8);
+    }
+    void ScanNoise(double now){
+        if(now<noise_next||!snap.ready)return;
+        noise_next=now+.2;
+        std::vector<std::unique_ptr<Root>> current;
+        for(auto* c:noise_classes)Each(c,[&](Object* o){
+            if(!InHierarchy(o)||current.size()>=128)return;
+            const bool known=std::any_of(noise_markers.begin(),noise_markers.end(),[&](const auto& p){return p->Get()==o;});
+            current.push_back(std::make_unique<Root>(api,o));
+            if(known||!noise_baseline)return;
+            Root t(api,api.Call(transform,o));Vec3 p{};Quat q{};if(!Pose(t.Get(),p,q))return;
+            const float dx=p.x-noise_position.x,dz=p.z-noise_position.z;
+            if(now-noise_time<.4&&dx*dx+dz*dz<1)return; // Granny/Grandpa markers for one sound
+            noise_position=p;noise_time=now;noise_radius=20;++noise_serial;
+            __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG clone noise serial=%u at=%.2f,%.2f,%.2f",noise_serial,double(p.x),double(p.y),double(p.z));
+        });
+        noise_markers=std::move(current);noise_baseline=true;
+    }
+    void DriveCloneInvestigation(CloneRecord& clone,double now){
+        if(!clone.investigating||clone.has_target||!CloneControlled(clone)||!snap.authority||!api.Value<bool>(master,nullptr,false))return;
+        auto* ai=clone.controller.Get();
+        if(Flag(ai,"seePlayer")||Flag(ai,"isPlayerInView")){clone.investigating=false;return;}
+        Root t(api,api.Call(transform,ai)),nav(api,Ref(ai,specs[clone.kind].nav));Vec3 p{};Quat q{};
+        if(!Alive(nav.Get())||!Pose(t.Get(),p,q))return;
+        const float dx=p.x-clone.noise_position.x,dz=p.z-clone.noise_position.z;
+        if(dx*dx+dz*dz<1&&clone.arrived_at==0)clone.arrived_at=now;
+        if(now>=clone.investigate_until||(clone.arrived_at&&now-clone.arrived_at>=2)){
+            if(ReturnClonePatrol(clone)){clone.investigating=false;__android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG clone investigate-done kind=%zu",clone.kind);}return;
+        }
+        // No shared waypoint or target transform is edited. Reapply only to
+        // this clone after native FixedUpdate, while sight/attacks take priority.
+        Vec3 destination=clone.arrived_at?p:clone.noise_position;void* args[]={&destination};api.Call(nav_destination,nav.Get(),args);
+    }
+    bool OpenCloneDoor(CloneRecord& clone,Object* door,double now){
+        if(!door||api.object_get_class(door)!=door_class||!door_open||!CloneControlled(clone))return false;
+        for(const char* n:{"doorOpen","doorMoving","doorLocked"}){
+            auto* f=api.class_get_field_from_name(door_class,n);if(!FieldType(api,f,"System","Boolean")||ReadBool(door,f))return false;
+        }
+        for(auto& d:doors)if(d->object.Get()==door&&now<d->next)return false;
+        bool ok=false;api.Call(door_open,door,nullptr,&ok);if(!ok)return false;
+        doors.erase(std::remove_if(doors.begin(),doors.end(),[&](const auto& d){return !Alive(d->object.Get())||d->object.Get()==door;}),doors.end());
+        if(doors.size()>=64)doors.erase(doors.begin());
+        doors.push_back(std::make_unique<DoorCooldown>(api,door,now+2));
+        __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG clone door kind=%zu native_open=1",clone.kind);return true;
+    }
+    void CloneDoorAhead(CloneRecord& clone,double now){
+        if(now<clone.door_next||!door_line||!hit_collider||!hit_size||!get_component||!door_class||!CloneControlled(clone))return;
+        clone.door_next=now+.25;
+        Root t(api,api.Call(transform,clone.controller.Get()));Vec3 p{},end{};Quat q{};if(!Pose(t.Get(),p,q))return;
+        Root target(api,Ref(clone.controller.Get(),"target"));Quat ignore{};
+        bool aim=false;
+        if(clone.investigating&&!clone.has_target){end=clone.noise_position;aim=true;}
+        else aim=Alive(target.Get())&&Pose(target.Get(),end,ignore);
+        float dx=aim?end.x-p.x:2*(q.x*q.z+q.w*q.y),dz=aim?end.z-p.z:1-2*(q.x*q.x+q.y*q.y);
+        const float distance=std::sqrt(dx*dx+dz*dz);if(distance<.05f)return;
+        p.y+=.8f;end={p.x+dx/distance*1.8f,p.y,p.z+dz/distance*1.8f};
+        alignas(std::max_align_t) std::array<unsigned char,512> hit{};int mask=~0,ignore_triggers=1;
+        void* args[]={&p,&end,hit.data(),&mask,&ignore_triggers};bool ok=false;Root found(api,api.Call(door_line,nullptr,args,&ok));
+        if(!ok||!found.Get()||!*static_cast<bool*>(api.object_unbox(found.Get())))return;
+        Root collider(api,api.Call(hit_collider,reinterpret_cast<Object*>(hit.data()),nullptr,&ok));if(!ok||!Alive(collider.Get()))return;
+        Root cursor(api,api.Call(transform,collider.Get())),type(api,api.type_get_object(api.class_get_type(door_class)));
+        if(!type.Get())return;
+        for(int i=0;i<8&&Alive(cursor.Get());++i){
+            void* get[]={type.Get()};Root door(api,api.Call(get_component,cursor.Get(),get,&ok));if(!ok)return;
+            if(Alive(door.Get())){OpenCloneDoor(clone,door.Get(),now);return;}
+            cursor.Set(api.Call(parent_get,cursor.Get()));
+        }
+    }
+    void RecoverCloneMovement(CloneRecord& clone,double now){
+        if(now<clone.health_next)return;
+        clone.health_next=now+1;
+        if(clone.kind>2||!snap.authority||!api.Value<bool>(master,nullptr,false)||!WorldMatches()||settings[clone.kind].paused||!InHierarchy(clone.controller.Get())||!Alive(clone.view.Get())||!api.Value<bool>(mine,clone.view.Get(),false)){clone.health_observed=false;clone.attack_since=0;return;}
+        auto* ai=clone.controller.Get();
+        for(const char* n:{"gotHitByWeapon","hitByArrow","hitByGun","hitByCar","hitByPepper","hitByPepperStart","bastuKilled","freeze"})if(Flag(ai,n)){clone.health_observed=false;clone.attack_since=0;return;}
+        const bool attacking=Flag(ai,"eatingPlayer")||Flag(ai,"playerGetCaught")||Flag(ai,"attackingPlayer")||Flag(ai,"grannyGonnaSmack");
+        if(attacking){
+            if(!clone.attack_since)clone.attack_since=now;
+            if(now-clone.attack_since<15)return;
+        }else clone.attack_since=0;
+        Root t(api,api.Call(transform,ai)),nav(api,Ref(ai,specs[clone.kind].nav));Vec3 p{};Quat q{};
+        if(!Alive(nav.Get())||!Pose(t.Get(),p,q))return;
+        if(!clone.health_observed){clone.health_position=p;clone.still_since=now;clone.health_observed=true;if(!attacking)return;}
+        const float dx=p.x-clone.health_position.x,dz=p.z-clone.health_position.z;
+        if(!attacking&&dx*dx+dz*dz>.04f){clone.health_position=p;clone.still_since=now;return;}
+        if(!attacking&&now-clone.still_since<12)return;
+        // No teleport or revival. Native target/animation cleanup chooses a
+        // new existing patrol point; perception may immediately reacquire prey.
+        if(!ReturnClonePatrol(clone))return;
+        if(clone.kind<2){
+            for(const char* n:{"playerGetCaught","attackingPlayer","startAttack","grannyGonnaSmack","inTrigger","aboutKillingCollider","startWalk","stopWalk","waypointStop","waypointWaitTime","timerOnOff"})BoolField(ai,n,false);
+            BoolField(ai,"waypointStart",true);BoolField(ai,"GrannyMoving",true);
+        }else BoolField(ai,"eatingPlayer",false);
+        if(!api.Value<bool>(enabled_get,nav.Get(),false))Set(enabled_set,nav.Get(),true);
+        float speed=PositiveField(ai,clone.kind<2?"grannysVarSpeed":"wanderSpeed");if(speed>0)Set(nav_set,nav.Get(),speed);
+        clone.has_target=clone.investigating=false;clone.attack_since=0;clone.still_since=now;clone.health_position=p;clone.sense_next=0;++clone.recoveries;
+        __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG clone recover kind=%zu reason=%s count=%u",clone.kind,attacking?"attack-timeout":"no-motion",clone.recoveries);
+    }
+    void UpdateCloneEnvironment(CloneRecord& clone,double now){
+        if(!CloneControlled(clone))return;
+        CloneDoorAhead(clone,now);
+        if(!snap.authority||!api.Value<bool>(master,nullptr,false))return;
+        if(clone.heard!=noise_serial){
+            clone.heard=noise_serial;
+            Root t(api,api.Call(transform,clone.controller.Get()));Vec3 p{};Quat q{};
+            if(!clone.has_target&&noise_serial&&now-noise_time<4&&Pose(t.Get(),p,q)){
+                const float dx=p.x-noise_position.x,dy=p.y-noise_position.y,dz=p.z-noise_position.z;
+                if(dx*dx+dy*dy+dz*dz<=noise_radius*noise_radius){clone.noise_position=noise_position;clone.investigating=true;clone.investigate_until=now+10;clone.arrived_at=0;
+                    __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG clone investigate kind=%zu sound=%u",clone.kind,noise_serial);}
+            }
+        }
+        DriveCloneInvestigation(clone,now);
+    }
+    bool BindCloneRoute(Object* ai,size_t kind){
+        if(kind>=2)return true;
+        Root source(api),route(api);
+        for(const auto& actor:actors){
+            if(actor->kind!=kind||actor->object.Get()==ai||!InHierarchy(actor->object.Get()))continue;
+            Root pv(api,Ref(actor->object.Get(),specs[kind].pv));
+            if(std::any_of(clones.begin(),clones.end(),[&](const auto& c){return c->view.Get()==pv.Get();}))continue;
+            source.Set(actor->object.Get());break;
+        }
+        if(source.Get()){
+            Root manager(api,Ref(source.Get(),"gameManager"));if(Alive(manager.Get()))SetReference(ai,"gameManager",manager.Get(),"GameObject");
+            for(int i=1;i<=16;++i){const auto name="nav"+std::to_string(i);Root point(api,Ref(source.Get(),name.c_str()));
+                if(Alive(point.Get())&&SetReference(ai,name.c_str(),point.Get(),"Transform")&&!route.Get())route.Set(point.Get());
+            }
+            for(const char* name:{"bedtargetTemp1","bedtargetTemp2","bedtargetTemp3","coffintargetTemp4","coffintargetTempBY","cartargetTemp","PlayerCoffinPos","PlayerCoffinBYPos","PlayerCarPos","noisePointRat"}){
+                Root point(api,Ref(source.Get(),name));if(Alive(point.Get()))SetReference(ai,name,point.Get(),"Transform");
+            }
+            Root door(api,Ref(source.Get(),"bastuDoor")),obstacle(api,Ref(source.Get(),"bastuDoorCarv"));
+            if(Alive(door.Get()))SetReference(ai,"bastuDoor",door.Get(),"GameObject");
+            if(Alive(obstacle.Get()))SetReference(ai,"bastuDoorCarv",obstacle.Get(),"NavMeshObstacle","UnityEngine.AI");
+            for(const char* name:{"grannysVarSpeed","grannysAnimSpeed"}){
+                auto* field=api.class_get_field_from_name(api.object_get_class(ai),name);if(!FieldType(api,field,"System","Single"))continue;
+                float value=0,template_value=0;api.field_get_value(ai,field,&value);api.field_get_value(source.Get(),field,&template_value);
+                if((!std::isfinite(value)||value<=0)&&std::isfinite(template_value)&&template_value>0&&template_value<100)api.field_set_value(ai,field,&template_value);
+            }
+        }
+        if(!route.Get())route.Set(Ref(ai,"target"));
+        if(!Alive(route.Get())||!SetReference(ai,"target",route.Get(),"Transform"))return false;
+        // A late clone can miss the level's initial walk event. Only this
+        // fresh clone's route state is initialized; no main manager is replaced.
+        BoolField(ai,"waypointStop",false);BoolField(ai,"waypointStart",true);
+        BoolField(ai,"waypointWaitTime",false);BoolField(ai,"timerOnOff",false);
+        // startWalk is a one-shot animation latch, not a movement-enable bit.
+        // Leave it false so the original FixedUpdate performs its walk entry.
+        BoolField(ai,"startWalk",false);BoolField(ai,"stopWalk",false);BoolField(ai,"GrannyMoving",true);
+        Root nav(api,Ref(ai,specs[kind].nav));Vec3 destination{};Quat q{};
+        if(!Alive(nav.Get())||!api.Value<bool>(enabled_get,nav.Get(),false)||!Pose(route.Get(),destination,q)||!nav_destination)return false;
+        auto* speed=api.class_get_field_from_name(api.object_get_class(ai),"grannysVarSpeed");
+        if(FieldType(api,speed,"System","Single")){float value=0;api.field_get_value(ai,speed,&value);if(std::isfinite(value)&&value>0&&value<100)Set(nav_set,nav.Get(),value);}
+        void* args[]={&destination};bool ok=false;Root result(api,api.Call(nav_destination,nav.Get(),args,&ok));
+        if(!ok||!result.Get()||!*static_cast<bool*>(api.object_unbox(result.Get())))return false;
+        return !nav_has_path||!nav_pending||api.Value<bool>(nav_has_path,nav.Get(),false)||api.Value<bool>(nav_pending,nav.Get(),false);
+    }
+    template<class T> bool AnimatorParameter(Object* ai,Object* animator,const char* name,const Method* method,T value){
+        if(!method||!api.field_static_get_value||!api.field_get_flags)return false;
+        auto* field=api.class_get_field_from_name(api.object_get_class(ai),name);
+        if(!FieldType(api,field,"System","Int32")||!(api.field_get_flags(field)&0x10))return false;
+        int id=0;api.field_static_get_value(field,&id);if(!id)return false;
+        void* args[]={&id,&value};bool ok=false;api.Call(method,animator,args,&ok);return ok;
+    }
+    void AnimateClones(){
+        if(!WorldMatches()||!nav_velocity)return;
+        const bool local_master=snap.authority&&api.Value<bool>(master,nullptr,false);
+        for(const auto& clone:clones){
+            if((!local_master&&!clone->client_patrol)||!clone->route_initialized||clone->kind>1||!Alive(clone->view.Get())||!api.Value<bool>(mine,clone->view.Get(),false))continue;
+            auto* ai=clone->controller.Get();if(!Alive(ai)||settings[clone->kind].paused)continue;
+            // A late clone can retain a stale startWalk animation latch even
+            // while its agent moves. Repair locomotion only, never overwrite
+            // attacks, door interactions, searches or genuine enemy death.
+            bool special=false;
+            for(const char* name:{"playerGetCaught","attackingPlayer","startAttack","grannyGonnaSmack","grannySeeDoor","grannySeeLockedDoor","grannyLookUnderBed","grannyStandBesideCar","GrannySearching","droppingBeartrap","hitByArrow","hitByGun","hitByCar","hitByPepper","hitByPepperStart","bastuKilled","freeze"})special=special||Flag(ai,name);
+            if(special)continue;
+            Root nav(api,Ref(ai,specs[clone->kind].nav)),animator(api,Ref(ai,specs[clone->kind].animator));
+            if(!Alive(nav.Get())||!Alive(animator.Get())||!api.Value<bool>(enabled_get,nav.Get(),false))continue;
+            const auto velocity=api.Value<Vec3>(nav_velocity,nav.Get());if(!Finite(velocity))continue;
+            const bool walking=velocity.x*velocity.x+velocity.z*velocity.z>.0025f;
+            AnimatorParameter(ai,animator.Get(),clone->kind==0?"pjr":"pdp",anim_bool,!walking);
+            AnimatorParameter(ai,animator.Get(),clone->kind==0?"pjs":"pdq",anim_bool,walking);
+            float animation_speed=PositiveField(ai,"grannysAnimSpeed");if(animation_speed<=0)animation_speed=1;
+            AnimatorParameter(ai,animator.Get(),clone->kind==0?"pjt":"pdr",anim_float,animation_speed);
+        }
+    }
+    void StopClientPatrol(CloneRecord& clone){
+        if(clone.client_nav_enabled&&!api.Value<bool>(master,nullptr,false)&&Alive(clone.controller.Get())){
+            Root nav(api,Ref(clone.controller.Get(),specs[clone.kind].nav));if(Alive(nav.Get()))Set(enabled_set,nav.Get(),false);
+        }
+        clone.client_nav_enabled=false;clone.client_patrol=false;
+    }
+    bool DriveClientClone(CloneRecord& clone,double now){
+        // The native FixedUpdate returns early on non-master peers. Drive
+        // only our newly created owned clone's patrol using its real agent.
+        // No host identity/ownership policy or original scene AI is changed.
+        if(clone.kind>2||!Alive(clone.view.Get())||!api.Value<bool>(mine,clone.view.Get(),false)||!WorldMatches())return false;
+        auto* ai=clone.controller.Get();if(!InHierarchy(ai))return false;
+        if(settings[clone.kind].paused)return true;
+        for(const char* name:{"gotHitByWeapon","eatingPlayer","playerGetCaught","attackingPlayer","grannyGonnaSmack","hitByArrow","hitByGun","hitByCar","hitByPepperStart","bastuKilled","freeze"})if(Flag(ai,name))return true;
+        if(clone.kind<2&&!clone.behavior_ready&&clone.attempts<3){++clone.attempts;clone.behavior_ready=PrepareCloneBehavior(ai,clone.kind);}
+        if(nav_class&&!EnsureCloneLocomotion(clone))return false;
+        Root nav(api,Ref(ai,specs[clone.kind].nav)),animator(api,Ref(ai,specs[clone.kind].animator));
+        if(!Alive(nav.Get())||!Alive(animator.Get())||!nav_destination)return false;
+        if(!api.Value<bool>(enabled_get,nav.Get(),false)){
+            if(!Set(enabled_set,nav.Get(),true))return false;
+            clone.client_nav_enabled=true;
+        }
+        if(clone.kind<2&&!clone.route_initialized){
+            if(!BindCloneRoute(ai,clone.kind))return false;
+            clone.route_initialized=true;
+        }
+        const char* speed_name=clone.kind==2?"wanderSpeed":"grannysVarSpeed";
+        float speed=PositiveField(ai,speed_name);
+        for(const auto& actor:actors)if(actor->object.Get()==ai)for(const auto& field:actor->speed_fields)
+            if(field.changed&&field.field==api.class_get_field_from_name(api.object_get_class(ai),speed_name))speed=field.base;
+        if(speed<=0)return false;
+        // Apply() applies the multiplier once after this base-speed write.
+        Set(nav_set,nav.Get(),speed);
+        if(clone.kind<2){
+            if(now>=clone.route_next){
+                Root t(api,api.Call(transform,ai));Vec3 position{};Quat rotation{};
+                if(!Pose(t.Get(),position,rotation))return false;
+                bool accepted=false;
+                for(size_t i=0;i<16;++i){
+                    const std::string name="nav"+std::to_string(clone.waypoint%16+1);
+                    Root point(api,Ref(ai,name.c_str()));Vec3 destination{};
+                    if(!Alive(point.Get())||!Pose(point.Get(),destination,rotation)){++clone.waypoint;continue;}
+                    const float dx=destination.x-position.x,dz=destination.z-position.z;
+                    if(dx*dx+dz*dz<1){++clone.waypoint;continue;}
+                    void* args[]={&destination};bool ok=false;Root result(api,api.Call(nav_destination,nav.Get(),args,&ok));
+                    if(ok&&result.Get()&&*static_cast<bool*>(api.object_unbox(result.Get()))){accepted=true;break;}
+                    ++clone.waypoint;
+                }
+                if(!accepted)return false;
+                clone.route_next=now+.5;
+            }
+            if(!api.Value<bool>(enabled_get,animator.Get(),false))Set(enabled_set,animator.Get(),true);
+            return true;
+        }
+        if(now>=clone.route_next){
+            Root points(api,Ref(ai,"wayPoints"));if(!points.Get())return false;
+            auto* c=api.object_get_class(points.Get());const auto* count=api.FindMethod(c,"get_Count",0);const auto* get=api.FindMethod(c,"get_Item",1);
+            int n=api.Value<int>(count,points.Get(),-1);
+            if(n==0&&!clone.client_routes_prepared){
+                // Native imw only builds this instance's waypoint list and
+                // difficulty speeds. Start's non-master branch skips it.
+                const auto* initialize=api.FindMethod(api.object_get_class(ai),"imw",0);if(!initialize)return false;
+                bool ok=false;api.Call(initialize,ai,nullptr,&ok);if(!ok)return false;
+                clone.client_routes_prepared=true;n=api.Value<int>(count,points.Get(),-1);
+            }
+            if(n<=0||n>128)return false;
+            Root t(api,api.Call(transform,ai));Vec3 position{};Quat rotation{};if(!Pose(t.Get(),position,rotation))return false;
+            // Keep the same waypoint until reached; a periodic retry also
+            // recovers a rejected/unavailable path without tight loops.
+            int index=int(clone.waypoint%size_t(n));void* args[]={&index};Root point(api,api.Call(get,points.Get(),args));Vec3 destination{};
+            if(!Alive(point.Get())||!Pose(point.Get(),destination,rotation))return false;
+            const float dx=destination.x-position.x,dz=destination.z-position.z;
+            if(dx*dx+dz*dz<1){++clone.waypoint;index=int(clone.waypoint%size_t(n));point.Set(api.Call(get,points.Get(),args));if(!Alive(point.Get())||!Pose(point.Get(),destination,rotation))return false;}
+            void* target[]={&destination};bool ok=false;Root accepted(api,api.Call(nav_destination,nav.Get(),target,&ok));
+            if(!ok||!accepted.Get()||!*static_cast<bool*>(api.object_unbox(accepted.Get())))return false;
+            clone.route_next=now+.5;
+        }
+        if(!api.Value<bool>(enabled_get,animator.Get(),false))Set(enabled_set,animator.Get(),true);
+        const auto* walk=api.FindMethod(api.object_get_class(ai),"imz",0);if(!walk)return false;
+        bool ok=false;api.Call(walk,ai,nullptr,&ok);return ok;
     }
     void UpdateClones(){
         const double now=gameplay_bridge::Now();
         for(auto& clone:clones){
+            if(now-clone->born>.5){SenseClone(*clone,now);RecoverCloneMovement(*clone,now);UpdateCloneEnvironment(*clone,now);}
+            if(Alive(clone->controller.Get())&&Alive(clone->object.Get())&&now-clone->born>.25)ProbeClone(*clone,now);
+            if(clone->client_patrol){
+                if(api.Value<bool>(master,nullptr,false)){
+                    clone->client_nav_enabled=false;clone->client_patrol=false;clone->finished=false;clone->born=now;clone->attempts=0;clone->route_initialized=false;
+                }else if(now>=clone->next){
+                    clone->next=now+.2;
+                    if(!DriveClientClone(*clone,now)){
+                        // Stop our driver as soon as ownership is lost. The
+                        // new controlling peer owns its navigation from here.
+                        StopClientPatrol(*clone);snap.status=u8"Klonun yerel devriyesi durdu; sahiplik veya rota bağlantısı değişti.";
+                    }
+                }
+                if(clone->finished)continue;
+            }
             if(clone->finished||now<clone->next||now-clone->born<.25)continue;
             clone->next=now+.5;
             if(!Alive(clone->object.Get())||!Alive(clone->view.Get())){clone->finished=true;continue;}
@@ -849,39 +1967,168 @@ struct Runtime {
             const bool local_master=api.Value<bool>(master,nullptr,false);
             if(owner==leader_id||owner==0){
                 if(local_master){
-                    bool ready=true;unsigned controllers=0;
+                    bool ready=true,waiting_pause=false;unsigned controllers=0;
                     // Start has run by now. Only this newly created, locally
                     // controlled hierarchy may be activated/placed on its mesh.
                     for(size_t k=0;k<3;++k)Children(clone->object.Get(),classes[k],[&](Object* ai){
-                        ++controllers;Root nav(api,Ref(ai,specs[k].nav));if(!Alive(nav.Get())){ready=false;return;}
+                        ++controllers;if(settings[k].paused){waiting_pause=true;return;}
+                        clone->controller.Set(ai);
+                        if(!clone->behavior_ready)clone->behavior_ready=PrepareCloneBehavior(ai,k);
+                        if(nav_class&&!EnsureCloneLocomotion(*clone)){ready=false;return;}
+                        Root nav(api,Ref(ai,specs[k].nav));if(!Alive(nav.Get())){ready=false;return;}
                         if(!api.Value<bool>(enabled_get,ai,false))Set(enabled_set,ai,true);
+                        // Warp/isOnNavMesh were stripped from this player. SDK
+                        // Instantiate already uses the sampled mesh position;
+                        // rebind only this new agent after placing its root.
+                        if(k<2&&!clone->placement_ready){
+                            Root t(api,api.Call(go_transform,clone->object.Get()));
+                            if(!Alive(t.Get())||!Set(enabled_set,nav.Get(),false)||!Set(pos_set,t.Get(),clone->position)||!Set(enabled_set,nav.Get(),true)){ready=false;return;}
+                            clone->placement_ready=true;
+                        }
                         if(!api.Value<bool>(enabled_get,nav.Get(),false))Set(enabled_set,nav.Get(),true);
-                        if(!api.Value<bool>(nav_onmesh,nav.Get(),false)&&nav_warp){void* args[]={&clone->position};api.Call(nav_warp,nav.Get(),args);}
-                        if(!api.Value<bool>(nav_onmesh,nav.Get(),false)||!api.Value<bool>(enabled_get,ai,false)){ready=false;return;}
-                        if(!settings[k].paused)Set(nav_stop_set,nav.Get(),false);
+                        if(!api.Value<bool>(enabled_get,nav.Get(),false)||!api.Value<bool>(enabled_get,ai,false)){ready=false;return;}
+                        if(!clone->route_initialized&&!BindCloneRoute(ai,k))ready=false;
                     });
+                    if(waiting_pause){clone->born=now;continue;}
                     if(!ready||!controllers){
-                        if(++clone->attempts>=3||now-clone->born>5){clone->finished=true;snap.status=u8"Klonun AI/NavMesh başlangıcı doğrulanamadı; saldırı/hareket hazır sayılmadı.";}
+                        if(++clone->attempts>=3||now-clone->born>5){clone->finished=true;snap.status=clone->behavior_ready?u8"Klonun AI/NavMesh başlangıcı doğrulanamadı; saldırı/hareket hazır sayılmadı.":u8"Klonun kendi görme/animasyon/sahne bağlantısı tamamlanamadı; yalnız hareket saldırı başarısı değildir.";}
                         continue;
                     }
+                    if(!clone->route_initialized){
+                        clone->route_initialized=true;
+                        Root t(api,api.Call(go_transform,clone->object.Get()));Quat q{};
+                        clone->observation_ready=Pose(t.Get(),clone->observed_position,q);
+                        snap.status=u8"Klon rotası kabul edildi; gerçek konum hareketi doğrulanıyor.";continue;
+                    }
+                    Root t(api,api.Call(go_transform,clone->object.Get()));Vec3 current{};Quat q{};
+                    if(clone->observation_ready&&Pose(t.Get(),current,q)){
+                        const float dx=current.x-clone->observed_position.x,dz=current.z-clone->observed_position.z;
+                        if(dx*dx+dz*dz>.0025f&&clone->completed_frames){clone->finished=true;snap.status=clone->behavior_ready?u8"Klonun konum değişimi ve özgün AI karesinin tamamlandığı doğrulandı; animasyon/görme bağlantıları hazır.":u8"Klonun yürüdüğü doğrulandı; göz/saldırı bağlantısı eksik, tam AI hazır sayılmadı.";continue;}
+                    }
+                    if(now-clone->born>8){clone->finished=true;snap.status=clone->completed_frames?u8"Klonun AI karesi çalışıyor ancak yürüdüğü doğrulanamadı.":u8"Klonun rotası var ancak özgün AI karesinin tamamlandığı doğrulanamadı; kapı/saldırı hazır sayılmadı.";}
+                    continue;
                 }
-                clone->finished=true;snap.status=u8"Klonun ağ kontrolü oda sahibiyle eşleşti; normal AI hareket ve saldırı akışı kullanılacak.";continue;
+                clone->finished=true;snap.status=u8"Klonun kontrolü oda sahibiyle eşleşti; bu cihazdan uzaktaki AI hareketi doğrulanamaz.";continue;
             }
             if(!api.Value<bool>(mine,clone->view.Get(),false)){
                 clone->finished=true;snap.status=u8"Klon görünür; kontrol başka oyuncuda. AI için oda sahibiyle eşleşme doğrulanamadı.";continue;
             }
-            auto* policy=api.class_get_field_from_name(api.object_get_class(clone->view.Get()),"OwnershipTransfer");int mode=0;
-            if(FieldType(api,policy,"Photon.Pun","OwnershipOption"))api.field_get_value(clone->view.Get(),policy,&mode);
-            if(!transfer_owner||(mode!=1&&mode!=2)){
-                clone->finished=true;snap.status=u8"Klon ağda görünür, fakat prefabın sahipliği sabit. Bu klonun AI hareketi için oda sahibinin oluşturması gerekiyor.";continue;
-            }
-            if(clone->attempts>=3||now-clone->born>5){clone->finished=true;snap.status=u8"Klonun oda sahibine kontrol devri doğrulanamadı; hareket/saldırı hazır sayılmadı.";continue;}
-            // Only transfer our own fresh clone through the public SDK. Never
-            // edit OwnershipTransfer or forge a host/owner identity.
-            void* args[]={&leader_id};bool ok=false;api.Call(transfer_owner,clone->view.Get(),args,&ok);++clone->attempts;
-            if(!ok){clone->finished=true;snap.status=u8"Oyun klon kontrol devrini reddetti.";}
+            if(clone->kind<kEnemyCount&&settings[clone->kind].paused){clone->born=now;continue;}
+            clone->client_patrol=DriveClientClone(*clone,now);
+            if(clone->client_patrol){clone->finished=true;snap.status=u8"Sana ait klonun client devriyesi açıldı. Özgün host saldırı/kapı AI'si bu cihazda çalışmaz.";continue;}
+            if(++clone->attempts<3&&now-clone->born<5)continue;
+            StopClientPatrol(*clone);clone->finished=true;snap.status=u8"Klonun client rota/animasyon bağlantısı hazırlanamadı; devriye başlatılmadı.";
+
         }
         clones.erase(std::remove_if(clones.begin(),clones.end(),[&](const auto& clone){return !Alive(clone->object.Get());}),clones.end());
+    }
+    std::string VoteName(Object* p){
+        Root text(api,api.Call(vote_nick,p));auto value=chat_bot_core::PrefixScalars(chat_bot_core::StripTags(api.Utf8(reinterpret_cast<String*>(text.Get()))),48);
+        for(char& c:value)if(c=='\n'||c=='\r')c=' ';
+        return value.empty()?"Player":value;
+    }
+    Object* VotePlayer(int actor,Object* expected=nullptr){
+        Root array(api,api.Call(vote_players));const int n=array.Get()?api.Value<int>(length,array.Get(),-1):-1;if(n<0||n>128)return nullptr;
+        for(int i=0;i<n;++i){void* args[]={&i};Root p(api,api.Call(item,array.Get(),args));
+            if(p.Get()&&api.Value<int>(actor_number,p.Get(),0)==actor&&(!expected||p.Get()==expected))return p.Get();
+        }return nullptr;
+    }
+    bool VoteRoomReady(){
+        return snap.ready&&room_id&&reinterpret_cast<uintptr_t>(api.Call(current_room))==room_id;
+    }
+    bool VoteApi(){
+        if(!vote_receive_ready||!vote_players||!vote_nick||!vote_local||!vote_time||!vote_send||!vote_input_field||!vote_allowed_field||!vote_text||!vote_set||!vote_focused)return false;
+        if(!vote_decode){Root encoding(api,api.Call(vote_utf8));if(encoding.Get())vote_decode=ByteDecoder(api,api.object_get_class(encoding.Get()));}
+        return vote_decode!=nullptr;
+    }
+    bool VoteNotice(const std::string& notice){
+        if(!VoteRoomReady()||notice.empty()||notice.size()>2000)return false;
+        Root owner(api);bool ambiguous=false;
+        Each(vote_chat_class,[&](Object* p){if(!InHierarchy(p))return;if(owner.Get()&&owner.Get()!=p)ambiguous=true;owner.Set(p);});
+        if(!owner.Get()||ambiguous)return false;
+        bool allowed=false;api.field_get_value(owner.Get(),vote_allowed_field,&allowed);if(!chat_send_gate::Available(allowed))return false;
+        Root input(api,Ref(owner.Get(),"inputField"));if(!Alive(input.Get()))return false;
+        bool ok=false;Root focus(api,api.Call(vote_focused,input.Get(),nullptr,&ok));if(!ok||!focus.Get()||*static_cast<bool*>(api.object_unbox(focus.Get())))return false;
+        Root old(api,api.Call(vote_text,input.Get(),nullptr,&ok));if(!ok||!old.Get()||!api.Utf8(reinterpret_cast<String*>(old.Get())).empty())return false;
+        Root text(api,reinterpret_cast<Object*>(api.string_new(notice.c_str())));if(!text.Get())return false;
+        void* args[]={text.Get()};api.Call(vote_set,input.Get(),args,&ok);if(!ok)return false;
+        api.Call(vote_send,owner.Get(),nullptr,&ok);const bool invoked=ok;
+        Root after(api,api.Call(vote_text,input.Get(),nullptr,&ok));if(!ok||!after.Get())return false;
+        const auto value=api.Utf8(reinterpret_cast<String*>(after.Get()));
+        if(value==notice){void* reset[]={old.Get()};api.Call(vote_set,input.Get(),reset);return false;}
+        return invoked&&value.empty()&&VoteRoomReady();
+    }
+    void EndVote(const std::string& status){vote_listening=false;ballot.Clear();snap.vote.active=snap.vote.counting=false;snap.vote.remaining=0;snap.vote.status=status;}
+    void FinishVote(const std::string& status,double now){
+        const auto name=ballot.name;EndVote(status);
+        vote_result_notice=name+" | "+status;vote_result_deadline=now+15;vote_result_next=now;
+    }
+    std::string VoteCount()const{return "EVET: "+std::to_string(ballot.yes)+" | HAYIR: "+std::to_string(ballot.no);}
+    void ScanVote(double now){
+        snap.vote.ready=VoteRoomReady()&&VoteApi();
+        if(now<vote_scan)return;
+        vote_scan=now+1;snap.vote.players.clear();
+        Root self(api,api.Call(vote_local));snap.vote.local=self.Get()?api.Value<int>(actor_number,self.Get(),0):0;
+        Root array(api,api.Call(vote_players));const int n=array.Get()?api.Value<int>(length,array.Get(),-1):-1;
+        if(n>=0&&n<=128)for(int i=0;i<n;++i){void* args[]={&i};Root p(api,api.Call(item,array.Get(),args));if(!p.Get())continue;const int id=api.Value<int>(actor_number,p.Get(),0);if(id>0)snap.vote.players.push_back({id,VoteName(p.Get())});}
+        if(!ballot.Active()&&(!snap.vote.ready||snap.vote.status.empty()))snap.vote.status=!snap.vote.ready?u8"Oda ve sohbet bağlantısı bekleniyor.":u8"Şaka oylaması hazır; host veya client başlatabilir.";
+    }
+    void StartVote(int target,int seconds,double now){
+        vote_scan=0;ScanVote(now);if(!snap.vote.ready){snap.status=snap.vote.status;return;}
+        Root self(api,api.Call(vote_local)),victim(api,VotePlayer(target));const int host=self.Get()?api.Value<int>(actor_number,self.Get(),0):0;
+        if(!victim.Get()||!ballot.Start(host,target,VoteName(victim.Get()),seconds,snap.vote.players,now)){snap.vote.status=u8"Oylama başlatılamadı: hedef ayrılmış, kendin veya başka oylama açık.";return;}
+        vote_result_notice.clear();
+        vote_notice_next=0;vote_sent_yes=vote_sent_no=-1;snap.vote.status=u8"Başlangıç duyurusu bekleniyor; sohbet taslağını boş bırakıp klavyeyi kapat.";
+    }
+    void IncomingVote(Object* sender,const std::string& line,int32_t sent){
+        if(!VoteRoomReady()||ballot.phase!=room_vote::Phase::Voting||!sender)return;
+        const int actor=api.Value<int>(actor_number,sender,0);Root current(api,VotePlayer(actor,sender));if(!current.Get())return;
+        Root nick(api,api.Call(vote_nick,current.Get()));if(!nick.Get())return;
+        const auto body=chat_bot_core::MatchSender(line,api.Utf8(reinterpret_cast<String*>(nick.Get())));if(!body)return;
+        const auto command=chat_bot_core::Fold(chat_bot_core::Trim(*body));if(command!="/evet"&&command!="/hayir")return;
+        ballot.eligible.insert(actor); // late joiners must still be current, authenticated room members
+        if(ballot.Cast(actor,command=="/evet",gameplay_bridge::Now(),sent))snap.vote.status=u8"Oy alındı. Her oyuncunun yalnız ilk oyu sayılır.";
+    }
+    void UpdateVote(double now){
+        ScanVote(now);
+        using Phase=room_vote::Phase;
+        if(!ballot.Active()){
+            vote_listening=false;
+            if(!vote_result_notice.empty()){
+                if(!VoteRoomReady()||now>vote_result_deadline)vote_result_notice.clear();
+                else if(now>=vote_result_next){vote_result_next=now+.75;if(VoteNotice(vote_result_notice))vote_result_notice.clear();}
+            }return;
+        }
+        if(!snap.vote.ready||!VoteRoomReady()){EndVote(u8"Oda veya sohbet bağlantısı değişti; oylama iptal edildi.");return;}
+        Root target(api,VotePlayer(ballot.target));
+        if(!target.Get()&&ballot.phase!=Phase::PrankDelay){EndVote(u8"Hedef oyuncu ayrıldı; oylama sona erdi.");return;}
+        Root self(api,api.Call(vote_local));if(!self.Get()||api.Value<int>(actor_number,self.Get(),0)!=ballot.host){EndVote(u8"Oylamayı başlatan oyuncu değişti; iptal edildi.");return;}
+        snap.vote.active=true;snap.vote.target=ballot.target;snap.vote.yes=ballot.yes;snap.vote.no=ballot.no;snap.vote.remaining=ballot.Remaining(now);snap.vote.counting=ballot.phase==Phase::Voting;
+        if(ballot.phase==Phase::Voting&&now>=ballot.deadline){ballot.phase=Phase::Result;ballot.deadline=now+15;vote_listening=false;vote_notice_next=now;}
+        if(ballot.phase==Phase::Announce||ballot.phase==Phase::Result){
+            if(now>ballot.deadline){EndVote(u8"Sohbet duyurusu iletilemedi; oyuncu atılmadı.");return;}
+            if(now<vote_notice_next)return;
+            vote_notice_next=now+.75;
+            const bool start=ballot.phase==Phase::Announce;
+            const auto notice=start?(ballot.name+u8" adlı oyuncu atılsın mı? /evet veya /hayır yazın. Süre: "+std::to_string(ballot.duration)+u8" sn. "+VoteCount()):
+                (VoteCount()+(ballot.KickWins()?u8" | "+ballot.name+u8" adlı oyuncu atılıyor...":u8" | "+ballot.name+u8" odada kalıyor (hayır/eşitlik)."));
+            if(!VoteNotice(notice))return;
+            if(start){ballot.Open(now,api.Value<int32_t>(vote_time,nullptr,0));vote_listening=true;vote_sent_yes=ballot.yes;vote_sent_no=ballot.no;snap.vote.status=u8"Oylama açık: /evet veya /hayır.";}
+            else if(ballot.KickWins()){ballot.phase=Phase::PrankDelay;ballot.deadline=now+1;vote_notice_next=now+1;snap.vote.status=u8"Şaka sonucu bekleniyor.";}
+            else EndVote(u8"Oyuncu odada kaldı: hayır çoğunluğu veya eşitlik.");
+            return;
+        }
+        if(ballot.phase==Phase::Voting&&now>=vote_notice_next&&(ballot.yes!=vote_sent_yes||ballot.no!=vote_sent_no)){
+            vote_notice_next=now+.75;
+            if(VoteNotice(ballot.name+" | "+VoteCount()+" | "+std::to_string(ballot.Remaining(now))+u8" sn kaldı.")){vote_sent_yes=ballot.yes;vote_sent_no=ballot.no;}
+        }
+        if(ballot.phase==Phase::PrankDelay&&now>=ballot.deadline){
+            if(now>ballot.deadline+15){EndVote(u8"Şaka mesajı gönderilemedi; kimse çıkarılmadı.");return;}
+            if(now<vote_notice_next)return;
+            vote_notice_next=now+.75;
+            const auto reveal=u8"Şaka şaka, "+ballot.name+u8" adlı kişiyi atmıyoruz ama adam olsun.";
+            if(VoteNotice(reveal)){EndVote(reveal);__android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG prank complete: no disconnect requested");}
+        }
     }
     void Capabilities(){
         for(size_t k=0;k<kEnemyCount;++k){snap.enemies[k].death_ready=false;snap.enemies[k].clone_ready=false;}
@@ -908,25 +2155,26 @@ struct Runtime {
     void Tick(bool paused){
         if(busy)return;
         struct Guard{bool& busy;Guard(bool& b):busy(b){busy=true;}~Guard(){busy=false;}}guard(busy);
-        if(paused){Clear(false);scene=-1;room_id=player_id=0;gameplay_bridge::Publish(snap);return;}
+        if(paused){Clear(false);scene=-1;room_id=player_id=0;Diagnostics();gameplay_bridge::Publish(snap);return;}
         if(!initialized){initialized=true;valid=Resolve();}
-        if(!valid){snap.status=u8"Oyun API bağlantısı bulunamadı; bu sürümde kontroller kullanılamıyor.";gameplay_bridge::Clear();gameplay_bridge::Publish(snap);return;}
+        if(!valid){snap.status=u8"Oyun API bağlantısı bulunamadı; bu sürümde kontroller kullanılamıyor.";gameplay_bridge::Clear();Diagnostics();gameplay_bridge::Publish(snap);return;}
         const bool previously_ready=snap.ready;
         // Root handles may be replaced during discovery. Hooks must never read
         // an old handle while a managed call reenters this update.
         protect=false;ghost_enabled=ammo_enabled=false;protected_player=0;protected_manager=0;protected_attack=protected_state=protected_script=0;
         tool_movement=tool_fall=tool_crossbow=tool_shotgun=tool_inventory=0;
         if(!api.Value<bool>(queue,nullptr,false)){
-            gameplay_bridge::Clear();snap.ready=snap.spawn_ready=snap.god_ready=snap.ghost_ready=snap.infinity_ready=false;
+            gameplay_bridge::Clear();snap.ready=snap.spawn_ready=snap.god_ready=snap.ghost_ready=snap.infinity_ready=snap.fall_ready=false;
+            snap.god=snap.infinity=snap.explosion_ready=false;
             snap.status=u8"Oyun ağ kuyruğu duraklatıldı; kontroller bekliyor.";
-            gameplay_bridge::Publish(snap);return;
+            Diagnostics();gameplay_bridge::Publish(snap);return;
         }
         Root room(api,api.Call(current_room));int current_scene=0;
         const bool scene_ready=ReadScene(api,get_scene,scene_valid,scene_loaded,current_scene);
         if(!scene_ready){
             Clear(false);scene=-1;room_id=player_id=0;
             snap.status=u8"Oyun sahnesinin yüklenmesi bekleniyor.";
-            gameplay_bridge::Publish(snap);return;
+            Diagnostics();gameplay_bridge::Publish(snap);return;
         }
         const auto current_room_id=reinterpret_cast<uintptr_t>(room.Get());
         if(current_scene!=scene||current_room_id!=room_id){Clear(false);scene=current_scene;room_id=current_room_id;++generation;}
@@ -973,6 +2221,8 @@ struct Runtime {
             const auto attack_id=reinterpret_cast<uintptr_t>(attacked.Get()),inv_id=reinterpret_cast<uintptr_t>(inventory.Get());
             if(modern_id!=attack_id||inventory_id!=inv_id){DisableTools(true);for(auto& a:actors){Restore(*a);CombatGuard(*a,false);}settings={};snap.god=snap.ghost=snap.infinity=false;gameplay_bridge::Clear();++generation;modern_id=attack_id;inventory_id=inv_id;}
             FindOwned(script_class,script);FindOwned(movement_class,movement);FindOwned(fall_class,fall_damage);FindOwned(crossbow_class,crossbow);FindOwned(weapon_class,shotgun);
+            Root next_sight(api);FindOwned(sight_class,next_sight);
+            if(next_sight.Get()!=sight.Get()){ReleaseSight(true);sight.Set(next_sight.Get());}
             if(room.Get()){Discover();Capabilities();}
             next_scan=now+1;
         }
@@ -986,7 +2236,15 @@ struct Runtime {
         const bool own_modern=InHierarchy(attacked.Get())&&Owned(attacked.Get(),"pv")&&InHierarchy(player_state.Get())&&Owned(player_state.Get(),"pv");
         const bool own_movement=InHierarchy(movement.Get())&&Owned(movement.Get(),"pv");
         const bool has_modern=attacked.Get()||player_state.Get();
-        snap.authority=authority;snap.god_ready=snap.ready&&(has_modern?(own_modern&&modern_hooks_ready):(own_player&&god_hooks_ready&&own_manager));
+        snap.authority=authority;
+        snap.player_speed_ready=PlayerSpeedReady();
+        snap.hamarat_ready=assist_hooks_ready&&own_inventory;
+        const bool in_match=own_inventory||own_modern||own_player;
+        snap.difficulty_ready=in_match&&authority&&difficulty_field&&difficulty_refresh[0]&&difficulty_refresh[1]&&difficulty_helpers_ready[0]&&difficulty_helpers_ready[1];
+        if(difficulty_field){uint8_t value=255;api.field_static_get_value(difficulty_field,&value);snap.difficulty=value<=5?value:-1;}
+        snap.god_ready=snap.ready&&(has_modern?(own_modern&&modern_hooks_ready):(own_player&&god_hooks_ready&&own_manager));
+        snap.fall_ready=snap.god_ready&&fall_god_ready&&InHierarchy(fall_damage.Get())&&Owned(fall_damage.Get(),"pv");
+        snap.explosion_ready=snap.god_ready&&(has_modern?explosion_hooks_ready:legacy_explosion_ready);
         const bool spawn_api=spawn&&prefix_get&&path_combine&&pos_get&&rot_get&&name_get;
         snap.spawn_ready=snap.ready&&own_inventory&&spawn_api&&!prefabs.empty();
         snap.ghost_ready=snap.ready&&own_movement&&ghost_hook_ready&&InHierarchy(fall_damage.Get())&&Owned(fall_damage.Get(),"pv");
@@ -1004,17 +2262,28 @@ struct Runtime {
         bool spawned_this_frame=false;
         for(const auto& command:gameplay_bridge::Take()){
             if(!snap.ready||command.context!=generation||now-command.queued>3)continue;
+            if(command.kind==gameplay_bridge::Kind::StartVote){StartVote(command.item,command.seconds,now);continue;}
+            if(command.kind==gameplay_bridge::Kind::CancelVote){
+                if(VoteRoomReady()&&ballot.Active()){VoteNotice(ballot.name+u8" için oylama başlatan kişi tarafından iptal edildi.");EndVote(u8"Oylama iptal edildi; oyuncu atılmadı.");}continue;
+            }
             if(command.kind==gameplay_bridge::Kind::Spawn){if(spawned_this_frame){gameplay_bridge::Queue(command);continue;}spawned_this_frame=true;Spawn(command.item);continue;}
+            if(command.kind==gameplay_bridge::Kind::Difficulty){ChangeDifficulty(command.item);continue;}
+            if(command.kind==gameplay_bridge::Kind::PlayerSpeed){
+                if(snap.player_speed_ready&&std::isfinite(command.factor)){snap.player_speed=std::clamp(command.factor,1.f,5.f);snap.status=u8"Karakter hızı ayarlandı.";__android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG player-speed factor=%.2f",double(snap.player_speed));}continue;
+            }
             if(command.kind==gameplay_bridge::Kind::God){
-                snap.god=command.flag&&snap.god_ready;snap.status=snap.god?u8"God Mode açık; kendi karakterinin doğrulanan AI/ölüm girişleri engelleniyor.":u8"God Mode kapalı.";continue;
+                SetGod(command.flag);continue;
             }
             if(command.kind==gameplay_bridge::Kind::Ghost){snap.ghost=command.flag&&snap.ghost_ready;snap.status=snap.ghost?u8"Hayalet modu açık; joystick ile duvarlardan geçebilirsin.":u8"Hayalet modu kapalı; normal çarpışma hareketi geri geldi.";continue;}
-            if(command.kind==gameplay_bridge::Kind::GhostStep){MoveGhost(command.item>0?.75f:-.75f);continue;}
-            if(command.kind==gameplay_bridge::Kind::GhostReturn){if(MoveGhost(0,true))snap.status=u8"Hayalet moduna başladığın konuma döndün.";continue;}
-            if(command.kind==gameplay_bridge::Kind::InfinityAmmo){snap.infinity=command.flag&&snap.infinity_ready;snap.status=snap.infinity?u8"Infinity Ammo açık: eldeki Crossbow ve Shotgun için cephane denetimi uygulanır; atış aralığı oyunun normalidir.":u8"Infinity Ammo kapalı.";continue;}
+            if(command.kind==gameplay_bridge::Kind::GhostReturn){if(ReturnGhost())snap.status=u8"Hayalet moduna başladığın konuma döndün.";continue;}
+            if(command.kind==gameplay_bridge::Kind::InfinityAmmo){snap.status=u8"Infinity Ammo, God Mode'a bağlı.";continue;}
             if(command.kind==gameplay_bridge::Kind::RemoveEnemy){Remove(command.enemy);continue;}
             if(command.kind==gameplay_bridge::Kind::KillEnemy){Kill(command.enemy);continue;}
-            if(command.kind==gameplay_bridge::Kind::CloneEnemy){Clone(command.enemy);continue;}
+            if(command.kind==gameplay_bridge::Kind::CloneEnemy){Clone(command.enemy,command.settings,command.clone_distance);continue;}
+            if(command.kind==gameplay_bridge::Kind::PauseEnemy){
+                if(command.enemy<3&&enemy_update_ready[command.enemy]){settings[command.enemy].paused=command.flag;snap.status=std::string(gameplay_bridge::kNames[command.enemy])+(command.flag?u8": türün tüm düşmanları durduruldu.":u8": türün tüm düşmanları devam ediyor.");}
+                continue;
+            }
             settings[command.enemy]=command.kind==gameplay_bridge::Kind::ResetEnemy?Enemy{}:command.settings;
             if(!enemy_update_ready[command.enemy])settings[command.enemy].paused=false;
             snap.status=authority?u8"Düşman ayarları uygulandı; sıfırlama özgün değerleri geri yükler.":u8"Düşman ayarları bu cihazda uygulandı; diğer oyunculardaki sonuç ağ yetkisine bağlıdır.";
@@ -1022,17 +2291,46 @@ struct Runtime {
         protect=snap.god&&snap.god_ready;protected_player=player.h;protected_manager=manager.h;protected_scene=scene;protected_room=room_id;
         protected_attack=attacked.h;protected_state=player_state.h;protected_script=script.h;
         tool_movement=movement.h;tool_fall=fall_damage.h;tool_crossbow=crossbow.h;tool_shotgun=shotgun.h;tool_inventory=inventory.h;
-        UpdateTools();if(snap.ready)UpdateClones();
-        if(snap.ready)for(auto& a:actors){Apply(*a);CombatGuard(*a,snap.god&&snap.god_ready);}
+        UpdateTools();if(snap.ready){ScanNoise(now);UpdateClones();UpdateVote(now);}
+        if(snap.ready){for(auto& a:actors){Apply(*a);CombatGuard(*a,snap.god&&snap.god_ready);}AnimateClones();}
         for(size_t k=0;k<kEnemyCount;++k){const auto observed=snap.enemies[k];snap.enemies[k]=settings[k];snap.enemies[k].count=observed.count;snap.enemies[k].death_ready=observed.death_ready;snap.enemies[k].clone_ready=observed.clone_ready;snap.enemies[k].pause_ready=enemy_update_ready[k];}
-        gameplay_bridge::Publish(snap);
+        Diagnostics();gameplay_bridge::Publish(snap);
     }
 };
 Runtime* runtime=nullptr;
+bool OverrideSight(Object* object,bool requested,bool remember){return runtime&&std::this_thread::get_id()==unity_thread&&runtime->OverrideSightRequest(object,requested,remember);}
+bool IgnoreOwnCollider(Object* collider,size_t kind){
+    if(kind>2||!runtime||std::this_thread::get_id()!=unity_thread||!protect||!collider)return false;
+    Root target(runtime->api,runtime->api.Call(runtime->go,collider));return LocalVictim(target.Get());
+}
+bool CanAssistInventory(Object* object){return std::this_thread::get_id()==unity_thread&&assist_hooks_ready&&protect&&runtime&&runtime->snap.god&&runtime->snap.god_ready&&runtime->InHierarchy(object)&&ToolOwner(object,tool_inventory,inventory_view);}
+bool AssistRequirement(Object* target,Object* requirements){return runtime&&runtime->AssistWorld(target,requirements);}
+bool AssistedTarget(Object* target){return assist_scope&&assist_scope->assisted&&assist_scope->target.Get()==target&&CanAssistInventory(assist_scope->inventory.Get());}
+void ReportFootstep(Object* object){if(runtime&&std::this_thread::get_id()==unity_thread)runtime->CaptureFootstep(object,gameplay_bridge::Now());}
+void ReportNoise(Object* object){if(runtime&&std::this_thread::get_id()==unity_thread)runtime->CaptureNoise(object,gameplay_bridge::Now());}
+void CompletedEnemyFrame(Object* object,size_t kind){
+    if(std::this_thread::get_id()!=unity_thread||!runtime||kind>=kEnemyCount)return;
+    for(const auto& c:runtime->clones)if(c->controller.Get()==object&&c->completed_frames<1000000){++c->completed_frames;runtime->DriveCloneInvestigation(*c,gameplay_bridge::Now());return;}
+}
+void GuardGodEnemy(Object* object,size_t kind){
+    if(std::this_thread::get_id()!=unity_thread||!runtime||!runtime->snap.ready||kind>2)return;
+    for(const auto& a:runtime->actors)if(a->kind==kind&&a->object.Get()==object){runtime->CombatGuard(*a,runtime->snap.god&&runtime->snap.god_ready);return;}
+}
+void VoteMessage(Object* sender,const std::string& line,int32_t sent){if(runtime&&std::this_thread::get_id()==unity_thread)runtime->IncomingVote(sender,line,sent);}
 bool EnemyPaused(Object* object,size_t kind){
     if(std::this_thread::get_id()!=unity_thread||!runtime||!runtime->snap.ready||kind>=kEnemyCount||!runtime->settings[kind].paused||!WorldMatches())return false;
     for(const auto& actor:runtime->actors)if(actor->kind==kind&&actor->object.Get()==object)return true;
     return false;
+}
+bool FrozenEnemyPose(Object* t,bool local,Vec3* position,Quat* rotation){
+    if(std::this_thread::get_id()!=unity_thread||!runtime||!runtime->snap.ready)return false;
+    for(const auto& a:runtime->actors){
+        if(!runtime->settings[a->kind].paused||!(local?a->local_pose_frozen:a->pose_frozen)||a->transform.Get()!=t)continue;
+        if(!WorldMatches())return false;
+        if(position)*position=local?a->frozen_local_position:a->frozen_position;
+        if(rotation)*rotation=local?a->frozen_local_rotation:a->frozen_rotation;
+        return true;
+    }return false;
 }
 }
 void Install(const Api& api){
@@ -1047,8 +2345,16 @@ void Install(const Api& api){
     view_method=api.FindMethod(api.Find("Photon.Pun","MonoBehaviourPun"),"get_photonView",0);
     if(!room_method||!mine_method||!scene_valid_method||!scene_loaded_method)return;
     InstallModern(api);
+    InstallExplosion(api);
     InstallTools(api);
+    InstallSight(api);
+    InstallProgression(api);
     InstallEnemyUpdates(api);
+    footstep_hook_ready=Hook(api.FindMethod(api.Find("","FootStepsController"),"OnSteppedFloor",0),reinterpret_cast<void*>(FootstepEmitted),original_footstep);
+    noise_hooks_ready[0]=Hook(api.FindMethod(api.Find("","NoiseObjectFallsMulti"),"ffp",0),reinterpret_cast<void*>(NoiseEmitted<0>),original_noise[0]);
+    noise_hooks_ready[1]=Hook(api.FindMethod(api.Find("","NoiseObjectFallsMultiGrandpa"),"fga",0),reinterpret_cast<void*>(NoiseEmitted<1>),original_noise[1]);
+    __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG build=voice-ai-panel-latebind-arm64 modern=%d gas=%d ammo=%d hamarat=%d fall=%d sound=%d%d steps=%d enemy_updates=%d%d%d%d%d%d",modern_hooks_ready,explosion_hooks_ready,ammo_hooks_ready,assist_hooks_ready,fall_god_ready,noise_hooks_ready[0],noise_hooks_ready[1],footstep_hook_ready,enemy_update_ready[0],enemy_update_ready[1],enemy_update_ready[2],enemy_update_ready[3],enemy_update_ready[4],enemy_update_ready[5]);
+    InstallVoteReceiver(api);
     auto* player=api.Find("","playerController");auto* manager=api.Find("","playerManager");if(!player||!manager)return;
     player_view=api.class_get_field_from_name(player,"qsa");if(!room_method||!mine_method||(!player_view&&!view_method)||!scene_valid_method||!scene_loaded_method)return;
     const bool a=Hook(api.FindMethod(manager,"die",0),reinterpret_cast<void*>(Die),original_die);
@@ -1071,6 +2377,6 @@ void Pump(const Api& api,bool paused){
     static bool stopped=false;if(stopped)return;
     if(!api.domain_get)return;
     try{if(!runtime)runtime=new Runtime(api);runtime->Tick(paused);}
-    catch(...){stopped=true;protect=false;ghost_enabled=ammo_enabled=false;gameplay_bridge::Snapshot s;s.status=u8"Oyun özellikleri hata nedeniyle durduruldu.";gameplay_bridge::Clear();gameplay_bridge::Publish(s);}
+    catch(...){stopped=true;protect=false;ghost_enabled=ammo_enabled=vote_listening=false;__android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG pump stopped: native C++ exception");gameplay_bridge::Snapshot s;s.status=u8"Oyun özellikleri hata nedeniyle durduruldu.";gameplay_bridge::Clear();gameplay_bridge::Publish(s);}
 }
 }

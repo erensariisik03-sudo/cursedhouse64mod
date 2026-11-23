@@ -141,6 +141,23 @@ bool Post(const std::string&,const std::string&,const std::string&,int& code,std
 }
 int main(){
  {Harness h;
+  chat_bot_bridge::ToggleAll();chat_bot_bridge::Select("Ali");h.Step();
+  h.Message("asdasdasdasd");h.Step();assert(http_calls==0);
+  chat_bot_bridge::ToggleFilter();h.Step();assert(!chat_bot_bridge::Read().message_filter);
+  Response("Ali, gülüyorsun galiba.");h.Message("asdasdasdasd");h.Drain();h.Step();assert(http_calls==1);h.ExpectReply("Ali, gülüyorsun galiba.");
+  h.Tick(h.now+31);const auto replies=h.f.sent.size();h.Message("merhaba");h.Step();assert(http_calls==1&&h.f.sent.size()==replies+1); // always local, even with filter off
+  chat_bot_bridge::ToggleFilter();h.Step();assert(chat_bot_bridge::Read().message_filter);
+  h.Message("asdasdasdasd");h.Drain();assert(http_calls==1);
+ }
+
+ {Harness h;
+  chat_bot_bridge::ToggleAll();chat_bot_bridge::Select("Ali");h.Step();
+  Response("Ali, dört eder.");h.Message("iki artı iki kaç eder?");h.Drain();h.Step();
+  assert(http_calls==1);h.ExpectReply("Ali, dört eder.");
+  h.f.Message("Bot farklı sorumu da yanıtla");h.f.chat_lines.back()->label=h.f.S("Veli: Bot farklı sorumu da yanıtla");h.Step();h.Drain();assert(http_calls==1);
+ }
+
+ {Harness h;
   for(const char* greeting:{"merhaba","slm","selam","sa","nasılsınız","Bot merhaba"}){
    h.Tick(h.now+31);const auto before=h.f.sent.size();h.Message(greeting);h.Step();
    assert(h.f.sent.size()==before+1&&http_calls==0);
@@ -226,6 +243,15 @@ int main(){
   assert(http_calls==1);
   chat_bot_bridge::ToggleStrict();h.Step(); // invalidate while the network request is still running
   {std::lock_guard<std::mutex> lock(http_mutex);hold_http=false;}http_cv.notify_all();h.Drain();h.Step();assert(h.f.sent.empty());
+ }
+ {Harness h;
+  // Shared configuration and voice routing work with the written bot switched off.
+  chat_bot_bridge::Toggle();h.Step();for(int i=0;i<24;++i)h.Step();h.f.sent.clear();h.f.sent_names.clear();
+  voice_ai_bridge::Mode(1,1);voice_ai_bridge::Toggle();h.Step(); // baseline existing lines
+  h.Message("Bot kapı nerede?");h.Message("/evet");h.Message("/hayır");
+  h.f.Message("kendi satırım");h.f.chat_lines.back()->label=h.f.S("Bot: kendi satırım");h.Step();
+  {std::lock_guard<std::mutex> lock(voice_ai_bridge::mutex);assert(voice_ai_bridge::texts.size()==1);auto t=voice_ai_bridge::texts.front();assert(t.name=="Ali"&&t.text=="Bot kapı nerede?"&&t.room);assert(voice_ai_bridge::config.key=="TEST_KEY");voice_ai_bridge::texts.clear();}
+  assert(http_calls==0&&h.f.sent.empty());voice_ai_bridge::Toggle();
  }
  std::cout<<"Bot controller: zero HTTP for small talk, silent name-prefixed/chunk SKIP, timed strict-only reminders, draft/focus/cooldown/room/name guards and stale-result rejection; local profanity warnings with slang bypass and repeat bounds: PASS\n";
 }

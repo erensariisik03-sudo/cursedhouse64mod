@@ -3,6 +3,10 @@
 #include <dlfcn.h>
 #include <android/log.h>
 #include <atomic>
+#include <chrono>
+#include <fstream>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 // HTTPS, Android'in kendi java.net.HttpURLConnection sınıfıyla JNI üzerinden yapılır:
@@ -91,6 +95,7 @@ bool ReadClipboard(std::string& out) {
 
 bool Post(const std::string& url, const std::string& key, const std::string& body, int& code, std::string& response) {
     code = 0; response.clear();
+    if(body.size()>6u*1024u*1024u)return false;
     JavaVM* vm = FindVM();
     if (!vm) return false;
     Attach thread(vm);
@@ -130,6 +135,7 @@ bool Post(const std::string& url, const std::string& key, const std::string& bod
     env->CallVoidMethod(conn, set_method, str("POST"));
     env->CallVoidMethod(conn, set_prop, str("Content-Type"), str("application/json; charset=utf-8"));
     env->CallVoidMethod(conn, set_prop, str("x-goog-api-key"), str(key.c_str()));
+    if(url.find("/interactions")!=std::string::npos)env->CallVoidMethod(conn,set_prop,str("Api-Revision"),str("2026-05-20"));
     env->CallVoidMethod(conn, set_ct, 8000);
     env->CallVoidMethod(conn, set_rt, 25000);
     env->CallVoidMethod(conn, set_out, JNI_TRUE);
@@ -155,7 +161,7 @@ bool Post(const std::string& url, const std::string& key, const std::string& bod
     if (is) {
         jbyteArray buffer = env->NewByteArray(4096);
         std::vector<jbyte> chunk(4096);
-        while (buffer && response.size() < (1u << 20)) {
+        while (buffer && response.size() < ((url.find("/interactions")!=std::string::npos||url.find("-tts")!=std::string::npos) ? (8u << 20) : (1u << 20))) {
             const jint n = env->CallIntMethod(is, read, buffer);
             if (Bad(env) || n <= 0) break;
             env->GetByteArrayRegion(buffer, 0, n, chunk.data());
@@ -165,5 +171,110 @@ bool Post(const std::string& url, const std::string& key, const std::string& bod
     }
     env->CallVoidMethod(conn, disconnect); Bad(env);
     return true;
+}
+
+// ---- Yerel Android TTS (Termux:API'nin kullandığı TextToSpeech motoru) ---------------------------
+// Ağ ve kota yok. Dosyaya sentezlenir (synthesizeToFile), WAV olarak okunur. Yalnız arka plan
+// thread'inde çalışır; Unity/IL2CPP nesnelerine dokunmaz. Metin loglanmaz.
+namespace {
+std::mutex g_tts_mutex;
+jobject g_tts = nullptr;                 // global ref: TextToSpeech
+bool g_tts_ready = false, g_voice_done = false;
+long long g_tts_retry_ms = 0;            // başarısız başlatmadan sonra bu ana kadar tekrar deneme
+long long MsNow() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+#define TTS_LOG(...) __android_log_print(ANDROID_LOG_INFO, "multiplayermod", __VA_ARGS__)
+}
+bool Speak(const std::string& text, std::string& wav) {
+    wav.clear();
+    if (text.empty() || text.size() > 2000) return false;
+    std::lock_guard<std::mutex> lock(g_tts_mutex);
+    if (!g_tts_ready && MsNow() < g_tts_retry_ms) return false;
+    JavaVM* vm = FindVM();
+    if (!vm) return false;
+    Attach thread(vm);
+    JNIEnv* env = thread.env;
+    if (!env || env->PushLocalFrame(64) != 0) return false;
+    struct Frame { JNIEnv* e; ~Frame() { e->PopLocalFrame(nullptr); } } frame{env};
+    jclass at = env->FindClass("android/app/ActivityThread");
+    jclass tts_cls = env->FindClass("android/speech/tts/TextToSpeech");
+    jclass loc_cls = env->FindClass("java/util/Locale");
+    jclass ctx_cls = env->FindClass("android/content/Context");
+    jclass file_cls = env->FindClass("java/io/File");
+    jclass cs_cls = env->FindClass("java/lang/CharSequence");
+    if (Bad(env) || !at || !tts_cls || !loc_cls || !ctx_cls || !file_cls || !cs_cls) return false;
+    jmethodID current = env->GetStaticMethodID(at, "currentApplication", "()Landroid/app/Application;");
+    jmethodID tts_new = env->GetMethodID(tts_cls, "<init>", "(Landroid/content/Context;Landroid/speech/tts/TextToSpeech$OnInitListener;)V");
+    jmethodID loc_new = env->GetMethodID(loc_cls, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
+    jmethodID avail = env->GetMethodID(tts_cls, "isLanguageAvailable", "(Ljava/util/Locale;)I");
+    jmethodID set_lang = env->GetMethodID(tts_cls, "setLanguage", "(Ljava/util/Locale;)I");
+    jmethodID set_pitch = env->GetMethodID(tts_cls, "setPitch", "(F)I");
+    jmethodID set_rate = env->GetMethodID(tts_cls, "setSpeechRate", "(F)I");
+    jmethodID synth = env->GetMethodID(tts_cls, "synthesizeToFile", "(Ljava/lang/CharSequence;Landroid/os/Bundle;Ljava/io/File;Ljava/lang/String;)I");
+    jmethodID cache_dir = env->GetMethodID(ctx_cls, "getCacheDir", "()Ljava/io/File;");
+    jmethodID file_new = env->GetMethodID(file_cls, "<init>", "(Ljava/io/File;Ljava/lang/String;)V");
+    jmethodID file_path = env->GetMethodID(file_cls, "getAbsolutePath", "()Ljava/lang/String;");
+    jmethodID file_del = env->GetMethodID(file_cls, "delete", "()Z");
+    if (Bad(env) || !current || !tts_new || !loc_new || !avail || !set_lang || !set_pitch || !set_rate || !synth || !cache_dir || !file_new || !file_path || !file_del) return false;
+    jobject app = env->CallStaticObjectMethod(at, current);
+    if (Bad(env) || !app) return false;
+    jstring tr = env->NewStringUTF("tr"), tr_cc = env->NewStringUTF("TR");
+    jobject locale = env->NewObject(loc_cls, loc_new, tr, tr_cc);
+    if (Bad(env) || !locale) return false;
+
+    if (!g_tts_ready) {
+        if (g_tts) { env->DeleteGlobalRef(g_tts); g_tts = nullptr; }
+        jobject local = env->NewObject(tts_cls, tts_new, app, static_cast<jobject>(nullptr)); // dinleyici yok; hazır olmayı yoklarız
+        if (Bad(env) || !local) { TTS_LOG("GMM_DIAG tts init-failed"); g_tts_retry_ms = MsNow() + 30000; return false; }
+        g_tts = env->NewGlobalRef(local);
+        int code = -2;
+        for (int i = 0; i < 80; ++i) { // en çok ~8 sn: servis bağlanana kadar isLanguageAvailable hata (-2) döner
+            code = env->CallIntMethod(g_tts, avail, locale);
+            if (Bad(env)) code = -2;
+            if (code >= 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        TTS_LOG("GMM_DIAG tts language-tr=%d", code);
+        if (code < 0) { env->DeleteGlobalRef(g_tts); g_tts = nullptr; g_tts_retry_ms = MsNow() + 30000; return false; } // motor yok / Türkçe yüklü değil / paket görünürlüğü
+        env->CallIntMethod(g_tts, set_lang, locale); Bad(env);
+        // Erkek ton: Android'de cinsiyet alanı yok; perdeyi düşür, hızı biraz yavaşlat.
+        env->CallIntMethod(g_tts, set_pitch, 0.72f); Bad(env);
+        env->CallIntMethod(g_tts, set_rate, 0.95f); Bad(env);
+        g_tts_ready = true;
+    }
+
+    jobject dir = env->CallObjectMethod(app, cache_dir);
+    jstring name = env->NewStringUTF("gmm_tts.wav");
+    jobject file = (!Bad(env) && dir) ? env->NewObject(file_cls, file_new, dir, name) : nullptr;
+    if (Bad(env) || !file) return false;
+    jstring jpath = static_cast<jstring>(env->CallObjectMethod(file, file_path));
+    if (Bad(env) || !jpath) return false;
+    const char* c_path = env->GetStringUTFChars(jpath, nullptr);
+    const std::string path = c_path ? c_path : "";
+    if (c_path) env->ReleaseStringUTFChars(jpath, c_path);
+    if (path.empty()) return false;
+    env->CallBooleanMethod(file, file_del); Bad(env);
+    jstring jtext = env->NewStringUTF(text.c_str());
+    jstring utt = env->NewStringUTF("gmm");
+    if (Bad(env) || !jtext) return false;
+    const jint queued = env->CallIntMethod(g_tts, synth, jtext, static_cast<jobject>(nullptr), file, utt);
+    if (Bad(env) || queued != 0) { TTS_LOG("GMM_DIAG tts synth-rejected=%d", queued); g_tts_ready = false; return false; }
+    // Tamamlanma: dosya var, >44 bayt ve 350 ms boyunca büyümüyor. En çok 20 sn.
+    long long last_size = -1, stable_since = 0; const long long start = MsNow();
+    while (MsNow() - start < 20000) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::ifstream in(path, std::ios::binary | std::ios::ate);
+        if (!in) continue;
+        const long long size = static_cast<long long>(in.tellg());
+        if (size > 44 && size == last_size) { if (!stable_since) stable_since = MsNow(); if (MsNow() - stable_since >= 350) break; }
+        else { stable_since = 0; last_size = size; }
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (in) {
+        std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (data.size() > 44 && data.size() < 6u * 1024u * 1024u) wav = std::move(data);
+    }
+    env->CallBooleanMethod(file, file_del); Bad(env);
+    TTS_LOG("GMM_DIAG tts wav_bytes=%zu", wav.size());
+    return !wav.empty();
 }
 }

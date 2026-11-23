@@ -1,368 +1,173 @@
-# Android Klavyesi, ImGui Kısayolları ve Oyun Panelleri
+# ARM64 Android klavyesi ve oyun panelleri
 
-Unity IL2CPP tabanlı Android oyununa eklenen C++ mod projesi. Çıktı,
-**arm64-v8a** mimarisi için tek bir **libmultiplayermod.so** dosyasıdır.
-Oyun içi metin girişini cihazın kendi Android klavyesi yapar. Kısayollar ve
-paneller ImGui ile OpenGL ES 3 üzerinden çizilir; oyun bağlantıları
-çalışma anında IL2CPP API ve metadata üzerinden çözülür.
+Unity IL2CPP Android modu. Çıktı `libmultiplayermod.so`; yalnız **arm64-v8a**
+hedeflenir. Entegrasyon çalışma anında IL2CPP metadata üzerinden çözülür.
 
-## Özellikler
+## Bu güncelleme
 
-| Bölüm | İşlev |
-| --- | --- |
-| Android klavyesi | Cihazın mevcut klavyesiyle yazma, otomatik düzeltme, seçim ve yapıştırma; 1024 Unicode karakter sınırı |
-| Metin araçları | Boyut etiketi, on renk seçeneği, oyunun font/sprite desteğine göre süzülen emoji adayları |
-| Kare kısayolu | Metni `<size=7000>█` ile değiştirip uygun sohbet alanında gönderme |
-| Metin kuralları | Oyun özelindeki iki etiket filtresi ve doğrulanabilen isim uzunluğu kontrolüyle entegrasyon |
-| Kıyafet | Kozmetik katalog eşitlemesi, oyunun gardırop kart listelerinden kıyafet/şapka seçimi ve mevcut oda yayın akışı |
-| Dans | Bekleme alanındaki yerel oyuncu modelini bulup mevcut emote/animator akışıyla seçim yapma |
-| AI sohbet | Gemini API anahtarıyla seçilen oyuncunun yeni mesajlarına otomatik yanıt, kişilik ve sohbet hafızası |
-| Oda bağlantısı | Dolu odaya bağlantı denemesini kullanıcı başlattığında tekrar etme |
-| Reklam | Mevcut reklam engelleme entegrasyonu |
-| Oyun paneli | Sürüklenebilir eşya/mermi listesi, ele/yere oluşturma, düşman ve animasyon durdurma, ölüm/kaldırma/klonlama ve kendi karakterine God Mode |
+- **AI → Sesli AI:** Ses → Ses, Metin → Ses, Ses → Metin ve Ses+Metin → Ses.
+  Mevcut Gemini anahtarı, kişilik ve kişi seçimi kullanılır. Ses parçası önce
+  metne çevrilir, AI cevabı oluşturulur, gerekiyorsa seslendirilir.
+- AI paneli Kişiler, Kişilik, Yanıt ayarları, Sesli AI ve Geçmiş sayfalarına
+  ayrıldı; uzun dikey ana panel sadeleştirildi.
+- Granny/Grandpa/MomSpider klonlarında ilk 12 bağlama denemesi başarısız olsa
+  bile 10 saniye arayla yeniden denenir. Geç oluşan sahne bağlantıları artık
+  kalıcı olarak vazgeçilmesine yol açmaz; mevcut native AI akışı korunur.
 
-Klavye sınırı 1024 Unicode karakteridir. Oyun veya sunucu tarafındaki diğer
-sınırların aynı uzunluğu kabul ettiği varsayılmaz. Emoji listesi bütün emojileri
-kapsamaz; yalnız oyun tarafından desteklendiği saptanan adaylar gösterilir.
-
-## GitHub Actions ile derleme
-
-1. Bu klasörün içeriğini GitHub deposunun köküne yükle. `CMakeLists.txt`, `src/`,
-   `third_party/` ve `.github/workflows/android.yml` aynı kökte bulunmalı.
-2. **Actions → Build Android .so (ARM64)** iş akışını aç. Push ve pull request
-   ile otomatik, **Run workflow** ile elle çalıştırılabilir.
-3. İş akışı host testlerini çalıştırır, Android kütüphanesini derler ve strip eder.
-4. Tamamlandığında **multiplayermod-arm64-v8a** artifact'ini indir.
-   Kütüphane artifact içinde `libmultiplayermod.so` adıyla bulunur.
-
-Artifact saklama süresi üç gündür. Bu depo APK üretmez; `.so` dosyasının oyuna
-nasıl yükleneceği mevcut yükleyici/entegrasyon yöntemine bağlıdır.
-
-### Derleme ayarları
-
-| Ayar | Değer |
-| --- | --- |
-| Hedef ABI | `arm64-v8a` |
-| Android platformu | API 21 ve üzeri |
-| NDK | `27.2.12479018` |
-| CMake | `3.22.1` ve üzeri |
-| Dil | C++17 |
-| Grafik | OpenGL ES 3 |
-| C++ çalışma zamanı | `c++_static` |
-| ELF sayfa hizalaması | 16 KiB |
-| Dışa açılan semboller | `mm_*`, `JNI_OnLoad` |
-
-CMake yalnız `ANDROID_ABI=arm64-v8a` kabul eder. ImGui ve Dobby kaynakları
-`third_party/` içinde bulunduğundan derleme sırasında bu bağımlılıklar indirilmez.
-Dobby'nin bu paket içindeki kaynakları hedef mimari için uyarlanmıştır.
-
-### İsteğe bağlı yerel Android derlemesi
-
-NDK, CMake ve Ninja kurulu bir Bash ortamında:
-
-```bash
-cmake -S . -B build/android -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-  -DANDROID_ABI=arm64-v8a \
-  -DANDROID_PLATFORM=android-21 \
-  -DANDROID_STL=c++_static \
-  -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON
-cmake --build build/android --parallel
-```
-
-Çıktı: `build/android/libmultiplayermod.so`.
+- **Asıl düşmanları kaldırdıktan sonra klonlama düzeltildi.** Görme kurulumu artık
+  yaşayan bir asıl düşman gerektirmez. Klonun kendi Eye, kamera, Animator ve
+  PhotonView bağlantıları kullanılır; eksik DaysManager tekil sahne bileşeninden
+  çözülür. Ortak hedef listeleri paylaşılmaz.
+- Granny, Grandpa ve MomSpider'ın native görmesi/takibi/saldırısı korunur. Eksik
+  görme bağlantısı varsa tanı kaydı artık hangi şartın eksik olduğunu gösterir.
+- Ses, kısa ömürlü nesneleri yalnız arayarak izlenmez: normal native ses callback'i
+  ve gerçek oyuncu adım olayları yakalanır. Adımlar 8 m, nesne sesleri 20 m
+  içinde araştırılır. Oyuncuyu görme/saldırı, ses araştırmasından önceliklidir.
+- Sağlıklı ve kontrolümüz altındaki klon 12 saniye hareket etmezse native devriye
+  toparlaması denenir. Takılı saldırı durumu için 15 saniyelik kontrol vardır.
+  Durdur ve gerçek silahla vurulma/ölüm durumları korunur; ışınlama uygulanmaz.
+- **Oyun → Karakter hızı:** yürüyüş ve çömelme için 1x–5x çarpan, 2x/3x hazır
+  düğmeler ve normal hıza dönüş. Kendi karakterine uygulanır, God Mode'dan
+  bağımsızdır; çarpan üst üste birikmez, oyunun yeni temel hızını dikkate alır.
+- Kapı desteği, God AI görünmezliği/düşme/benzin koruması, Infinity Ammo,
+  Hamarat, kategori Durdur/Devam et ve host/client şaka oylaması korunur.
+  Yeniden doğma süresi ve ayrı Ayarlar bölümü kaldırılmıştır.
 
 ## Kullanım
 
-### Klavye
-
-Oyun içindeki uygun metin alanına dokununca **Android'in kendi klavyesi** açılır.
-ImGui harf klavyesinin yerine **Boyut, Renk, `<`, `>` ve `█`** kısayolları
-ile **Yapıştır** düğmesi bulunan küçük bir çubuk görünür.
-
-- Android klavyesi normal yazma, otomatik düzeltme, metin seçimi ve gönderme
-  işlemlerini yürütür. Kısayol eklemeleri güncel imleç/seçime uygulanır.
-- **Boyut** sayısal seçiciyi, **Renk** renk listesini açar. Emojiler doğrudan
-  Android klavyesinden girilir; çubukta ayrı Emoji düğmesi yoktur.
-  Yarım bırakılan boyut/renk taslakları oyun alanına gönderilmez.
-- **Küçült** yalnız kısayol çubuğunu küçültür; Android klavyesini kapatmaz.
-  **Kısayollar** düğmesiyle tekrar açılır.
-- Klavye alanı Unity tarafından bildiriliyorsa çubuk klavyenin üstüne yerleşir.
-  Alan bilgisi boş veya kullanılamazsa ekranın üstünde açılır. Cihazdaki klavye
-  yüksekliği ve pencere davranışı ayrıca test edilmelidir.
-- Şifre alanlarında kısayollar devre dışıdır; parola çubukta gösterilmez.
-
-1024 sınırı yalnız ImGui tamponuna bağlı değildir: aktif oyun alanındaki Android
-metni de Unicode karakteri bazında sınırlandırılır. Sınır uygulaması değişiklik ve
-gönderme bildirimlerinden önce yapılır; emoji vekil çiftleri bölünmez. Eski TMP
-UTF-16 sınırı oturum sırasında gevşetilir, alan odaktan çıkınca özgün ayarı geri
-yüklenir. Mevcut iki etiket filtresini kapatan `game_text_rules` entegrasyonu ve
-isim uzunluğu kontrolü korunur; sunucu kuralları ve diğer doğrulamalar korunur.
-
-AI panelinin API anahtarı/kişilik girişleri oyun içi TMP alanı değildir;
-bu iki panel alanında mevcut bağımsız ImGui editörü kullanılmaya devam eder.
-
-### Kıyafet ve dans
-
-Menüden **Kıyafet** bölümünü aç. Liste boşsa oyun içi gardırop ekranını açıp
-tekrar kontrol et; panel oyunun gardırop kart listelerini okur. Seçimler mevcut
-oyun/oda akışından uygulanır. **Dans** paneli geçerli yerel oyuncu ve animasyon
-hedefini bekler; hedef hazır değilse işlem devre dışı kalır.
-
-### Oyun kontrolleri
-
-Taban, kıyafet ağ inceleme denemesinden önceki `system-terminal-testfix`
-sürümüdür; klavye ve AI akışı korunur.
-
-- **Eşya spawn:** Liste, düğmelerin üzerinden yukarı/aşağı sürüklenir. Sürükleme
-  seçim sayılmaz; kısa dokunuş seçimdir. Yeni tutulabilen eşya önce ele gelir.
-  Aynısı eldeyse yeni kopya önüne oluşturulur. Başka eşya eldeyse oyunun normal
-  `hra` alma akışı önce eskisini bırakır, sonra yenisini verir. Boş/çift kimlikli
-  prefablar elenir. Eşya adları PickUpObject kimliğine göre **İngilizce** gösterilir:
-  Crossbow, Shotgun, Cutting Pliers, Shotgun Ammo gibi. Etiket kaynak anahtarını
-  değiştirmez. Tranquilizer Dart ve **Shotgun Ammo** doğrudan yere oluşturulur.
-  Mermi kaynağı moreAmmo ve gerçek PickupItem(Ammo=48) bileşenlerinden aranır;
-  yalnız doğrulanmış ağ prefabı bulunursa kullanılabilir. Prefabda gerçek Ammo=48
-  PickupItem ve PhotonView bulunması gerekir; normal Photon Instantiate yolu
-  kullanılır. Yerel görsel/mesh kopyası ve otomatik yerel doldurma kaldırılmıştır.
-  Gerçek ağ prefabı yoksa Shotgun Ammo gri/kapalı kalır. Kaynak anahtarları
-  değiştirilmez; başka oyuncunun/sahnenin mevcut mermisi kopyalanıp tüketilmez.
-  Bir saniyelik bekleme yoktur; kuyruk Unity karesi başına bir oluşturma işler.
-  Gecikmiş oturum komutları iptal edilir; sınırsız üretim döngüsü yoktur.
-- **Düşman durdur:** AI bileşeni kapatılmaz; Granny/Grandpa/MomSpider'ın
-  FixedUpdate, diğerlerinin Update kararı oturum ve köklü hedef kontrolüyle
-  duraklatılır. İlk dört düşmanın saldırı tetikleyicisi de aynı sürede bekler.
-  Böylece OnDisable ile olay abonelikleri/coroutine başlangıcı bozulmaz.
-  NavMesh isStopped ve alt Animator/Animation durumları saklanır; devamda geri
-  yüklenir. Agent geçici olarak NavMesh dışında ise geri yükleme kaydı silinmez,
-  geçerli zemine dönünce tekrar denenir. Eksik hareket kancasında Durdur pasiftir.
-  Hız/animasyon ayarları korunur. Crow boyutu gerçek görsel köklere, en fazla 20x
-  uygulanır. **Boyut (yerel)** açıkça yalnız bu cihazın görüntüsüdür. Modsuz
-  alıcıya ölçek iletecek doğrulanmış bir oyun yolu bulunmadığından yeni paket/RPC
-  veya yalnız gönderen tarafın stream şemasını değiştiren bir işlem eklenmez.
-  Oda sahibi olmayan oyuncuda hareket ayarlarının etkisi ağ güncellemeleriyle
-  sınırlanabilir.
-- **Düşman öldür:** İçinde üç işlem vardır:
-  - **Öldür:** Granny/Grandpa için dump'ta doğrulanan normal shotgun RPC'si SDK
-    ile MasterClient'a gönderilir; PhotonMessageInfo'yu SDK üretir. MomSpider
-    için kendi normal vurulma isteği, Spider için hedefin gerçek ViewID'siyle
-    normal vurulma handler'ı çalışır. Crow yerel vurulma bayrağıyla kendi oyun
-    akışına girer; uçuşun bitmesini bekleyebilir. Ragdoll, bekleme ve dönüşü
-    oyunun kendi akışı belirler. Rat için doğrulanmış ölüm akışı bulunmadığından
-    o düğme kapalıdır. Gönderilen istek diğer istemcide başarı garantisi değildir.
-  - **Kaldır:** Önceki kalıcı nesne kaldırma korunur. Sahip olduğun ağ nesnesi
-    normal SDK Destroy yoluyla kaldırılır; yetkin olmayan nesne yalnız yerelde
-    kaldırılır. Ölüm/ödül/yeniden doğma süreci çalıştırılmaz.
-  - **Klonla:** Granny, Grandpa ve MomSpider'ın gerçek manager prefabları
-    kullanılır. Oda sahibi klonları oyunun kendi yaptığı gibi
-    PhotonNetwork.InstantiateRoomObject ile oluşturur; AI ve konum yayıncısı
-    böylece oda sahibinde eşleşir. Oda sahibi olmayan oyuncu normal Instantiate
-    kullanır. Yalnız kendisinin oluşturduğu yeni klon için, prefabın mevcut
-    OwnershipTransfer ayarı izin verirse normal TransferOwnership çağrısıyla
-    kontrol oda sahibine devredilir; OwnerActorNr okunarak sonuç doğrulanır.
-    Sabit (Fixed) sahiplik değiştirilmez; böyle bir client klonu ağda görünebilir
-    fakat hareket/saldırı için oda sahibinin oluşturması gerekir. Bu durum
-    ekranda açıkça bildirilir. Devir en fazla üç denemeyle sınırlıdır.
-    Unity Start elle tekrarlanmaz; başlangıç için süre tanınır. Yerel oda
-    sahibinde yeni klonun agent/AI etkinliği, NavMesh bağlantısı ve yeni ViewID
-    doğrulanır; gerekirse yalnız bu yeni agent doğrulanan ön zemine Warp edilir.
-    Kamera yönü yataydır, klon oyuncuya dönük ve diktir; ön zemin fazla yana
-    kayıyorsa oluşturulmaz. Hareket/saldırı oyunun özgün AI akışına bırakılır.
-    Normal durdur/devam ayarı aynı tür klonlara da uygulanır. Canlı klon sayısı
-    sekizdir. Ana manager/current düşman referansları ezilmez; ana düşmanın ölüm
-    isteği bütün klonları yönetmeyebilir. Spider/Crow/Rat için güvenilir kaynak
-    prefab bağlanmadığından klon düğmesi kapalıdır.
-- **God Mode:** Güncel oyunda `HandleEnemyAttacked` ve `PlayerStateManager`
-  bulunur; eski `playerController` nesnesinin oluşması şart değildir. Kendi
-  bileşenlerin envanterin PhotonView'iyle eşleştirilir; bu eşleme yoksa tek,
-  sahipliği doğrulanan aday seçilir. Birden fazla belirsiz veya başka oyuncuya
-  ait nesne seçilmez. Doğrulanan AI saldırı girişleri/alıcısı, yerel lava isteği
-  ve kendi oyuncunun Dead durumuna geçişi engellenir. Hedef bizim oyuncumuzsa
-  DaysManager.foq ölüm/gün kaydını oluşturmaz; başka oyuncu ve kaçış akışı korunur.
-  PlayerScriptManager.iai öldürme kamerası ve MomSpider.inh saldırı başlangıcı
-  kendi hedefimiz için engellenir. Granny/Grandpa'nın hedefi kendi gövdemizin
-  altındaysa dontHitPlayer geçici korunur; hedef değişince/eski ayara dönünce
-  saklanan değer yüklenir. Uzak, modsuz MasterClient kendi ölüm/gün kararını
-  veriyorsa yerel mod bunu kesin olarak iptal edemez; küresel gün saati dondurulmaz. Başka hedefe saldırı,
-  başka oyuncu, kapalı mod, farklı oda/sahne ve diğer durum değişimleri özgün
-  metoda iletilir. Eski oyuncu yapısı için önceki koruma da korunur. Bu özellik
-  diriltme değildir; her çevresel tehlike/sunucu kararı için garanti verilmez.
-
-- **Hayalet modu:** hjs yalnız yerçekimi yoludur; joystick'in gerçek yatay
-  hareketi hju üzerinden ayrı CharacterController.Move çağrısına gider. Yeni
-  kanca yalnız sahipliği doğrulanan kendi CharacterController'ının Move
-  hareketini doğrudan konuma uygular; diğer bütün kontrolcüler ve kapalı mod
-  özgün CollisionFlags/çağrıyı korur. Kendi hjs/düşme hasarı açıkken bekler,
-  kapanınca özgün hareket ve sıfırlanmış dikey hız döner. Yüksel, Alçal ve
-  başlangıç konumuna dönüp kapatma düğmeleri vardır. God Mode'dan bağımsızdır;
-  oda/sahne/karakter değişiminde kapanır.
-- **Infinity Ammo:** Yalnız kendi oyuncunun elindeki Crossbow/Shotgun atışında
-  yüklenmiş cephane bayrağı çağrı boyunca hazırlanır. Özgün atış tam bir kez
-  çalışır; atış/cooldown animasyonu hızlandırılmaz. Çağrı sonrasında gerçek bayrak
-  korunur/geri yüklenir; başka silahın veya başka oyuncunun atışı etkilenmez.
-  Kendi silah/mermi görselleri hazırlanır ve mod kapanınca normal duruma döner.
-  ShotgunManager'ın ortak bayrağı sürekli açık tutulmaz; yeni tahmini reload
-  paketi gönderilmez.
-
-Oda sahibi şartı arayüzden kaldırılmıştır. Yerel ayar, ağdan silme ve normal
-ölüm isteğinin ağ yetkisi farklıdır; bütün değişikliklerin orijinal istemcilere
-zorla uygulanabildiği iddia edilmez. Pasif seçenek eksik hedef/bağlantı nedenini
-bildirir; bekleme metni hedef bulunduğunda temizlenir.
-
-Metot ve alanlar runtime metadata ile çözülür; eski C++ dosyasının RVA/offset'leri
-çalışma koduna taşınmaz. `tools/gameplay_reference.csv` inceleme envanteridir.
-Aynı aritedeki RPC/Destroy/Instantiate overload'ları parametre tipiyle ayrılır.
-Yönetilen nesneler GC handle ile korunur; Unity işlemleri yalnız Unity karesinde
-çalışır. Oda/sahne/oyuncu değişiminde eski komutlar ve koruma hedefleri temizlenir.
-Negatif sahne kimlikleri geçerlilik/yüklenme sorgusuyla değerlendirilir.
-
-CI testlerine sürükleme/seçim ayrımı, aynı/farklı eşyanın ele/yere oluşturulması,
-merminin eli değiştirmemesi, animasyon dondurma/geri yükleme, 20x görsel ölçek,
-güncel God Mode hedef/oda/sahiplik sınırları; kendi ölüm/gün ve kamera kaydı,
-başka hedefe iletme, hayalet yatay hareketi/dönüşü, geçici cephane bayrağı,
-yatay/dik klon matematiği, İngilizce adlar ve eksik merminin görünürlüğü eklenmiştir. **Bu sürümde yerel
-build veya C++ test derlemesi çalıştırılmadı; cihaz davranışı doğrulanmadı.**
-
-### AI sohbet
-
-1. Odaya girip menünün **AI** bölümünü aç.
-2. **API anahtarı gir** ile Gemini anahtarını yaz.
-3. Yanıtlanacak oyuncuyu seç; istersen **Kişilik düzenle** ile talimat ekle.
-4. Botu aç. Yalnız açıldıktan sonraki yeni mesajlara yanıt verir.
-
-Mevcut ayar sistemi API anahtarını ve bot tercihlerini uygulamanın özel
-`files/gmm_ai.cfg` dosyasında saklar; anahtar loglanmaz. İstekler arka planda
-Android `HttpURLConnection` ile gönderilir; APK'da `INTERNET` izni gerekir.
-Seçilen oyuncunun mesajları ve sohbet bağlamı Gemini'ye gönderilir. Yanıtlar
-etiket karakterlerinden temizlenir ve 180 karakterle sınırlanır. Gönderim oyunun
-bekleme süresine uyar; kullanıcının yazdığı taslağı ezmez.
-
-### Hazır yanıtlar ve isim hatırlatması
-
-**Ada göre süz** açıkken oyun adının yanında cümlede ayrı sözcük olarak geçen
-`zeka`, `yapay` ve `yapayzeka` da bota hitap sayılır. Büyük/küçük harf fark etmez;
-`yapay zeka` yazımı da çalışır. `zekalı` gibi kelimelerin içinden eşleşme yapılmaz.
-
-
-- `merhaba`, `mrb`, `slm`, `selam`, `sa`, `nasılsın`, `nasılsınız`, `naber` ve
-  yaygın kısa selamlaşma birleşimleri AI'ye gönderilmeden yerel yanıt alır.
-  Aynı oyuncuya bu tür yanıtlar en sık 30 saniyede bir verilir.
-- Selamlaşmanın yanında gerçek bir soru varsa soru korunur: örneğin
-  `Bot merhaba, oyun nasıl oynanır?` hazır selam yanıtına dönüştürülmez.
-- Kahkaha/random süzgeci korunur. Model `SKIP`, `Ad: SKIP` veya `Ad, SKIP`
-  döndürürse mesaj sessizce elenir; kontrol işareti sohbet satırına veya yanıt
-  hafızasına eklenmez. Gönderim sınırında her parça tekrar kontrol edilir.
-- Bot açık, **Ada göre süz** açık ve odada başka oyuncu varken ilk isim
-  hatırlatması 15 saniye sonra, devamı iki dakikada bir hazırlanır:
-  `Soru için adımı ("BotAdı") veya zeka, yapay, yapayzeka yazıp sorunuzu ekleyin.`
-  Metin gerçek oyun adını kullanır; bu mesaj için AI isteği yapılmaz.
-- Normal yanıtlar ve bekleyen sorular hatırlatmadan önce gelir. Hatırlatma da
-  oyunun sohbet bekleme süresine, metin alanının odağına ve taslak korumasına
-  uyar. Gönderilemeyen hatırlatma 20 saniyede bırakılır; mesajlar biriktirilmez.
-- Bot/isim süzgeci kapatılınca, odadan çıkınca veya ad değişince eski hatırlatma
-  iptal edilir. Eski bot oturumundan tamamlanan AI yanıtı da gönderilmez.
-
-### Yerel küfür uyarısı
-
-Bot açıkken açıkça bota yöneltilen belirli küfürler yerel kelime/ifade kurallarıyla
-saptanır. Bu mesajlar AI'ye gönderilmez; **iki sabit, sert uyarı** normal yanıtların
-önüne alınır. İlk uyarı uygun ilk sohbet anında, ikincisi oyunun bekleme süresi
-izin verince gönderilir. Küfürle karşılık verilmez.
-
-`lan`, `amk`, `aq`, sıradan argo ve hakaret kelimeleri bu sabit küfür kuralını
-tetiklemez; mevcut isim/oyuncu süzgecinden geçiyorsa normal AI akışına bırakılır.
-Başka oyuncuya yöneltilen sözler ve kelimenin anlamını soran/aktaran cümleler için
-sabit uyarı verilmez. Bu yapı sınırlı bir yerel sözlüktür; her yazım hilesini ya da
-bağlamı anladığı varsayılmaz.
-
-Aynı oyuncuya yeni uyarı çifti en sık **60 saniyede bir**, genel olarak en sık
-**10 saniyede bir** hazırlanır. Bekleyen uyarı çifti varken yeni çift eklenmez.
-Taslak/odak koruması, sohbet bekleme süresi ve zaman aşımı bu mesajlarda da geçerlidir.
-
-### Açılış/kapanış ve model durum akışı
-
-Bot açılırken, kapatılırken, kişilik ve model değişiminde oyun sohbetine her
-olay için farklı, **tamamen kurgusal Linux terminali** satırları hazırlanır.
-Gerçek oyun sınıfları, API isimleri, sağlayıcı veya gerçek model kimliği gösterilmez.
-Son satır herkesin anlayacağı biçimde `AI AKTİF`, `MODEL: İMAM`, `AI KAPANDI`
-veya `AI MODELİ GÜNCELLENDİ` der. İlk satır mevcut büyük kare kısayolunu
-`<#888F>` ile griye boyar. Açılış 24, kapanış/kişilik/model geçişleri 18 satırdır;
-akış saniyede en çok 6 satır gönderir. Açılışta kurgusal bir konsol servisinin
-hazırlanması, CMake/Ninja derleme çıktıları ve servis başlatma adımları görünür.
-Komutlar yalnız dekoratif metindir; cihazda çalıştırılmaz.
-
-Bu gösteri mesajları hazırlanırken oyunun isim okuyucusu yalnız eşzamanlı sohbet
-gönderimi süresince `System` döndürür. Kalıcı oyuncu adı veya Photon oyuncu
-özellikleri değiştirilmez; normal sohbet ve AI cevapları kendi adını kullanır.
-Referans ARM64 gönderim akışında ad, UTF-8 sohbet yükü hazırlanırken okunur.
-Bu bağlantı kurulamazsa terminal mesajları atlanır, normal adla gönderilmez.
-`System` bir sohbet görüntü adıdır; ağdaki Photon gönderen/aktör kimliği değişmez
-ve sunucu mesajın hangi oyuncudan geldiğini görebilir. Cihazdaki ve diğer
-istemcideki görünüm derleme sonrasında ayrıca doğrulanmalıdır.
-
-Yerel bekleme izni artık bütün `ChatManager.SendMessage` çağrılarına uygulanır:
-normal gönder düğmesi, kare kısayolu ve AI gönderimleri aynı genel kancadan geçer.
-Bayrak yalnız çağrı boyunca geçici açılır ve önceki kapalı değer geri konur;
-kalıcı açık bayrak veya yeni ağ paketi kullanılmaz. AI'nin ayrı yanıt aralıkları ve
-taslak/odak koruması korunur. Gerekli API veya kanca kullanılamazsa oyunun olağan
-kontrolü geçerli kalır. Sunucu sınırları bu değişiklikten etkilenmez.
-
-Oyuncu yazarken/taslak varken gönderim bekler. Akış beş saniyede tamamlanamazsa
-kalanı iptal edilir; yeni olay eskisinin yerine geçer ve odadan çıkınca temizlenir.
-Kapatma animasyonu, AI kapandıktan sonra da tamamlanabilir.
-
-## Kaynak düzeni
-
-| Konum | İçerik |
+| Bölüm | İşlev |
 | --- | --- |
-| `.github/workflows/android.yml` | ARM64 derleme ve artifact iş akışı |
-| `CMakeLists.txt`, `exports.map` | Kütüphane hedefleri, ABI denetimi ve sembol sınırı |
-| `include/keyboard_api.h` | Dışarı açılan C API |
-| `src/keyboard_api.cpp`, `src/keyboard_ui.cpp` | Grafik/giriş köprüsü, Android kısayol çubuğu ve bağımsız panel editörü |
-| `src/native_shortcuts.h` | Oturum kimlikli komut kuyruğu, kopyalanmış metin/seçim ve UTF-16/UTF-8 dönüşümü |
-| `src/unity_keyboard.cpp`, `src/il2cpp_runtime.*` | Unity metin alanı ve IL2CPP bağlantısı |
-| `src/game_text_rules.cpp`, `src/username_gate.h`, `src/observer_target.cpp`, `src/hook_veneer.h` | Metin kuralları ve AArch64 native kontrol yardımcıları |
-| `src/cosmetic_*`, `src/wardrobe_bridge.h`, `src/lobby_emotes.*` | Kozmetik, kıyafet ve dans |
-| `src/chat_bot*`, `src/ad_block.*`, `src/auto_join*` | AI, reklam ve oda bağlantısı |
-| `tests/` | Host testleri, sahte oyun API'leri, botun HTTP/gönderim akışı ve ARM64 native örnekleri |
-| `tools/` | Dump/metadata inceleme ve PowerShell log toplama araçları |
-| `previews/` | Arayüz örnek görselleri |
-| `third_party/` | ImGui, Dobby ve bunların lisansları |
-| `CLAUDE.md` | Güncel geliştirme kuralları |
+| Android klavyesi | Yerel klavye, Unicode seçim/yapıştırma, 1024 karakter sınırı |
+| Metin | Boyut, renk, desteklenen emoji ve kare kısayolu |
+| AI sohbet | Gemini anahtarı, Kişiler, Kişilik, Yanıt ayarları ve Geçmiş |
+| AI → Sesli AI | Ses/metin girişinden sesli veya yazılı yanıt; oda/yerel ses seçimi |
+| Kıyafet | Oyun gardırobundan seçim ve aynı odaya çık-gir yayını |
+| Oyun → Eşya spawn | Ele/yere oluşturma; doğrulanmış ağ prefabları |
+| Oyun → Düşman öldür | Öldür, Kaldır ve Klonla sekmeleri |
+| Oyun → God Mode | Ölüm/benzin/düşme koruması, AI görünmezliği, Crossbow/Shotgun Infinity Ammo ve Hamarat |
+| Oyun → Karakter hızı | Kendi oyuncunun yürüme/çömelme hızı, 1x–5x ve normale dönme |
+| Oyun → Hayalet modu | Joystick ile bakış yönünde uçuş; başlangıca dönüş |
+| Oyun → Oyuncu atma | Host/client sohbet şakası; /evet–/hayır oylaması |
+| Oyun → Zorluk | Gerçek hostun canlı AI zorluğunu değiştirmesi |
 
-`tools/analyze_metadata.cpp` bağımsız bir analiz aracıdır; oyun kütüphanesinin
-kaynak listesine dahil değildir. İnceleme girdileri ve yerel derleme çıktıları
-kaynak paketine dahil edilmez.
+God Mode'u **takip/saldırı başlamadan önce** aç. Görünmezlik yalnız AI hedef
+işaretini etkiler; diğer oyuncular seni görür. Kapanınca önceki normal hedef
+etkinliği geri yüklenir; oyun arada yeni bir gizlenme isteği verdiyse korunur.
+Oda/sahne/sahiplik değişiminde eski karaktere işlem yapılmaz.
 
-## Test ve doğrulama
+Yerel görünmezlik durumu okunur; native RPC çağrısının başarılı dönmesi karşı
+cihazda uygulandığının kanıtı değildir. Ağ yayını 3 saniyede bir yenilenerek geç
+katılan cihazlar ve host değişimleri kapsanır. Gerçek cihaz doğrulaması gerekir.
+Gizlenen hedefi bırakma kurtarması bu modun çalıştığı gerçek hostta uygulanır.
+Modsuz uzak hostta önceden takılmış saldırıyı zorla sıfırlama garantisi yoktur.
 
-Linux/Bash ve `g++` ile:
+Klonların tam native takip/saldırı AI'sini gerçek oda sahibi yürütür. Host olmayan
+cihazın sahipli klon devriyesi tam host AI'sinin eşdeğeri değildir. Durdurma
+host dışındaki cihazda yerel uygulanır; diğer cihazlardaki sonuç ağ yetkisine
+bağlıdır. Kaldır, normal ölüm/yeniden doğma akışı değildir.
 
-```bash
-bash tests/run.sh
+## Sesli AI kullanımı ve sınırları
+
+1. AI bölümünden Gemini API anahtarını gir; Kişiler'den oyuncu seç veya
+   Herkes'i aç. Herkes + isim şartı açıksa oyuncunun botun oyun adını söylemesi
+   gerekir. Yazılı bot ana düğmesinin açık olması şart değildir.
+2. Sesli AI sayfasında modu seç, sonra Sesli AI'yi aç. Oda değişince tekrar
+   açmak gerekir. Kendi mikrofonumuz işlenmez; seçili uzak oyuncuların oyundan
+   alınan sesi ve/veya onların yeni sohbet mesajları kullanılır.
+3. Ses: oda / yerel seçeneğinde oda sesli sohbeti açık ve Photon Voice bağlantısı
+   gerçekten odadaysa AI sesi Recorder'ın AudioClip kaynağından yayınlanır.
+   Sesli sohbeti kapalı odada **Metin → Ses yalnız bu cihazda okunur**. Diğer
+   modsuz oyuncuların sesi duyması, onların aynı Voice odasına bağlı olmasını
+   gerektirir; yerel değişiklik tek başına bunu sağlayamaz. Ses: yalnız bu cihaz
+   seçeneği açık odada da yerel çalmayı seçer.
+4. AI konuşurken birincil mikrofon kaydı durdurulur; ek Recorder mikrofonları ve
+   yeniden başlatma istekleri engellenir. Yayına mikrofon yerine yalnız AI klibi
+   verilir. Bitince/durdurunca aynı oda ve geçerli bileşen için son mikrofon
+   tercihi geri yüklenir. Oda değişiminde eski mikrofon yeniden açılmaz.
+5. Konuşmayı durdur, çalan sesi ve bekleyen işleri iptal eder. Devam eden HTTP
+   isteği zaman aşımına kadar tamamlanabilir; eski cevap uygulanmaz. Yeni
+   konuşmalar için özelliği tamamen kapatmak üzere üstteki düğmeyi kullan.
+
+Seçili kişilerin sesi Gemini'ye gönderilir; özelliği odadakilerin bilgisiyle
+kullan. Ham ses dosyası, anahtar ve konuşma içeriği ADB tanı kaydına yazılmaz;
+oyunun kendi logcat kayıtları ayrıca içerik içerebilir. Sesli AI geçmişi yalnız
+oturum belleğindedir. İnternet, geçerli anahtar ve ses modellerine erişim/kota
+şarttır; ücretsiz kota veya her hesapta model erişimi garanti edilmez.
+Seslendirme artık Gemini TTS değil, cihazın kendi Android TextToSpeech motoruyla (Termux:API'nin kullandığı
+motor) yapılır: ağ ve kota yoktur, Türkçe (tr-TR) ve düşük perde (erkek tonu) kullanılır. Cihazda
+Türkçe ses paketi yüklü olmalıdır (Ayarlar → Dil → Metin okuma). Logcat'te `GMM_DIAG tts language-tr=`
+sonucu 0 veya üzeri değilse motor/Türkçe yoktur ya da oyun TTS servisini göremiyordur.
+Seslendirme/oynatma başarısızsa cevap normal sohbet akışına yazılır.
+
+Bu sürüm anlık çift yönlü Live API kullanmaz. 0,7 saniye susma ile söz bölümü
+sonlandırılır; bölüm başına en çok 12 saniye, en çok 8 uzak konuşmacı ve 4
+bekleyen istek vardır. Tek arka plan işi çalışır; gecikme ağ ve modele bağlıdır.
+Türkçe ve sessizlik algılaması gerçek oda gürültüsünde ayrıca denenmelidir.
+API biçimi, PCM dönüşümü, mikrofon koruması ve oda kontrolleri sahte HTTP/IL2CPP
+ile sınandı; fiziksel Android ve gerçek Gemini anahtarıyla uçtan uca test
+**yapılmadı**. Ayrıntılı araştırma: `tools/VoiceAiFindings.md`.
+
+## ADB kayıtları
+
+`tools/Collect-GmmDiagnostics.ps1` dosyasını platform-tools yanında çalıştır:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Collect-GmmDiagnostics.ps1
+# Birden fazla cihaz varsa:
+# .\Collect-GmmDiagnostics.ps1 -Serial CIHAZ_SERI_NO -Seconds 180
 ```
 
-Testler Android yazımıyla eşzamanlı kısayol eklemeyi, güncel seçim/imleci,
-oturum değişimini, emoji sınırlarını, callback/gönderme öncesi sınırlandırmayı,
-çubuğun beş ekran boyutundaki davranışını, metin tamponunu, başlangıcı, IL2CPP metin kurallarını,
-ARM64 isim kontrolünü ve observer örneklerini, kozmetik/kıyafet, dans ve bot
-mantığını kapsar. Testler host üzerinde çalışır; ARM64 komut örneklerinin
-çözümlenmesi telefonda o komutların çalıştırıldığı anlamına gelmez.
+Oyunu aç, yeni bir odada God Mode açık/kapalı görünmezlik, benzin ve silahları
+kontrol et. Görünmezken düşmanların başka görünür oyuncuya yönelmesini dene.
+Önce asıl düşmanları kaldırıp Granny/Grandpa/MomSpider klonlarını oluştur.
+**Görme testini God Mode kapalıyken yap**; God açıkken kendi karakterinin AI
+hedefi gizlenir. Yürüme/adım ve yere eşya atma seslerini ayrı ayrı dene.
+Karakter hızı menüsünde 1x/2x/3x ve normal hıza dönüşü kontrol et.
+Sesli AI'da üç modu; açık odada uzak cihazın duyduğunu, kapalı odada yerel
+okumayı; konuşurken mikrofonun kapanmasını, Durdur ve oda değişimini dene.
+God açık/kapalı yüksekten düşmeyi dene. Klonları kilitsiz bir kapıya yaklaştır;
+kilitli kapı ve aradaki duvar kontrolünü de dene. Görünür bir oyuncuyla takip,
+köşe arkasına geçince devriyeye dönüş ve yere eşya atınca ses araştırmasını
+kontrol et. Host/client şaka oylamasını ayrı ayrı dene; kimse çıkarılmamalı.
+Granny/Grandpa/MomSpider kategorilerini ayrı ayrı durdur/devam ettir.
+Bittiğinde PowerShell'de ENTER'a bas; Belgeler'e zaman damgalı kayıt ZIP'i gelir.
+`-AdbPath`, `-OutputDirectory` ve `-PackageName` seçenekleri de vardır.
 
-Android derlemesi de cihazdaki davranışı doğrulamaz. Özellikle kıyafetin başka
-istemcide görünmesi, bekleme alanı dansı, JNI ağ istekleri ve gerçek oyun
-sürümündeki metadata eşleşmesi cihazda ayrıca kontrol edilmelidir.
+ZIP'te tam logcat, süzülmüş `diagnostics.txt`, crash tamponu, çıkış bilgisi ve
+önce/sonra bellek raporları bulunur. `GMM_DIAG sight` yerel gizlenme ve native
+RPC çağrılarını, `GMM_DIAG ai release-hidden` hedef kurtarmalarını kaydeder.
+`GMM_DIAG clone` bağlama, eksik görüş şartı, kapı, ses, toparlama ve görüş kaybını; `fall_ready` /
+`fall_blocked` düşme korumasını; `GMM_DIAG voice` ses hook/sonuç/oynatma durumunu; `GMM_DIAG player-speed` hız isteğini; `GMM_DIAG prank complete` şaka sonucunu gösterir.
+Root gerekmez; log tamponları temizlenmez. Paylaşmadan önce tam logcat'i
+kişisel içerik açısından kontrol et.
 
-Hata raporunda oyun sürümünü, cihazı, kapanmanın hangi adımda olduğunu ve varsa
-logu paylaş. `tools/Collect-GmmCrash.ps1` ve `tools/Collect-GmmGarden.ps1`
-Windows/ADB ile ilgili tanılama kayıtlarını toplamaya yardımcı olur.
+## Derleme
 
-## Bağımlılıklar ve lisanslar
+Android NDK r27c (`27.2.12479018`), CMake 3.22.1+ ve Ninja:
 
-ImGui lisansı `third_party/imgui/LICENSE.txt`, Dobby lisansı
-`third_party/dobby/LICENSE` içindedir. İç bağımlılıkların lisans bildirimleri de
-korunmuştur. ImGui OpenGL backend'indeki mevcut context kaybı uyarlaması korunur.
+```bash
+cmake -S . -B build-arm64 -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-21 \
+  -DANDROID_STL=c++_static -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON
+cmake --build build-arm64 --parallel
+```
 
-Teknik API başvuruları: [Unity TMP_InputField kaynak kodu](https://github.com/Unity-Technologies/uGUI/blob/main/com.unity.ugui/Runtime/TMP/TMP_InputField.cs),
-[Unity TouchScreenKeyboard API kaynak kodu](https://github.com/Unity-Technologies/UnityCsReference/blob/master/Runtime/Export/TouchScreenKeyboard/TouchScreenKeyboard.bindings.cs).
+ImGui ve Dobby kaynakları ZIP'tedir. GitHub Actions iş akışı ARM64 derler ve
+`libmultiplayermod.so` çıktısını verir. NDK dışındaki bağımlılıklar için indirme
+gerekmez. Çıktı 16 KB LOAD hizalaması ve statik C++ çalışma zamanı kullanır.
+
+## Testler
+
+```bash
+ASAN_OPTIONS=detect_leaks=0 bash tests/run.sh
+python3 tests/diagnostics_test.py --pwsh /path/to/pwsh
+```
+
+Paket testleri yerel C++/ImGui ve sahte IL2CPP ile çalışır; görünmezlik,
+sahiplik/sahne/oda kontrolleri, normal görünürlük isteğini koruma, RPC hız
+sınırı/hata toparlama, üç düşman türünde hedef kurtarma, kategori durdurma ve
+silah/benzin/düşme regresyonları, kapı engeli/kilit/bekleme kontrolleri, ses araştırması ve client şaka oylaması kapsanır. PowerShell testleri sahte ADB kullanır.
+Bunlar gerçek Android/host cihazındaki sonucu doğrulamaz. Ayrıntılı derleme
+kimliği, sonuçlar ve sınırlar `BUILD-INFO.txt` içindedir.

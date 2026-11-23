@@ -1,0 +1,55 @@
+Artifact: libmultiplayermod.so
+Build marker: voice-ai-panel-latebind-arm64
+Target: Android arm64-v8a / ELF64 AArch64 / API21 / Release
+NDK: r27c 27.2.12479018 / c++_static / 16 KiB LOAD alignment
+Build ID: 1e830bee4a47af22934d772a6a8e4f2862094a44
+SHA-256: 5498fb4d6e3bbede9805673aa154ffc4556cc02b86a0d1c51a01e5dc86069092
+Size: 1745856 bytes
+Base: ai-recovery-player-speed ZIP; SHA-256 in tools/source-scope-check.json
+
+Changes:
+- AI subpages: people, personality, response settings, Voice AI, history.
+- Voice -> Voice, Text -> Voice, Voice -> Text, Voice+Text -> Voice.
+- Shared Gemini key/persona/player selection; written bot may stay disabled.
+- Remote decoded float PCM via actual FrameOut<float>, runtime array header,
+  pinned buffers and original playback forwarding. Max 8 speakers, 12s segment,
+  4 queued inputs, one HTTP worker; cancellation rejects stale room/config jobs.
+- Voice question: ONE Gemini request (audio in -> "HEARD:/REPLY:" text, model pool order; old 2-step STT as fallback)
+  + LOCAL Android TextToSpeech
+  (tr-TR, lowered pitch; Gemini TTS removed). No raw audio/key/transcript logging. TTS failure falls back to chat.
+- VoiceChatEnabled and real Voice Client.InRoom both required for broadcast.
+  Voice-disabled room: text questions can receive local audible answers.
+  Other unmodified peers cannot hear without their own Voice-room connection.
+- Microphone off before AI clip; record/source/transmit/private-start guards,
+  extra active microphone Recorders muted; latest same-room mic preference
+  restored after playback. Old-room microphones are not reopened.
+- Enemy perception binding retries continue every 10s after first 12 failures.
+  Native host AI, clone behavior, doors, sound investigation and recovery retained.
+- God invisibility/fall/gas/ammo, Hamarat, speed, pause and chat-only prank retained.
+
+Validation:
+- Full tests/run.sh: exit 0. Existing keyboard/editor/clone/gameplay/bot tests and
+  new voice core/native fixtures passed; ImGui actions covered 5 viewports.
+- Final voice/native/bot route tests with ASan+UBSan: exit 0. Audio/text/voice,
+  TTS fallback, key isolation, echo/name filters, stage cancellation, mic guard,
+  extra/new microphones and latest mute restoration; voice-disabled/joined-room
+  gating; written-bot-off text routing and own/vote line exclusion.
+- Final gameplay behavior fixture with ASan+UBSan: exit 0, including attempt 13
+  late binding and prior clone, God, sound, speed and pause regressions.
+- PowerShell 7.4.19 fake ADB: 7 tests passed.
+- Reference game audit: 191 metadata targets / 45 exports; failures=0.
+- Final Android CMake/Ninja build exit 0; stripped ELF AArch64, all LOAD>=0x4000,
+  no shared C++ runtime. Matching exact-build symbols included in tools/.
+- Test logs and ELF report included in tools/validation/.
+
+Device/API limits:
+- No physical Android game or real Gemini key was used. Mock HTTP/native tests
+  do not prove remote voice delivery, device microphone isolation, recognition
+  in noisy rooms or account model/quota access. Internet and API access required.
+- Try a new room; enable Voice AI per room, select remote people/shared key.
+  Verify all three modes, voice-enabled and voice-disabled rooms, local-only
+  option, another receiving device, stop/room transition and mic restoration.
+- Enemy visual pursuit test requires God OFF; God hides our own AI target.
+  Full native chase/attack remains real-host authority. No host impersonation.
+- Windows/live ADB remains device-dependent; PowerShell tests used Linux/fake ADB.
+Research and operation details: README.md and tools/VoiceAiFindings.md.

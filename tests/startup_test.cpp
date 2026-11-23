@@ -7,6 +7,7 @@ int hookCount=0;
 void* observer=nullptr;
 }
 extern "C" int __android_log_print(int, const char*, const char*, ...) { return 0; }
+extern "C" int DobbyHookNear(void*,void*,void**){return -1;}
 extern "C" int DobbyHook(void* address, void* replacement, void** original) {
  ++hookCount; *original=address; if(hookCount==1) observer=replacement; return 0;
 }
@@ -17,6 +18,7 @@ extern "C" EGLBoolean eglQuerySurface(EGLDisplay,EGLSurface,EGLint,EGLint*) { re
 extern "C" EGLBoolean eglSwapBuffers(EGLDisplay,EGLSurface) { return 1; }
 namespace chat_bot_http {
 void SetVM(JavaVM*) {}
+bool Speak(const std::string&,std::string&) { return false; }
 bool Post(const std::string&,const std::string&,const std::string&,int& code,std::string&) { code=0; return false; }
 }
 namespace keyboard_bridge {

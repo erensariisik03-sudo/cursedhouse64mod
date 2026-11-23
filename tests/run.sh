@@ -14,7 +14,7 @@ build/tests/text_buffer_test
 build/tests/keyboard_ui_test
 "${CXX:-g++}" -std=c++17 -fPIC -shared -I src tests/fake_il2cpp.cpp -o build/tests/libil2cpp.so
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Wno-unused-parameter -I tests/stubs -I src -I include \
-    tests/startup_test.cpp src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/ad_block.cpp src/auto_join.cpp src/gameplay.cpp -ldl -pthread -o build/tests/startup_test
+    tests/startup_test.cpp src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/voice_ai.cpp src/ad_block.cpp src/auto_join.cpp src/gameplay.cpp -ldl -pthread -o build/tests/startup_test
 LD_LIBRARY_PATH="$PWD/build/tests${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" build/tests/startup_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I tests/stubs -I src \
     tests/emoji_support_test.cpp src/emoji_support.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/emoji_support_test
@@ -23,6 +23,12 @@ build/tests/emoji_support_test
     -I third_party/dobby -I third_party/dobby/source -I third_party/dobby/source/Backend/UserMode \
     -I third_party/dobby/include -I third_party/dobby/external -I third_party/dobby/external/logging \
     tests/intercept_entry_test.cpp third_party/dobby/source/InterceptEntry.cpp -o build/tests/intercept_entry_test
+"${CXX:-g++}" -std=c++17 -DDOBBY_LOGGING_DISABLE \
+    -I third_party/dobby -I third_party/dobby/source -I third_party/dobby/source/Backend/UserMode \
+    -I third_party/dobby/include -I third_party/dobby/external -I third_party/dobby/external/logging \
+    tests/near_hook_test.cpp third_party/dobby/source/InterceptEntry.cpp \
+    third_party/dobby/source/MemoryAllocator/CodeBuffer/CodeBufferBase.cc -o build/tests/near_hook_test
+build/tests/near_hook_test
 build/tests/intercept_entry_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src \
     tests/username_gate_test.cpp -o build/tests/username_gate_test
@@ -31,7 +37,7 @@ build/tests/username_gate_test
     tests/game_text_rules_test.cpp src/game_text_rules.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/game_text_rules_test
 build/tests/game_text_rules_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Wno-unused-parameter -I tests/stubs -I src -I include \
-    tests/unity_editor_test.cpp src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/ad_block.cpp src/auto_join.cpp src/gameplay.cpp \
+    tests/unity_editor_test.cpp src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/voice_ai.cpp src/ad_block.cpp src/auto_join.cpp src/gameplay.cpp \
     -ldl -pthread -o build/tests/unity_editor_test
 build/tests/unity_editor_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src \
@@ -61,3 +67,16 @@ build/tests/chat_bot_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I tests/stubs -I src -pthread \
     tests/gameplay_test.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/gameplay_test
 build/tests/gameplay_test
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I tests/stubs -I src -pthread \
+    tests/gameplay_behavior_test.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/gameplay_behavior_test
+build/tests/gameplay_behavior_test
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror tests/navmesh_api_test.cpp -o build/tests/navmesh_api_test
+build/tests/navmesh_api_test
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src \
+    tests/room_vote_test.cpp -o build/tests/room_vote_test
+build/tests/room_vote_test
+
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src -pthread tests/voice_ai_core_test.cpp -o build/tests/voice_ai_core_test
+build/tests/voice_ai_core_test
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -I tests/stubs -I src -pthread tests/voice_ai_runtime_test.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/voice_ai_runtime_test
+build/tests/voice_ai_runtime_test

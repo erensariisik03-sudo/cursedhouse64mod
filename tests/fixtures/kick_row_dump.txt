@@ -1,0 +1,19 @@
+public class setupPlayerRoomItem : MonoBehaviour // TypeDefIndex: 2396
+{
+	// Fields
+	[SerializeField]
+	private TMP_Text playerNameText; // 0x20
+	[SerializeField]
+	private GameObject kickButton; // 0x28
+
+	// Methods
+
+	// RVA: 0x248D8DC Offset: 0x24898DC VA: 0x248D8DC
+	public void fgu(Player a) { }
+
+	// RVA: 0x248DA14 Offset: 0x2489A14 VA: 0x248DA14
+	private void fgv(Player a) { }
+
+	// RVA: 0x248DB58 Offset: 0x2489B58 VA: 0x248DB58
+	public void .ctor() { }
+}

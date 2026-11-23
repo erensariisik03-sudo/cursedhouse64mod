@@ -50,3 +50,22 @@ PUBLIC int DobbyHook(void *address, dobby_dummy_func_t replace_func, dobby_dummy
 
   return 0;
 }
+
+// ARM64 property getters can be only two instructions long. Never fall back
+// to the normal absolute trampoline, which would overwrite neighboring entries.
+#if defined(TARGET_ARCH_ARM64)
+#include "InterceptRouting/Routing/FunctionInlineHook/NearOnlyHookRouting.h"
+#endif
+PUBLIC int DobbyHookNear(void *address, dobby_dummy_func_t replacement, dobby_dummy_func_t *original) {
+#if defined(TARGET_ARCH_ARM64)
+  if (!address || !replacement || !original || Interceptor::SharedInstance()->find((addr_t)address)) return -1;
+  auto *entry = new InterceptEntry(kFunctionInlineHook, (addr_t)address);
+  auto *routing = new NearOnlyHookRouting(entry);
+  if (!routing->Build((addr_t)replacement) || !routing->Patch()) { delete routing; delete entry; return -1; }
+  *original = (dobby_dummy_func_t)entry->relocated_addr;
+  Interceptor::SharedInstance()->add(entry);
+  return 0;
+#else
+  (void)address; (void)replacement; (void)original; return -1;
+#endif
+}

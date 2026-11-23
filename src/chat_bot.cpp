@@ -1,4 +1,5 @@
 #include "chat_bot.h"
+#include "voice_ai_bridge.h"
 #include "chat_bot_bridge.h"
 #include "chat_bot_core.h"
 #include "chat_bot_fx.h"
@@ -55,13 +56,13 @@ class Controller {
     std::unordered_set<int> seen;
     std::vector<chat_bot_core::Turn> history;
     std::string key, custom, last_seen;
-    std::vector<std::string> selected; bool all = false, strict = true; int mode = 0, words = chat_bot_core::kMinWords;
+    std::vector<std::string> selected; bool all = false, strict = true, message_filter = true; int mode = 0, words = chat_bot_core::kMinWords;
     struct Pending { std::string name, text; bool canned = false; };
     std::unordered_map<std::string, double> last_accept, engaged, talking; // talking: başkalarıyla konuşan kişiler // engaged: bize yazan kişinin 'devam eden konuşma' süresi
     double now_ = 0;
     std::deque<Pending> pending;
     std::deque<std::string> outbox, recent_sent; // gönderilecek parçalar; kendi yolladıklarımız (yankı koruması)
-    bool enabled = false, baseline = false;
+    bool enabled = false, baseline = false, voice_routed=false;
     Edit editing = Edit::None;
     std::string issue, own_name, request_sender, reminder_name;
     chat_bot_core::NameReminder reminder;
@@ -184,18 +185,18 @@ class Controller {
         if (!in) { all = true; return; } // ilk kurulum: herkese cevap (kişi seçme gerekmez)
         std::stringstream ss; ss << in.rdbuf();
         const auto c = chat_bot_core::ParseConfig(ss.str());
-        key = c.key; custom = c.custom; mode = c.mode; all = c.all; strict = c.strict; words = c.words;
+        key = c.key; custom = c.custom; mode = c.mode; all = c.all; strict = c.strict; words = c.words;message_filter=c.message_filter;
         if (!key.empty()) Status(u8"AI | Kayıtlı anahtar yüklendi.");
     }
     void SaveConfig() {
         const std::string path = ConfigPath(); if (path.empty()) { BOT_LOG("chat_bot: config path unavailable"); return; }
-        chat_bot_core::Config c; c.key = key; c.custom = custom; c.mode = mode; c.all = all; c.strict = strict; c.words = words;
+        chat_bot_core::Config c; c.key = key; c.custom = custom; c.mode = mode; c.all = all; c.strict = strict; c.words = words;c.message_filter=message_filter;
         const std::string data = chat_bot_core::SerializeConfig(c);
         std::ofstream out(path, std::ios::binary | std::ios::trunc); // uygulamanın özel dizini; anahtar loglanmaz
         if (out) { out << data; out.close(); chmod(path.c_str(), 0600); }
     }
     bool Selected(const std::string& n) const { return std::find(selected.begin(), selected.end(), n) != selected.end(); }
-    std::string System() const { return chat_bot_core::BuildSystem(mode, custom, static_cast<size_t>(words)); }
+    std::string System() const { return chat_bot_core::BuildSystem(mode, custom, static_cast<size_t>(words),message_filter); }
     size_t MaxChunks() const { return static_cast<size_t>(std::clamp((words + 27) / 28, 2, 6)); } // ~28 kelime/satır (200 karakter sınırı)
     bool IsAlive(Object* o) {
         if (!o) return false;
@@ -307,13 +308,16 @@ class Controller {
             for (const auto& name : candidates) {
                 auto msg = chat_bot_core::MatchSender(f.plain, name);
                 if (!msg) continue;
+                const auto vote_command=chat_bot_core::Fold(chat_bot_core::Trim(*msg));
+                if(vote_command=="/evet"||vote_command=="/hayir")break; // room moderation commands never reach the AI
                 if (std::find(recent_sent.begin(), recent_sent.end(), *msg) != recent_sent.end()) break; // yankı koruması
+                if(voice_ai_bridge::RoutesText()) {voice_ai_bridge::PushText({active_room,name,*msg});break;}
                 // Gereksiz istek göndermemek için yerel süzgeçler (AI'ya gitmeden):
-                if (chat_bot_core::IsNoise(*msg)) { snap.last_in = u8"(anlamsız/kahkaha; atlandı)"; break; }
+                if (message_filter&&chat_bot_core::IsNoise(*msg)) { snap.last_in = u8"(anlamsız/kahkaha; atlandı)"; break; }
                 const bool mentions_me=chat_bot_core::MentionsBot(*msg,own_name);
                 std::vector<std::string> others;
                 for(const auto& p:snap.players)if(p!=name)others.push_back(p);
-                if(!mentions_me&&chat_bot_core::AddressedToOther(*msg,others,own_name)){
+                if(message_filter&&!mentions_me&&chat_bot_core::AddressedToOther(*msg,others,own_name)){
                     talking[name]=now_+kSideTalkWindow;
                     for(const auto& o:others)if(chat_bot_core::AddressedToOther(*msg,{o},own_name))talking[o]=now_+kSideTalkWindow;
                     snap.last_in=u8"(başkasına yazılmış; atlandı)";break;
@@ -337,10 +341,13 @@ class Controller {
                 }
                 const auto previous=last_accept.find(name);
                 if(previous!=last_accept.end()&&now_-previous->second<kPerSenderGap)break;
-                if(strict&&!mentions_me&&!in_conversation){snap.last_in=u8"(adımla gelmedi; atlandı)";break;}
+                // An explicit audience selection already addresses the bot.
+                // Name gating is useful for the whole room, not a private
+                // conversation with a player the user deliberately selected.
+                if(all&&strict&&!mentions_me&&!in_conversation){snap.last_in=u8"(adımla gelmedi; atlandı)";break;}
                 if(mentions_me)engaged[name]=now_+kConversationWindow;
                 const auto side = talking.find(name);
-                if (!mentions_me && !in_conversation && side != talking.end() && now_ < side->second) { snap.last_in = u8"(başkalarıyla konuşuyor; atlandı)"; break; }
+                if (message_filter && all && !mentions_me && !in_conversation && side != talking.end() && now_ < side->second) { snap.last_in = u8"(başkalarıyla konuşuyor; atlandı)"; break; }
                 last_accept[name] = now_;
                 // Aynı kişinin bekleyen eski mesajı varsa yenisiyle değiştir (kuyruk şişmesin).
                 bool merged = false;
@@ -365,7 +372,7 @@ class Controller {
         // accidentally puts one into the outbox.
         while(!outbox.empty()&&chat_bot_core::IsSkipReply(outbox.front(),request_sender))outbox.pop_front();
         if(outbox.empty()){DropOutbox();return false;}
-        if(outbox_reminder&&(!enabled||!strict||own_name!=reminder_name||active_room!=reminder_room)){
+        if(outbox_reminder&&(!enabled||!all||!strict||own_name!=reminder_name||active_room!=reminder_room)){
             DropOutbox();return false;
         }
         if (now - outbox_since > kOutboxTimeout) { Status(u8"AI | Cevap gönderilemedi (sohbet beklemede/odakta)."); DropOutbox(); return false; }
@@ -422,6 +429,7 @@ class Controller {
             InvalidateReplies(); baseline = false; if (enabled) Status(u8"AI | Kişi seçimi değişti.");
         }
         if (c.toggle_all) { all = !all; SaveConfig(); InvalidateReplies(); baseline = false; Status(all ? u8"AI | Odadaki herkese cevap verilecek." : u8"AI | Yalnız seçili kişilere cevap verilecek."); }
+        if(c.toggle_filter){message_filter=!message_filter;SaveConfig();InvalidateReplies();baseline=false;Status(message_filter?u8"AI | Selam/kahkaha mesaj filtresi açık.":u8"AI | Mesaj filtresi kapalı; kahkaha ve diğer mesajlar AI'ye iletilir. Selam cevabı sabittir.");}
         if (c.toggle_strict) { strict = !strict; SaveConfig(); InvalidateReplies(); reminder.Reset(); Status(strict ? u8"AI | Yalnız adımla yazılanlara cevap verilecek." : u8"AI | Tüm mesajlara cevap verilecek."); }
         if (c.set_words) { words = chat_bot_core::ClampWords(c.words); SaveConfig(); }
         if (c.set_mode) { const int previous=mode;mode = c.mode; if (mode == chat_bot_core::kPersonaCount && custom.empty()) mode = 0; SaveConfig(); InvalidateReplies(); history.clear(); Status(std::string(u8"AI | Kişilik: ") + chat_bot_core::PersonaName(mode) + u8"."); if(mode!=previous)QueueStatus(chat_bot_fx::Event::Profile,chat_bot_core::PersonaName(mode)); }
@@ -436,7 +444,7 @@ class Controller {
         if (c.edit != Edit::None) BeginEdit(c.edit);
     }
     void Publish() {
-        snap.enabled = enabled; snap.selected = selected; snap.all = all; snap.strict = strict; snap.words = words; snap.mode = mode; snap.has_key = !key.empty(); snap.busy = engine.Busy();
+        snap.enabled = enabled; snap.selected = selected; snap.all = all; snap.strict = strict; snap.message_filter=message_filter; snap.words = words; snap.mode = mode; snap.has_key = !key.empty(); snap.busy = engine.Busy();
         snap.model = engine.Model(); snap.persona = chat_bot_core::PrefixScalars(custom, 80); snap.chat_ready = true;
         chat_bot_bridge::Publish(snap);
     }
@@ -456,6 +464,10 @@ public:
         auto* running = api.Call(queue, nullptr, nullptr, &ok);
         if (!ok || !running || !*static_cast<bool*>(api.object_unbox(running))) { return; } // sahne yükleniyor
         Commands(); PollEdit();
+        voice_ai_bridge::Configure({key,System(),own_name,all,strict,selected});
+        const bool route_voice=voice_ai_bridge::RoutesText();
+        if(route_voice!=voice_routed){InvalidateReplies();baseline=false;voice_routed=route_voice;}
+
         Root current_room(api, api.Call(room));
         if(!current_room.Get()){
             ClearStatus();
@@ -474,9 +486,9 @@ public:
         }
         active_room=room_id;
         if (now >= next_players) { next_players = now + 1.0; Players(); }
-        reminder.Update(now,enabled,strict,active_room,own_name,!snap.players.empty());
-        if(outbox_reminder&&(!enabled||!strict||reminder_name!=own_name||reminder_room!=active_room||snap.players.empty()))DropOutbox();
-        if (enabled) {
+        reminder.Update(now,enabled&&all,strict,active_room,own_name,!snap.players.empty());
+        if(outbox_reminder&&(!enabled||!all||!strict||reminder_name!=own_name||reminder_room!=active_room||snap.players.empty()))DropOutbox();
+        if (enabled||route_voice) {
             if (!baseline) { if (Scan(true)) baseline = true; }
             else Scan(false);
             chat_bot_engine::Result r;
@@ -515,7 +527,7 @@ public:
             }
             // No API call: the hint goes through exactly the same cooldown,
             // input-focus/draft and timeout checks as an ordinary chat reply.
-            if(baseline&&reminder.Due(now)&&outbox.empty()&&pending.empty()&&!engine.Busy()&&now>=gap_until&&now>=next_request){
+            if(enabled&&!route_voice&&baseline&&reminder.Due(now)&&outbox.empty()&&pending.empty()&&!engine.Busy()&&now>=gap_until&&now>=next_request){
                 const auto text=chat_bot_core::NameReminderText(own_name);
                 if(!text.empty()){
                     outbox.push_back(text);outbox_reminder=true;reminder_name=own_name;reminder_room=active_room;

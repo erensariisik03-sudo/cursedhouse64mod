@@ -115,6 +115,7 @@ void Tick(){LateUpdate(Self(),nullptr);}
 }
 extern "C" int __android_log_print(int,const char*,const char*,...){return 0;}
 extern "C" int DobbyHook(void*,void*,void**){return -1;}
+extern "C" int DobbyHookNear(void*,void*,void**){return -1;}
 extern "C" EGLContext eglGetCurrentContext(){return nullptr;}
 extern "C" EGLSurface eglGetCurrentSurface(EGLint){return nullptr;}
 extern "C" EGLBoolean eglQueryContext(EGLDisplay,EGLContext,EGLint,EGLint*){return 0;}
@@ -122,6 +123,7 @@ extern "C" EGLBoolean eglQuerySurface(EGLDisplay,EGLSurface,EGLint,EGLint*){retu
 extern "C" EGLBoolean eglSwapBuffers(EGLDisplay,EGLSurface){return 1;}
 namespace chat_bot_http {
 void SetVM(JavaVM*) {}
+bool Speak(const std::string&,std::string&) { return false; }
 bool Post(const std::string&,const std::string&,const std::string&,int& code,std::string&) { code=0; return false; }
 }
 namespace keyboard_bridge {

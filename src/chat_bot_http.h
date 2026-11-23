@@ -8,4 +8,6 @@ void SetVM(JavaVM* vm);
 // Arka plan thread'inde çağrılır (Unity thread'inde değil). code: HTTP durumu, 0 = bağlantı hatası.
 bool Post(const std::string& url, const std::string& api_key, const std::string& body,
           int& code, std::string& response);
+// Android sistem TTS (TextToSpeech) ile Türkçe, erkek tonlu WAV üretir. Arka plan thread'inde çağrılır.
+bool Speak(const std::string& text, std::string& wav);
 }

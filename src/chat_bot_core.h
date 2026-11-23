@@ -224,7 +224,7 @@ inline const char* PersonaBody(int mode) {
     }
 }
 // Tüm kişiliklerin ortak çerçevesi: oyun sohbeti, birden çok kişi, uzunluk kuralı, tam cümle.
-inline std::string BuildSystem(int mode, const std::string& custom, size_t max_words = kMaxReplyWords) {
+inline std::string BuildSystem(int mode, const std::string& custom, size_t max_words = kMaxReplyWords, bool message_filter = true) {
     const bool compact = max_words <= 60;
     std::string s;
     s += u8"Bir oyunun oda sohbetindesin ve odadaki oyunculara yapay zekâ olarak cevap veriyorsun. ";
@@ -239,7 +239,8 @@ inline std::string BuildSystem(int mode, const std::string& custom, size_t max_w
     s += u8"Biçimlendirme, etiket, madde işareti veya emoji kullanma. ";
     s += u8"Oyuncular senin yapay zekâ olduğunu yeni fark edip şaşırabilir ('oha nasıl oluyor', 'bu bot mu' gibi); bunu gizleme, kısaca ve dürüstçe açıkla. ";
     s += u8"Oyuncular sana oyun adının yanında zeka, yapay veya yapayzeka diye seslenebilir; bu hitapları sana yöneltilmiş kabul et. ";
-    s += u8"İki oyuncu birbiriyle konuşuyor ve mesaj sana yönelik değilse ya da anlamsızsa, yalnızca SKIP yaz; bu bir iç kontrol işaretidir, yanına ad, açıklama ya da başka kelime ekleme. ";
+    if(message_filter)s += u8"İki oyuncu birbiriyle konuşuyor ve mesaj sana yönelik değilse ya da anlamsızsa, yalnızca SKIP yaz; bu bir iç kontrol işaretidir, yanına ad, açıklama ya da başka kelime ekleme. ";
+    else s += u8"Mesaj filtresi kapalıdır. Kahkaha, klavye karalaması, tek emoji veya başkasına hitap içeren satırlara da kısa ve doğal sohbet cevabı ver; bunları sırf anlamsız veya sana yönelik değil diye atlama. Selamlaşmaları uygulama hazır cevaplar; sana gelen diğer satırlara cevap ver. ";
     s += (mode >= 0 && mode < kPersonaCount) ? PersonaBody(mode) : (custom.empty() ? PersonaBody(0) : custom.c_str());
     return s;
 }
@@ -520,7 +521,7 @@ public:
 };
 
 // ---- Kalıcı ayar (API anahtarı vb.): "ad=değer" satırları; \n ve \\ kaçışlı ------------------
-struct Config { std::string key, custom; int mode = 0; bool all = false; bool strict = true; int words = kMinWords; };
+struct Config { std::string key, custom; int mode = 0; bool all = false; bool strict = true; int words = kMinWords; bool message_filter = true; };
 inline std::string EscapeLine(const std::string& v) {
     std::string o; for (char c : v) { if (c == '\\') o += "\\\\"; else if (c == '\n') o += "\\n"; else if (c == '\r') {} else o += c; } return o;
 }
@@ -530,7 +531,7 @@ inline std::string UnescapeLine(const std::string& v) {
     } return o;
 }
 inline std::string SerializeConfig(const Config& c) {
-    return "key=" + EscapeLine(c.key) + "\nmode=" + std::to_string(c.mode) + "\nall=" + (c.all ? "1" : "0") + "\nnamefilter2=" + (c.strict ? "1" : "0") + "\nwords=" + std::to_string(c.words) + "\ncustom=" + EscapeLine(c.custom) + "\n";
+    return "key=" + EscapeLine(c.key) + "\nmode=" + std::to_string(c.mode) + "\nall=" + (c.all ? "1" : "0") + "\nnamefilter2=" + (c.strict ? "1" : "0") + "\nwords=" + std::to_string(c.words) + "\nmessagefilter=" + (c.message_filter ? "1" : "0") + "\ncustom=" + EscapeLine(c.custom) + "\n";
 }
 inline Config ParseConfig(const std::string& text) {
     Config c; size_t pos = 0;
@@ -543,6 +544,7 @@ inline Config ParseConfig(const std::string& text) {
         else if (name == "mode") { const int m = std::atoi(value.c_str()); c.mode = (m >= 0 && m <= kPersonaCount) ? m : 0; }
         else if (name == "all") c.all = value == "1";
         else if (name == "namefilter2") c.strict = value != "0";
+        else if (name == "messagefilter") c.message_filter = value != "0";
         else if (name == "words") c.words = ClampWords(std::atoi(value.c_str()));
         else if (name == "custom") c.custom = value;
     }

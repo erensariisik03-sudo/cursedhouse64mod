@@ -9,6 +9,7 @@
 #include "cosmetic_room.h"
 #include "gameplay.h"
 #include "chat_bot.h"
+#include "voice_ai.h"
 #include "ad_block.h"
 #include "auto_join.h"
 #include "chat_bot_http.h"
@@ -421,6 +422,7 @@ void Update(Object* self, const Method* method) {
     // for a scene load. Release UI roots but retain the native desired strings.
     const bool loading=m.messageQueue&&!g_api.Value<bool>(m.messageQueue,nullptr,true);
     gameplay::Pump(g_api,loading);
+    voice_ai::Pump(g_api,loading);
     if(loading)cosmetic_room::Pump(g_api,true);
     else if (!g_editing.load()) { cosmetic_room::Pump(g_api); cosmetic_catalog::Pump(g_api); }
     // Skip uGUI processing for the gesture that began on the keyboard, including its UP.

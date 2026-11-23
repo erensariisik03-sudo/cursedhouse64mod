@@ -78,3 +78,38 @@ Photon.Pun,PhotonView,get_OwnerActorNr,public int get_OwnerActorNr() { },// RVA:
 Photon.Pun,PhotonView,TransferOwnership,public void TransferOwnership(Player newOwner) { },// RVA: 0x42F843C Offset: 0x42F443C VA: 0x42F843C,reference only; resolved by metadata at runtime
 Photon.Pun,PhotonView,TransferOwnership,public void TransferOwnership(int newOwnerId) { },// RVA: 0x42F8638 Offset: 0x42F4638 VA: 0x42F8638,reference only; resolved by metadata at runtime
 UnityEngine,CharacterController,Move,public CollisionFlags Move(Vector3 motion) { },// RVA: 0x4DF2948 Offset: 0x4DEE948 VA: 0x4DF2948,reference only; resolved by metadata at runtime
+System.Text,Encoding,GetString,"public string GetString(byte* bytes, int byteCount) { }",// RVA: 0x3EA064C Offset: 0x3E9C64C VA: 0x3EA064C,reference only; resolved by metadata at runtime
+System.Text,Encoding,GetString,public string GetString(ReadOnlySpan<byte> bytes) { },// RVA: 0x3EA0804 Offset: 0x3E9C804 VA: 0x3EA0804,reference only; resolved by metadata at runtime
+System.Text,Encoding,GetString,public virtual string GetString(byte[] bytes) { },// RVA: 0x3EA0C20 Offset: 0x3E9CC20 VA: 0x3EA0C20 Slot: 35,reference only; resolved by metadata at runtime
+System.Text,Encoding,GetString,"public virtual string GetString(byte[] bytes, int index, int count) { }",// RVA: 0x3EA0CA8 Offset: 0x3E9CCA8 VA: 0x3EA0CA8 Slot: 36,reference only; resolved by metadata at runtime
+System.Text,Encoding,get_UTF8,public static Encoding get_UTF8() { },// RVA: 0x3E9D7B0 Offset: 0x3E997B0 VA: 0x3E9D7B0,reference only; resolved by metadata at runtime
+,ChatManager,SendMessage,public void SendMessage() { },// RVA: 0x246BFD8 Offset: 0x2467FD8 VA: 0x246BFD8,reference only; resolved by metadata at runtime
+,ChatManager,RPC_GetMessage,"private void RPC_GetMessage(byte[] messageByte, PhotonMessageInfo info) { }",// RVA: 0x246C3B4 Offset: 0x24683B4 VA: 0x246C3B4,reference only; resolved by metadata at runtime
+UnityEngine,Transform,get_rotation,public Quaternion get_rotation() { },// RVA: 0x4D86330 Offset: 0x4D82330 VA: 0x4D86330,reference only; resolved by metadata at runtime
+Photon.Realtime,Player,get_NickName,public string get_NickName() { },// RVA: 0x42CB010 Offset: 0x42C7010 VA: 0x42CB010,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonNetwork,get_LocalPlayer,public static Player get_LocalPlayer() { },// RVA: 0x42E2BCC Offset: 0x42DEBCC VA: 0x42E2BCC,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonNetwork,get_PlayerList,public static Player[] get_PlayerList() { },// RVA: 0x42E2D24 Offset: 0x42DED24 VA: 0x42E2D24,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonNetwork,get_ServerTimestamp,public static int get_ServerTimestamp() { },// RVA: 0x42E3B70 Offset: 0x42DFB70 VA: 0x42E3B70,reference only; resolved by metadata at runtime
+Photon.Pun,PhotonNetwork,CloseConnection,public static bool CloseConnection(Player kickPlayer) { },// RVA: 0x42E7128 Offset: 0x42E3128 VA: 0x42E7128,reference only; resolved by metadata at runtime
+UnityEngine.AI,NavMeshAgent,SetDestination,public bool SetDestination(Vector3 target) { },// RVA: 0x4D042DC Offset: 0x4D002DC VA: 0x4D042DC,reference only; resolved by metadata at runtime
+UnityEngine,Transform,set_position,public void set_position(Vector3 value) { },// RVA: 0x4D861AC Offset: 0x4D821AC VA: 0x4D861AC,reference only; resolved by metadata at runtime
+UnityEngine,Transform,get_localPosition,public Vector3 get_localPosition() { },// RVA: 0x4D85674 Offset: 0x4D81674 VA: 0x4D85674,reference only; resolved by metadata at runtime
+UnityEngine,Transform,set_localPosition,public void set_localPosition(Vector3 value) { },// RVA: 0x4D85704 Offset: 0x4D81704 VA: 0x4D85704,reference only; resolved by metadata at runtime
+UnityEngine,Transform,set_rotation,public void set_rotation(Quaternion value) { },// RVA: 0x4D863EC Offset: 0x4D823EC VA: 0x4D863EC,reference only; resolved by metadata at runtime
+UnityEngine,Transform,get_localRotation,public Quaternion get_localRotation() { },// RVA: 0x4D864A4 Offset: 0x4D824A4 VA: 0x4D864A4,reference only; resolved by metadata at runtime
+UnityEngine,Transform,set_localRotation,public void set_localRotation(Quaternion value) { },// RVA: 0x4D86560 Offset: 0x4D82560 VA: 0x4D86560,reference only; resolved by metadata at runtime
+UnityEngine,Transform,SetPositionAndRotation,"public void SetPositionAndRotation(Vector3 position, Quaternion rotation) { }",// RVA: 0x4D86DE0 Offset: 0x4D82DE0 VA: 0x4D86DE0,reference only; resolved by metadata at runtime
+UnityEngine.AI,NavMeshAgent,get_hasPath,public bool get_hasPath() { },// RVA: 0x4D047A0 Offset: 0x4D007A0 VA: 0x4D047A0,reference only; resolved by metadata at runtime
+UnityEngine.AI,NavMeshAgent,get_pathPending,public bool get_pathPending() { },// RVA: 0x4D04854 Offset: 0x4D00854 VA: 0x4D04854,reference only; resolved by metadata at runtime
+UnityEngine.AI,NavMeshAgent,get_speed,public float get_speed() { },// RVA: 0x4D04908 Offset: 0x4D00908 VA: 0x4D04908,reference only; resolved by metadata at runtime
+UnityEngine.AI,NavMeshAgent,set_speed,public void set_speed(float value) { },// RVA: 0x4D049BC Offset: 0x4D009BC VA: 0x4D049BC,reference only; resolved by metadata at runtime
+,EnemyAIGrandpaMulti,dwi,private void dwi() { },// RVA: 0x276FACC Offset: 0x276BACC VA: 0x276FACC,reference only; resolved by metadata at runtime
+,EnemyEyeGrandpa,GetPlayers,private void GetPlayers() { },// RVA: 0x2773360 Offset: 0x276F360 VA: 0x2773360,reference only; resolved by metadata at runtime
+,EnemyAIGrannyMulti,ekr,private void ekr() { },// RVA: 0x2799B7C Offset: 0x2795B7C VA: 0x2799B7C,reference only; resolved by metadata at runtime
+,EnemyEye,GetPlayers,private void GetPlayers() { },// RVA: 0x279E270 Offset: 0x279A270 VA: 0x279E270,reference only; resolved by metadata at runtime
+UnityEngine,Component,GetComponent,public Component GetComponent(Type type) { },// RVA: 0x4D7449C Offset: 0x4D7049C VA: 0x4D7449C,reference only; resolved by metadata at runtime
+UnityEngine,Component,GetComponent,public Component GetComponent(string type) { },// RVA: 0x4D74700 Offset: 0x4D70700 VA: 0x4D74700,reference only; resolved by metadata at runtime
+UnityEngine,Transform,get_parent,public Transform get_parent() { },// RVA: 0x4D86000 Offset: 0x4D82000 VA: 0x4D86000,reference only; resolved by metadata at runtime
+UnityEngine,Transform,get_childCount,public int get_childCount() { },// RVA: 0x4D87938 Offset: 0x4D83938 VA: 0x4D87938,reference only; resolved by metadata at runtime
+UnityEngine,Transform,GetChild,public Transform GetChild(int index) { },// RVA: 0x4D880FC Offset: 0x4D840FC VA: 0x4D880FC,reference only; resolved by metadata at runtime
+UnityEngine,Animator,get_runtimeAnimatorController,public RuntimeAnimatorController get_runtimeAnimatorController() { },// RVA: 0x4D20454 Offset: 0x4D1C454 VA: 0x4D20454,reference only; resolved by metadata at runtime

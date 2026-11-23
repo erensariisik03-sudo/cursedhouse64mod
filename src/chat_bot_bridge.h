@@ -10,15 +10,15 @@ enum class Edit { None, Key, Persona };
 struct Snapshot {
     bool chat_ready = false, enabled = false, has_key = false, busy = false;
     std::vector<std::string> players;
-    std::vector<std::string> selected; bool all = false, strict = true; int mode = 0, words = 45;
+    std::vector<std::string> selected; bool all = false, strict = true, message_filter = true; int mode = 0, words = 45;
     std::string model, status = u8"AI | Bekleniyor.", last_in, last_out, persona;
 };
 struct Command {
     bool toggle = false, reset_memory = false, refresh = false;
     bool select = false; std::string name;
-    bool set_mode = false; int mode = 0; bool toggle_all = false, toggle_strict = false; bool set_words = false; int words = 45;
+    bool set_mode = false; int mode = 0; bool toggle_all = false, toggle_strict = false, toggle_filter = false; bool set_words = false; int words = 45;
     Edit edit = Edit::None;
-    bool Any() const { return toggle || reset_memory || refresh || select || set_mode || toggle_all || toggle_strict || set_words || edit != Edit::None; }
+    bool Any() const { return toggle || reset_memory || refresh || select || set_mode || toggle_all || toggle_strict || toggle_filter || set_words || edit != Edit::None; }
 };
 inline std::mutex mutex;
 inline Snapshot state;
@@ -30,6 +30,7 @@ inline void Select(const std::string& n) { std::lock_guard<std::mutex> l(mutex);
 inline void SetMode(int m) { std::lock_guard<std::mutex> l(mutex); command.set_mode = true; command.mode = m; }
 inline void ToggleAll() { std::lock_guard<std::mutex> l(mutex); command.toggle_all = !command.toggle_all; }
 inline void ToggleStrict() { std::lock_guard<std::mutex> l(mutex); command.toggle_strict = !command.toggle_strict; }
+inline void ToggleFilter() { std::lock_guard<std::mutex> l(mutex); command.toggle_filter = !command.toggle_filter; }
 inline void SetWords(int w) { std::lock_guard<std::mutex> l(mutex); command.set_words = true; command.words = w; }
 inline void ResetMemory() { std::lock_guard<std::mutex> l(mutex); command.reset_memory = true; }
 inline void Refresh() { std::lock_guard<std::mutex> l(mutex); command.refresh = true; }

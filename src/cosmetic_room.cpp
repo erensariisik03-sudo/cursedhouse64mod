@@ -21,7 +21,7 @@ struct Root {
 struct Runtime {
     const Api& api;
     Plan plan;
-    Root locker,manager,key_accessory,key_skin;
+    Root locker,manager,key_accessory,key_skin,rejoin_name;
     Class *locker_class{},*manager_class{},*string_class{};
     const Method *find{},*array_length{},*array_item{},*active{},*alive{},*uid{},*connected{},*player{},*room{},*properties{};
     // Wardrobe selection is the source of truth. The existing local equipped
@@ -40,11 +40,11 @@ struct Runtime {
     std::array<bool,2> refresh{};
     const Method *leave_room{},*join_room{},*in_room{},*room_name{},*room_count{},*room_open{};
     int last_applied=0;
-    int rejoin=0; std::string rejoin_name; double rejoin_deadline=0,rejoin_next=0;
+    int rejoin=0; double rejoin_deadline=0,rejoin_next=0;
     Class *loader_class{},*lobby_class{},*view_class{};
     const Method *loader_load{},*is_mine{},*actor_number{};
     double start=0,next_discovery=0,next_poll=0;
-    explicit Runtime(const Api& a):api(a),locker(a),manager(a),key_accessory(a),key_skin(a){}
+    explicit Runtime(const Api& a):api(a),locker(a),manager(a),key_accessory(a),key_skin(a),rejoin_name(a){}
     Object* Call(const Method* method,Object* self=nullptr){bool ok=false;auto* r=api.Call(method,self,nullptr,&ok);return ok?r:nullptr;}
     bool Bool(const Method* method,Object* self=nullptr){bool ok=false;auto* r=api.Call(method,self,nullptr,&ok);return ok&&r&&*static_cast<bool*>(api.object_unbox(r));}
     Object* Ref(Object* self,const char* name){
@@ -265,30 +265,32 @@ struct Runtime {
         if(lobby_class&&ActiveCount(lobby_class)==0){wardrobe_bridge::SetStatus(u8"Çık-gir yalnız bekleme odasında çalışır; maç sırasında çıkarsan oyundan atılırsın. Oyun içinde seçim yalnız senin ekranında görünür.");return;}
         if(!leave_room||!join_room||!in_room||!room_name||!room_count||!room_open){wardrobe_bridge::SetStatus(u8"Çık-gir: gerekli oyun metotları bulunamadı.");return;}
         if(!room||!Bool(in_room)){wardrobe_bridge::SetStatus(u8"Çık-gir: şu an bir odada değilsin.");return;}
-        const auto name=Text(Call(room_name,room));
-        if(!name||name->empty()){wardrobe_bridge::SetStatus(u8"Çık-gir: oda adı okunamadı.");return;}
+        // The room identifier is opaque. Keep the exact managed UTF-16
+        // string, including rich text, emoji and long/custom names. The
+        // 256-unit wardrobe/profile validation does not apply to room IDs.
+        Root name(api,Call(room_name,room));
+        if(!name.Get()||api.object_get_class(name.Get())!=string_class||api.string_length(reinterpret_cast<String*>(name.Get()))<=0){wardrobe_bridge::SetStatus(u8"Çık-gir: oda adı okunamadı.");return;}
         Root count(api,Call(room_count,room));
         if(!count.Get()||*static_cast<int*>(api.object_unbox(count.Get()))<2){wardrobe_bridge::SetStatus(u8"Çık-gir: odada yalnızsın; çıkarsan oda kapanır, yeniden giremezsin.");return;}
         if(!Bool(room_open,room)){wardrobe_bridge::SetStatus(u8"Çık-gir: oda kapalı; çıkarsan geri giremezsin.");return;}
         bool leave_inactive=false,ok=false;void* args[]={&leave_inactive};
         Root r(api,api.Call(leave_room,nullptr,args,&ok));
-        if(!ok){wardrobe_bridge::SetStatus(u8"Çık-gir: odadan çıkış çağrısı başarısız.");return;}
-        rejoin=1;rejoin_name=*name;rejoin_deadline=now+25;rejoin_next=0;
+        if(!ok||!r.Get()||!*static_cast<bool*>(api.object_unbox(r.Get()))){wardrobe_bridge::SetStatus(u8"Çık-gir: odadan çıkış çağrısı başarısız.");return;}
+        rejoin=1;rejoin_name.Set(name.Get());rejoin_deadline=now+25;rejoin_next=0;
         wardrobe_bridge::SetStatus(u8"Çık-gir: odadan çıkılıyor...");
         ROOM_LOG("v22f rejoin: LeaveRoom invoked");
     }
     void StepRejoin(double now){
-        if(now>rejoin_deadline){rejoin=0;wardrobe_bridge::SetStatus(u8"Çık-gir: süre doldu; odaya geri girilemedi. Oyun menüsünden elle gir.");ROOM_LOG("v22f rejoin: timeout");return;}
+        if(now>rejoin_deadline){rejoin=0;rejoin_name.Set(nullptr);wardrobe_bridge::SetStatus(u8"Çık-gir: süre doldu; odaya geri girilemedi. Oyun menüsünden elle gir.");ROOM_LOG("v22f rejoin: timeout");return;}
         if(rejoin==1){
             if(now<rejoin_next||Bool(in_room)||!Bool(connected))return;
             rejoin_next=now+0.5;
-            Root name(api,reinterpret_cast<Object*>(api.string_new(rejoin_name.c_str())));
-            if(!name.Get())return;
-            bool ok=false;void* args[]={name.Get(),nullptr};
+            if(!rejoin_name.Get())return;
+            bool ok=false;void* args[]={rejoin_name.Get(),nullptr};
             Root r(api,api.Call(join_room,nullptr,args,&ok));
             if(ok&&r.Get()&&*static_cast<bool*>(api.object_unbox(r.Get()))){rejoin=2;rejoin_deadline=now+20;wardrobe_bridge::SetStatus(u8"Çık-gir: odaya yeniden giriliyor...");ROOM_LOG("v22f rejoin: JoinRoom invoked");}
         }else if(rejoin==2&&Bool(in_room)){
-            rejoin=0;wardrobe_bridge::SetStatus(u8"Çık-gir: yeniden girildi; seçimin odaya girişte diğerlerine gider.");ROOM_LOG("v22f rejoin: joined");
+            rejoin=0;rejoin_name.Set(nullptr);wardrobe_bridge::SetStatus(u8"Çık-gir: yeniden girildi; seçimin odaya girişte diğerlerine gider.");ROOM_LOG("v22f rejoin: joined");
         }
     }
     void Tick(double now){

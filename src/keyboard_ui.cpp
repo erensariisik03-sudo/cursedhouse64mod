@@ -6,6 +6,7 @@
 #include "chat_shortcut.h"
 #include "lobby_emote_bridge.h"
 #include "chat_bot_bridge.h"
+#include "voice_ai_bridge.h"
 #include "chat_bot_core.h"
 #include "auto_join_bridge.h"
 #include "wardrobe_bridge.h"
@@ -508,75 +509,49 @@ bool g_hub_open=false;
 int g_hub_tab=0; // 0 = AI, 1 = Kıyafet, 2 = Oyun
 // Oyun panelinde -1 bölüm listesini, 0..3 alt sayfaları gösterir.
 int g_gameplay_page=-1;
-void BotBody(const ImGuiIO& io,float key_height,float content,float max_height){
-    const auto s=chat_bot_bridge::Read();
-            ImGui::TextWrapped("%s",s.status.c_str());
-            ImGui::TextWrapped("Model: %s | Anahtar: %s",s.model.c_str(),s.has_key?"var":"yok");
-            {
-                std::string who;
-                if(s.all)who="herkes";
-                else{for(const auto& n:s.selected){if(!who.empty())who+=", ";who+=n;}if(who.empty())who="(seçilmedi)";}
-                ImGui::TextWrapped("Kişi: %s",who.c_str());
-                ImGui::TextWrapped("Kişilik: %s",chat_bot_core::PersonaName(s.mode));
-            }
-            ImGui::BeginDisabled(!s.chat_ready);
-            ImGui::PushID("bot_on");
-            ActionKey(s.enabled?"Bot AÇIK - kapat":"Bot KAPALI - aç",content,key_height,[]{chat_bot_bridge::Toggle();InvalidateKeys();},s.enabled);
-            ImGui::PopID();
-            ImGui::PushID("bot_key");
-            ActionKey("API anahtarı gir",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Key);InvalidateKeys();});
-            ImGui::PopID();
-            ImGui::PushID("bot_persona");
+int g_bot_page=-1;
+void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
+    static int previous=-2;if(previous!=g_bot_page){ImGui::SetScrollY(0);previous=g_bot_page;}
+    const auto s=chat_bot_bridge::Read();const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
+    if(g_bot_page>=0){
+        ActionKey(u8"← AI bölümleri",content,key_height,[]{g_bot_page=-1;InvalidateKeys();});
+        if(g_bot_page==0){
+            ActionKey(s.all?"Herkes AÇIK":"Herkes kapalı",content,key_height,[]{chat_bot_bridge::ToggleAll();InvalidateKeys();},s.all);
+            ActionKey("Listeyi yenile",content,key_height,[]{chat_bot_bridge::Refresh();InvalidateKeys();});
+            float list_height=std::max(key_height,std::min(key_height*4,max_height-ImGui::GetCursorPosY()-key_height-2*ImGui::GetStyle().WindowPadding.y));
+            ImGui::BeginChild("##bot_players",ImVec2(0,list_height),false);
+            if(s.players.empty())ImGui::TextWrapped("Odada oyuncu listesi bekleniyor.");
+            for(const auto& name:s.players){ImGui::PushID(name.c_str());ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{chat_bot_bridge::Select(name);InvalidateKeys();},std::find(s.selected.begin(),s.selected.end(),name)!=s.selected.end());ImGui::PopID();}ImGui::EndChild();
+        }else if(g_bot_page==1){
+            for(int mode=0;mode<chat_bot_core::kPersonaCount;++mode){ActionKey(chat_bot_core::PersonaName(mode),content,key_height,[mode]{chat_bot_bridge::SetMode(mode);InvalidateKeys();},s.mode==mode);}
             ActionKey("Özel kişilik yaz",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Persona);InvalidateKeys();});
-            ImGui::PopID();
-            ImGui::EndDisabled();
-            {   // Kişilik şablonları: Normal / Anı / İmam (+ yazılmışsa Özel)
-                const float third=(content-2*ImGui::GetStyle().ItemSpacing.x)/3;
-                for(int m=0;m<chat_bot_core::kPersonaCount;++m){
-                    if(m)ImGui::SameLine();
-                    ImGui::PushID(m+100);
-                    ActionKey(chat_bot_core::PersonaName(m),third,key_height,[m]{chat_bot_bridge::SetMode(m);InvalidateKeys();},s.mode==m);
-                    ImGui::PopID();
-                }
-                if(!s.persona.empty()){
-                    ImGui::PushID("bot_mode_custom");
-                    ActionKey("Özel kişiliği kullan",content,key_height,[]{chat_bot_bridge::SetMode(chat_bot_core::kPersonaCount);InvalidateKeys();},s.mode==chat_bot_core::kPersonaCount);
-                    ImGui::PopID();
-                }
-                {   // Cevap uzunluğu sürgüsü: en az 45 kelime (şimdiki sınır), en çok 150
-                    static int len_value=45;static bool len_active=false;
-                    if(!len_active)len_value=s.words;
-                    ImGui::SetNextItemWidth(content);
-                    if(ImGui::SliderInt("##bot_len",&len_value,chat_bot_core::kMinWords,chat_bot_core::kMaxWords,"Cevap uzunluğu: %d kelime"))chat_bot_bridge::SetWords(len_value);
-                    len_active=ImGui::IsItemActive();
-                }
-                ImGui::PushID("bot_strict");
-                ActionKey(s.strict?"Ada göre süz: AÇIK (adım / yapay zeka)":"Ada göre süz: kapalı (hepsi)",content,key_height,[]{chat_bot_bridge::ToggleStrict();InvalidateKeys();},s.strict);
-                ImGui::PopID();
-                ImGui::PushID("bot_all");
-                ActionKey(s.all?"Herkes AÇIK":"Herkes kapalı (seçili kişiler)",content,key_height,[]{chat_bot_bridge::ToggleAll();InvalidateKeys();},s.all);
-                ImGui::PopID();
-            }
-            if(s.players.empty())ImGui::TextWrapped("Odada başka oyuncu yok / liste bekleniyor.");
-            else{
-                const float list_height=std::max(key_height,std::min(key_height*4,
-                    max_height-ImGui::GetCursorPosY()-key_height*2-5*ImGui::GetStyle().ItemSpacing.y-2*ImGui::GetStyle().WindowPadding.y));
-                ImGui::BeginChild("##bot_players",ImVec2(0,list_height),false);
-                for(const auto& name:s.players){
-                    ImGui::PushID(name.c_str());
-                    ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{chat_bot_bridge::Select(name);InvalidateKeys();},std::find(s.selected.begin(),s.selected.end(),name)!=s.selected.end());
-                    ImGui::PopID();
-                }
-                ImGui::EndChild();
-            }
-            ImGui::PushID("bot_refresh");
-            ActionKey("Listeyi yenile",content,key_height,[]{chat_bot_bridge::Refresh();});
-            ImGui::PopID();
-            ImGui::PushID("bot_reset");
-            ActionKey("Hafızayı sıfırla",content,key_height,[]{chat_bot_bridge::ResetMemory();});
-            ImGui::PopID();
-            if(!s.last_in.empty())ImGui::TextWrapped("Son satır: %s",s.last_in.c_str());
-            if(!s.last_out.empty())ImGui::TextWrapped("Son cevap: %s",s.last_out.c_str());
+            if(!s.persona.empty())ActionKey("Özel kişiliği kullan",content,key_height,[]{chat_bot_bridge::SetMode(chat_bot_core::kPersonaCount);InvalidateKeys();},s.mode==chat_bot_core::kPersonaCount);
+        }else if(g_bot_page==2){
+            ActionKey(s.message_filter?"Mesaj filtresi: AÇIK":"Mesaj filtresi: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleFilter();InvalidateKeys();},s.message_filter);
+            ActionKey(s.strict?"Adla çağırma: AÇIK":"Adla çağırma: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleStrict();InvalidateKeys();},s.strict);
+            int words=s.words;ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##bot_len",&words,chat_bot_core::kMinWords,chat_bot_core::kMaxWords,"Yanıt: %d kelime"))chat_bot_bridge::SetWords(words);
+            ActionKey("Hafızayı sıfırla",content,key_height,[]{chat_bot_bridge::ResetMemory();InvalidateKeys();});
+        }else if(g_bot_page==3){
+            const auto v=voice_ai_bridge::Read();ImGui::TextWrapped("%s",v.status.c_str());
+            ImGui::BeginDisabled(!v.ready||!s.has_key);ActionKey(v.settings.enabled?"Sesli AI AÇIK - kapat":"Sesli AI KAPALI - aç",content,key_height,[]{voice_ai_bridge::Toggle();InvalidateKeys();},v.settings.enabled);ImGui::EndDisabled();
+            ActionKey("Konuşmayı durdur",content,key_height,[]{voice_ai_bridge::Stop();InvalidateKeys();});
+            ActionKey("Ses → Ses",half,key_height,[]{voice_ai_bridge::Mode(0,1);InvalidateKeys();},v.settings.input==0&&v.settings.output==1);ImGui::SameLine();
+            ActionKey("Metin → Ses",half,key_height,[]{voice_ai_bridge::Mode(1,1);InvalidateKeys();},v.settings.input==1&&v.settings.output==1);
+            ActionKey("Ses → Metin",half,key_height,[]{voice_ai_bridge::Mode(0,0);InvalidateKeys();},v.settings.input==0&&v.settings.output==0);ImGui::SameLine();
+            ActionKey("Ses+Metin → Ses",half,key_height,[]{voice_ai_bridge::Mode(2,1);InvalidateKeys();},v.settings.input==2&&v.settings.output==1);
+            ActionKey(v.settings.destination?"Ses: yalnız bu cihaz":"Ses: oda / yerel",content,key_height,[local=!v.settings.destination]{voice_ai_bridge::Destination(local);InvalidateKeys();},v.settings.destination);
+            ImGui::TextWrapped("Açınca seçili kişilerin sesi Gemini'ye gönderilir. Oda sesi kapalıysa yanıtı bu cihaz okur.");
+            ImGui::TextWrapped("AI konuşurken mikrofon yayına verilmez.");
+        }else{
+            ImGui::TextWrapped("Son gelen: %s",s.last_in.c_str());ImGui::TextWrapped("Son cevap: %s",s.last_out.c_str());
+            const auto v=voice_ai_bridge::Read();ImGui::TextWrapped("Duyulan: %s",v.heard.c_str());ImGui::TextWrapped("Sesli AI yanıtı: %s",v.reply.c_str());
+        }return;
+    }
+    ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,64).c_str());
+    ImGui::BeginDisabled(!s.chat_ready);ActionKey(s.enabled?"Bot AÇIK - kapat":"Bot KAPALI - aç",half,key_height,[]{chat_bot_bridge::Toggle();InvalidateKeys();},s.enabled);ImGui::EndDisabled();ImGui::SameLine();
+    ActionKey("API anahtarı gir",half,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Key);InvalidateKeys();});
+    const char* labels[]={"Kişiler","Kişilik","Yanıt ayarları","Sesli AI","Geçmiş"};
+    for(int i=0;i<5;++i){if(i%2)ImGui::SameLine();ActionKey(labels[i],half,key_height,[i]{g_bot_page=i;InvalidateKeys();});}
 }
 void GameplaySectionBody(float key_height,float content){
     const auto s=gameplay_bridge::Read();
@@ -627,65 +602,45 @@ void GameplaySectionBody(float key_height,float content){
             ImGui::EndChild();
         }
         ImGui::EndDisabled();
-        if(std::any_of(s.items.begin(),s.items.end(),[](const auto& item){return !item.available;}))ImGui::TextWrapped("Shotgun Ammo için gerçek ağ prefabı bulunamadıysa oluşturma kapalıdır; yerel görsel kopya üretilmez.");
-        ImGui::TextWrapped("Listeyi düğmelerin üzerinden sürükleyebilirsin. Yeni eşya ele gelir; aynısı eldeyse kopyası önüne oluşur. Farklı eldeki eşya önce bırakılır. Mermi doğrudan önüne oluşur.");
-        break;
-    }
-    case 1:{
-        static size_t selected=0,previous=gameplay_bridge::kEnemies;
-        static gameplay_bridge::Enemy edit;
-        static bool editing=false;
-        if(!s.authority)ImGui::TextWrapped("Oda sahibi değilsen ayarlar bu cihazda uygulanır; ağ güncellemeleri etkisini sınırlayabilir.");
-        ImGui::BeginDisabled(!s.ready);
-        for(size_t k=0;k<gameplay_bridge::kEnemies;++k){
-            if(k%2)ImGui::SameLine();
-            ImGui::PushID(static_cast<int>(k)+400);
-            ActionKey(gameplay_bridge::kNames[k],half,key_height,[k]{selected=k;InvalidateKeys();},selected==k);
-            ImGui::PopID();
-        }
-        if(!editing||previous!=selected)edit=s.enemies[selected];
-        previous=selected;
-        const auto send=[queue,context=s.context,enemy=selected](gameplay_bridge::Enemy value){gameplay_bridge::Command c{gameplay_bridge::Kind::EnemySettings,context};c.enemy=enemy;c.settings=value;queue(c);};
-        ImGui::Text("Bulunan: %d",s.enemies[selected].count);
-        ImGui::BeginDisabled(s.enemies[selected].count==0);
-        ImGui::BeginDisabled(!s.enemies[selected].pause_ready);
-        ActionKey(edit.paused?"Devam et":"Durdur",content,key_height,[send,enemy=selected,value=edit]()mutable{value.paused=!value.paused;if(selected==enemy)edit=value;send(value);},edit.paused);
-        ImGui::EndDisabled();
-        if(!s.enemies[selected].pause_ready)ImGui::TextWrapped("Durdurma hareket bağlantısı bu düşman için hazır değil.");
-        editing=false;
-        ImGui::BeginDisabled(selected==4);
-        ImGui::SetNextItemWidth(content);
-        if(ImGui::SliderFloat("##enemy_speed",&edit.speed,.1f,5.f,u8"Hız: %.1fx"))send(edit);
-        editing|=ImGui::IsItemActive();ImGui::EndDisabled();
-        ImGui::SetNextItemWidth(content);
-        if(ImGui::SliderFloat("##enemy_animation",&edit.animation,.1f,3.f,u8"Animasyon: %.1fx"))send(edit);
-        editing|=ImGui::IsItemActive();
-        ImGui::SetNextItemWidth(content);
-        if(ImGui::SliderFloat("##enemy_size",&edit.size,.25f,selected==4?20.f:3.f,u8"Boyut (yerel): %.2fx"))send(edit);
-        editing|=ImGui::IsItemActive();
-        ActionKey("Bu düşmanın ayarlarını sıfırla",content,key_height,[queue,context=s.context,enemy=selected]{gameplay_bridge::Command c{gameplay_bridge::Kind::ResetEnemy,context};c.enemy=enemy;queue(c);editing=false;});
-        ImGui::EndDisabled();ImGui::EndDisabled();
-        ImGui::TextWrapped("Boyut yalnız bu cihazda değişir; karşı oyuncuya ölçek aktarımı doğrulanmadı.");
-        if(selected>=4)ImGui::TextWrapped("Crow ve Rat ayarları yereldir; diğer oyuncularda aynı görünmeyebilir.");
-        if(selected==4)ImGui::TextWrapped("Crow için ayrı hareket hızı alanı bulunmadı; animasyon hızını kullanabilirsin.");
+        if(std::any_of(s.items.begin(),s.items.end(),[](const auto& item){return !item.available;}))ImGui::TextWrapped("Shotgun Ammo kaynağı bulunamazsa oluşturulamaz.");
+        ImGui::TextWrapped("Listeyi sürükle. Eşya ele gelir; elde aynısı varsa veya mermiyse önüne oluşur.");
         break;
     }
     case 2:{
         static int operation=0;
-        const float third=(content-ImGui::GetStyle().ItemSpacing.x*2)/3;
+        static float clone_speed=1,clone_size=1,clone_distance=4;
+        static size_t clone_kind=0;
         const char* operations[]={"Öldür","Kaldır","Klonla"};
+        const float third=(content-ImGui::GetStyle().ItemSpacing.x*2)/3;
         for(int i=0;i<3;++i){if(i)ImGui::SameLine();ImGui::PushID(i+550);ActionKey(operations[i],third,key_height,[i]{operation=i;InvalidateKeys();},operation==i);ImGui::PopID();}
-        ImGui::TextWrapped(operation==0?"Oyunun vurulma/ölüm akışını çalıştırır; geri dönüşü oyun yönetir.":operation==1?"Nesneyi kaldırır; normal ölüm ve yeniden doğma akışı çalışmaz.":"Doğrulanan prefab ile ayrı ağ kimliğine sahip yeni düşman oluşturur.");
+        ImGui::TextWrapped(operation==0?"Normal ölüm akışı; dönüşü oyun yönetir.":operation==1?"Düşmanı kaldırır; yeniden doğma çalışmaz.":"Ayrı ağ kimliğiyle yeni düşman oluşturur.");
         ImGui::BeginDisabled(!s.ready);
-        for(size_t k=0;k<gameplay_bridge::kEnemies;++k){
-            if(k%2)ImGui::SameLine();
-            const bool supported=operation==0?s.enemies[k].death_ready:operation==2?s.enemies[k].clone_ready:s.enemies[k].count>0;
-            ImGui::PushID(static_cast<int>(k)+500);ImGui::BeginDisabled(!supported);
-            ActionKey(gameplay_bridge::kNames[k],half,key_height,[queue,context=s.context,k,mode=operation]{const auto kind=mode==0?gameplay_bridge::Kind::KillEnemy:mode==2?gameplay_bridge::Kind::CloneEnemy:gameplay_bridge::Kind::RemoveEnemy;gameplay_bridge::Command c{kind,context};c.enemy=k;queue(c);});
+        if(operation==2){
+            for(size_t k=0;k<3;++k){
+                if(k)ImGui::SameLine();ImGui::PushID(static_cast<int>(k)+500);
+                ActionKey(gameplay_bridge::kNames[k],third,key_height,[k]{clone_kind=k;InvalidateKeys();},clone_kind==k);ImGui::PopID();
+            }
+            ImGui::BeginDisabled(!s.enemies[clone_kind].clone_ready);
+            ActionKey("Seçiliyi klonla",half,key_height,[queue,context=s.context,k=clone_kind,speed=clone_speed,size=clone_size,distance=clone_distance]{gameplay_bridge::Command c{gameplay_bridge::Kind::CloneEnemy,context};c.enemy=k;c.settings.speed=speed;c.settings.size=size;c.clone_distance=distance;queue(c);});
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!s.enemies[clone_kind].pause_ready||s.enemies[clone_kind].count==0);
+            ActionKey(s.enemies[clone_kind].paused?"Devam et":"Durdur",half,key_height,[queue,context=s.context,k=clone_kind,on=!s.enemies[clone_kind].paused]{gameplay_bridge::Command c{gameplay_bridge::Kind::PauseEnemy,context};c.enemy=k;c.flag=on;queue(c);},s.enemies[clone_kind].paused);
+            ImGui::EndDisabled();
+            ImGui::Text("Kategorideki düşmanlar: %d",s.enemies[clone_kind].count);
+            ImGui::TextWrapped("Durdur, seçilen türün asıllarını ve klonlarını etkiler.");
+            if(!s.authority)ImGui::TextWrapped("Durdurma bu cihazda uygulanır.");
+            ImGui::SliderFloat("Klon hızı",&clone_speed,.1f,5.f,"%.1fx");
+            ImGui::SliderFloat("Klon boyutu",&clone_size,.25f,3.f,"%.2fx");
+            ImGui::SliderFloat("Ön mesafe",&clone_distance,2.f,6.f,"%.1f m");
+        }else for(size_t k=0;k<gameplay_bridge::kEnemies;++k){
+            if(k%2)ImGui::SameLine();ImGui::PushID(static_cast<int>(k)+500);
+            ImGui::BeginDisabled(operation==0?!s.enemies[k].death_ready:s.enemies[k].count==0);
+            ActionKey(gameplay_bridge::kNames[k],half,key_height,[queue,context=s.context,k,mode=operation]{gameplay_bridge::Command c{mode==0?gameplay_bridge::Kind::KillEnemy:gameplay_bridge::Kind::RemoveEnemy,context};c.enemy=k;queue(c);});
             ImGui::EndDisabled();ImGui::PopID();
         }
         ImGui::EndDisabled();
-        ImGui::TextWrapped("Kapalı seçenek için doğrulanmış ölüm/prefab bağlantısı yoktur. Yetkin olmayan nesne yerel kaldırılır; ölüm isteğinin diğerlerine uygulanmasını oyun belirler.");
+        ImGui::TextWrapped("Kapalı seçenek kullanılamıyor. Ağdaki sonuç host yetkisine bağlıdır.");
         break;
     }
     case 3:
@@ -694,46 +649,90 @@ void GameplaySectionBody(float key_height,float content){
         ActionKey(s.god?"God Mode AÇIK - kapat":"God Mode KAPALI - aç",content,key_height,[queue,context=s.context,on=!s.god]{gameplay_bridge::Command c{gameplay_bridge::Kind::God,context};c.flag=on;queue(c);},s.god);
         ImGui::EndDisabled();
         ImGui::TextWrapped("%s",s.god_status.c_str());
-        ImGui::TextWrapped("Kendi karakterine AI saldırısında öldürme kamerasını ve ölüm/gün kaydını engeller. Ölmeden önce aç; diriltme değildir.");
+        ImGui::TextWrapped("Ölmeden önce aç. AI ölümünü engeller; diriltmez.");
+        ImGui::TextWrapped("%s",s.invisible_status.empty()?"AI görünmezliği God Mode ile açılır.":s.invisible_status.c_str());
+        ImGui::TextWrapped(s.fall_ready?"Düşme hasarı koruması God Mode ile açılır.":"Düşme koruması: oyuncu bağlantısı bekleniyor.");
+        ImGui::TextWrapped(s.explosion_ready?"Benzin patlaması koruması God Mode'a bağlı.":"Benzin koruması hazır değil; tanı kaydını kontrol et.");
+        ImGui::TextWrapped(s.infinity_ready?(s.infinity?"Infinity Ammo: açık (Crossbow / Shotgun).":"Infinity Ammo, God Mode ile açılır."):"Infinity Ammo: silah bağlantıları bekleniyor.");
+        ImGui::TextWrapped(s.hamarat_ready?"Hamarat: hedefe bakıp etkileş. Desteklenen işlemlerde anahtar/alet gerekmez; mesafe ve ön koşullar geçerlidir.":"Hamarat bağlantıları bekleniyor.");
         break;
+    case 8:{
+        ImGui::BeginDisabled(!s.player_speed_ready);
+        const auto change=[queue,context=s.context](float factor){gameplay_bridge::Command c{gameplay_bridge::Kind::PlayerSpeed,context};c.factor=factor;queue(c);};
+        ActionKey("Normal hız (1x)",content,key_height,[change]{change(1);},s.player_speed==1);
+        ActionKey("2x hız",half,key_height,[change]{change(2);},s.player_speed==2);ImGui::SameLine();
+        ActionKey("3x hız",half,key_height,[change]{change(3);},s.player_speed==3);
+        float factor=s.player_speed;ImGui::SetNextItemWidth(content);
+        if(ImGui::SliderFloat("##player_speed",&factor,1.f,5.f,"Hız: %.1fx"))change(factor);
+        ImGui::EndDisabled();
+        ImGui::TextWrapped(s.player_speed_ready?"Yürüme ve çömelme hızını ayarlar.":"Kendi maç karakterin bekleniyor.");
+        break;
+    }
+    case 7:{
+        static const char* names[]={"Easy","Normal","Hard","Extreme","Impossible","Practise"};
+        ImGui::Text("Mevcut: %s",s.difficulty>=0&&s.difficulty<6?names[s.difficulty]:"Bilinmiyor");
+        ImGui::BeginDisabled(!s.ready||!s.difficulty_ready);
+        for(int i=0;i<6;++i){if(i%2)ImGui::SameLine();ActionKey(names[i],half,key_height,[queue,context=s.context,i]{gameplay_bridge::Command c{gameplay_bridge::Kind::Difficulty,context};c.item=i;queue(c);},s.difficulty==i);}
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("Yalnız host. AI zorluğu yenilenir; harita, eşyalar ve ödül değişmez.");
+        ImGui::TextWrapped("%s",s.status.c_str());break;
+    }
     case 4:
         ImGui::BeginDisabled(!s.ghost_ready);
         ActionKey(s.ghost?"Hayalet modu AÇIK - kapat":"Hayalet modu KAPALI - aç",content,key_height,[queue,context=s.context,on=!s.ghost]{gameplay_bridge::Command c{gameplay_bridge::Kind::Ghost,context};c.flag=on;queue(c);},s.ghost);
         ImGui::EndDisabled();
         if(s.ghost){
-            ActionKey("Yüksel",half,key_height,[queue,context=s.context]{gameplay_bridge::Command c{gameplay_bridge::Kind::GhostStep,context};c.item=1;queue(c);},false,true);
-            ImGui::SameLine();
-            ActionKey("Alçal",half,key_height,[queue,context=s.context]{gameplay_bridge::Command c{gameplay_bridge::Kind::GhostStep,context};c.item=-1;queue(c);},false,true);
             ActionKey("Başlangıca dön ve kapat",content,key_height,[queue,context=s.context]{queue({gameplay_bridge::Kind::GhostReturn,context});});
         }
-        ImGui::TextWrapped("Joystick ile duvarlardan geç. Sıkıştığın yerden çıkınca kapatabilirsin. God Mode ayrı açılır.");
+        ImGui::TextWrapped("Joystick ile baktığın yöne uç. God Mode ayrıca açılır.");
         ImGui::TextWrapped("%s",s.tools_status.c_str());
         break;
-    case 5:
-        ImGui::BeginDisabled(!s.infinity_ready);
-        ActionKey(s.infinity?"Infinity Ammo AÇIK - kapat":"Infinity Ammo KAPALI - aç",content,key_height,[queue,context=s.context,on=!s.infinity]{gameplay_bridge::Command c{gameplay_bridge::Kind::InfinityAmmo,context};c.flag=on;queue(c);},s.infinity);
-        ImGui::EndDisabled();
-        ImGui::TextWrapped("Eldeki Crossbow ve Shotgun için sınırsız cephane. Atış aralığı ve silah animasyonu oyunun normalidir.");
-        ImGui::TextWrapped("%s",s.tools_status.c_str());
+    case 6:{
+        static int selected=0,seconds=10;
+        const auto& vote=s.vote;
+        ImGui::TextWrapped("%s",vote.status.c_str());
+        if(vote.active){
+            ImGui::Text("EVET: %d | HAYIR: %d | %d sn",vote.yes,vote.no,vote.remaining);
+            ActionKey("Oylamayı iptal et",content,key_height,[queue,context=s.context]{queue({gameplay_bridge::Kind::CancelVote,context});});
+        }else{
+            ImGui::BeginDisabled(!vote.ready);
+            ImGui::SetNextItemWidth(content);ImGui::SliderInt("##vote_seconds",&seconds,1,60,u8"Oylama: %d saniye");
+            const auto player=std::find_if(vote.players.begin(),vote.players.end(),[&](const auto& p){return p.actor==selected&&p.actor!=vote.local;});
+            ImGui::BeginDisabled(player==vote.players.end());
+            ActionKey("Seçili oyuncu için oylama başlat",content,key_height,[queue,context=s.context,actor=selected,duration=seconds]{gameplay_bridge::Command c{gameplay_bridge::Kind::StartVote,context};c.item=actor;c.seconds=duration;queue(c);});
+            ImGui::EndDisabled();
+            if(ImGui::BeginChild("##vote_players",ImVec2(0,key_height*3),false)){
+                for(const auto& p:vote.players){if(p.actor==vote.local)continue;ImGui::PushID(p.actor);
+                    const auto label=p.name+" (#"+std::to_string(p.actor)+")";
+                    ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[actor=p.actor]{selected=actor;InvalidateKeys();},p.actor==selected);ImGui::PopID();
+                }
+            }ImGui::EndChild();ImGui::EndDisabled();
+            ImGui::TextWrapped("/evet veya /hayır: kişi başına tek oy. Başlatan +1 evet; eşitlikte şaka yapılmaz.");
+        }
+        ImGui::TextWrapped("Bu bir sohbet şakasıdır; kimse gerçekten atılmaz.");
         break;
+    }
     default:break;
     }
 }
 void GameplayBody(float key_height,float content){
+    static int previous_page=-2;
+    if(previous_page!=g_gameplay_page){ImGui::SetScrollY(0);previous_page=g_gameplay_page;}
     if(g_gameplay_page>=0){
-        static const char* titles[]={"Eşya spawn","Düşman durdur","Düşman öldür","God Mode","Hayalet modu","Infinity Ammo"};
-        if(g_gameplay_page<6)ImGui::Text("%s",titles[g_gameplay_page]);
+        static const char* titles[]={"Eşya spawn","","Düşman öldür","God Mode","Hayalet modu","","Oyuncu atma","Zorluk","Karakter hızı"};
+        if(g_gameplay_page<9)ImGui::Text("%s",titles[g_gameplay_page]);
         GameplaySectionBody(key_height,content);
         return;
     }
     ImGui::TextWrapped("Oyun özellikleri");
     ImGui::TextWrapped("Bir bölüm seç.");
-    const char* labels[]={"Eşya spawn","Düşman durdur","Düşman öldür","God Mode","Hayalet modu","Infinity Ammo"};
+    const char* labels[]={"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Zorluk","Karakter hızı"};
+    const int pages[]={0,2,3,4,6,7,8};
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
-    for(int i=0;i<6;++i){
+    for(int i=0;i<7;++i){
         if(i%2)ImGui::SameLine();
         ImGui::PushID(i+300);
-        ActionKey(labels[i],half,key_height,[i]{g_gameplay_page=i;InvalidateKeys();});
+        ActionKey(labels[i],half,key_height,[page=pages[i]]{g_gameplay_page=page;InvalidateKeys();});
         ImGui::PopID();
     }
 }
@@ -746,7 +745,7 @@ void WardrobeBody(const ImGuiIO& io,float key_height,float content){
             const auto& list=s.items[g_wardrobe_tab];
             ImGui::TextWrapped("Gardıropta görünen: şapka %d, karakter %d",(int)s.items[0].size(),(int)s.items[1].size());
             if(!s.status.empty())ImGui::TextWrapped("%s",s.status.c_str());
-            if(list.empty())ImGui::TextWrapped("Gardırop kart listesi henüz okunamadı. Oyun içi gardırop ekranını açıp tekrar kontrol et.");
+            if(list.empty())ImGui::TextWrapped("Liste için oyun içi gardırobu aç.");
             else{
                 ImGui::TextWrapped("Oyunun gardırop kart listesinden okundu. Seçince oda görünümüne uygulanır.");
                 ImGui::BeginChild("##wd_list",ImVec2(0,std::min(key_height*5.5f,io.DisplaySize.y*.4f)),false);
@@ -766,7 +765,7 @@ void WardrobeBody(const ImGuiIO& io,float key_height,float content){
             ImGui::PushID("wd_rejoin");
             ActionKey("Çık-gir: herkese uygula",content,key_height,[]{wardrobe_bridge::RequestRejoin();InvalidateKeys();});
             ImGui::PopID();
-            ImGui::TextWrapped("Diğer oyuncular kıyafeti yalnız odaya girişte okur. Seçimi yaptıktan sonra buna bas: odadan çıkıp aynı odaya yeniden girer.");
+            ImGui::TextWrapped("Herkese göstermek için aynı odaya çık-gir yapar.");
 }
 // "Game full" hatasından sonra yalnız o durumda görünen küçük düğme: oda boşalınca otomatik bağlan.
 void DrawAutoJoin(const ImGuiIO& io){
@@ -844,7 +843,8 @@ void DrawHub(const ImGuiIO& io){
     if(ImGui::Begin("##hub",nullptr,flags)){
         const float content=ImGui::GetContentRegionAvail().x;
         const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
-        if(g_hub_tab==2){
+        if(g_hub_tab==0&&g_bot_page>=0){BotBody(io,key_height,content,max_height);}
+        else if(g_hub_tab==2){
             // Subpage is focused: hide unrelated top-level tabs to keep the panel short.
             if(g_gameplay_page<0)ActionKey(u8"← Ana menü",content,key_height,[]{g_hub_tab=0;InvalidateKeys();});
             GameplayBody(key_height,content);
@@ -903,14 +903,15 @@ void SetEmojiSupport(uint64_t mask,bool query_ok) {
 }
 bool TouchDown(float x,float y){
     auto& list=g_list_touch;
-    if(list.visible&&x>=list.min.x&&x<list.max.x&&y>=list.min.y&&y<list.max.y){
+    const TouchKey* top=nullptr;for(auto i=g_touch_keys.rbegin();i!=g_touch_keys.rend();++i)if(x>=i->min.x&&x<i->max.x&&y>=i->min.y&&y<i->max.y){top=&*i;break;}
+    if((!top||top->list)&&list.visible&&x>=list.min.x&&x<list.max.x&&y>=list.min.y&&y<list.max.y){
         list.down=true;list.dragged=false;list.start_x=x;list.start_y=list.last_y=y;list.tap={};
         for(const auto& key:g_touch_keys)if(key.list&&x>=key.min.x&&x<key.max.x&&y>=key.min.y&&y<key.max.y){list.tap=key.action;break;}
         return true;
     }
-    for(const auto& key:g_touch_keys)if(x>=key.min.x&&x<key.max.x&&y>=key.min.y&&y<key.max.y){
-        const auto action=key.action;const bool repeat=key.repeat;
-        g_repeat_min=key.min;g_repeat_max=key.max;g_touch_repeat=repeat?action:std::function<void()>{};
+    if(top){
+        const auto action=top->action;const bool repeat=top->repeat;
+        g_repeat_min=top->min;g_repeat_max=top->max;g_touch_repeat=repeat?action:std::function<void()>{};
         g_repeat_at=ImGui::GetTime()+.22;g_refocus=true;action();return true;
     }
     return false;
@@ -931,6 +932,7 @@ bool HitTest(float x,float y) {
     return false;
 }
 void ResetTransientState() {
+    g_bot_page=-1;
     InvalidateKeys();
     if(g_shortcut.Active()) { g_shortcut.Cancel(g_text,g_cursor,g_anchor); Dirty(); }
     g_reset_history=true; g_shift=g_caps=g_submit=g_refocus=false;
