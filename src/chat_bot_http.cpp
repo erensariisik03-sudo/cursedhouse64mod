@@ -42,6 +42,55 @@ bool Bad(JNIEnv* env) { if (env->ExceptionCheck()) { env->ExceptionClear(); retu
 }
 void SetVM(JavaVM* vm) { g_vm = vm; }
 
+namespace {
+std::u16string Utf8ToUtf16(const std::string& in) {
+    std::u16string out;
+    for (size_t i = 0; i < in.size();) {
+        const unsigned char c = static_cast<unsigned char>(in[i]);
+        uint32_t cp = 0xFFFD; size_t len = 1;
+        if (c < 0x80) cp = c;
+        else if (c >= 0xC2 && c < 0xE0 && i + 1 < in.size() && (in[i+1] & 0xC0) == 0x80) { cp = ((c & 0x1F) << 6) | (in[i+1] & 0x3F); len = 2; }
+        else if (c >= 0xE0 && c < 0xF0 && i + 2 < in.size() && (in[i+1] & 0xC0) == 0x80 && (in[i+2] & 0xC0) == 0x80) { cp = ((c & 0x0F) << 12) | ((in[i+1] & 0x3F) << 6) | (in[i+2] & 0x3F); len = 3; if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD; }
+        else if (c >= 0xF0 && c < 0xF5 && i + 3 < in.size() && (in[i+1] & 0xC0) == 0x80 && (in[i+2] & 0xC0) == 0x80 && (in[i+3] & 0xC0) == 0x80) { cp = ((c & 0x07) << 18) | ((in[i+1] & 0x3F) << 12) | ((in[i+2] & 0x3F) << 6) | (in[i+3] & 0x3F); len = 4; if (cp < 0x10000 || cp > 0x10FFFF) cp = 0xFFFD; }
+        i += len;
+        if (cp >= 0x10000) { cp -= 0x10000; out += static_cast<char16_t>(0xD800 + (cp >> 10)); out += static_cast<char16_t>(0xDC00 + (cp & 0x3FF)); }
+        else out += static_cast<char16_t>(cp);
+    }
+    return out;
+}
+}
+bool WriteClipboard(const std::string& text) {
+    if (text.empty() || text.size() > 8192) return false;
+    JavaVM* vm = FindVM();
+    if (!vm) return false;
+    Attach thread(vm);
+    JNIEnv* env = thread.env;
+    if (!env || env->PushLocalFrame(24) != 0) return false;
+    struct Frame { JNIEnv* e; ~Frame() { e->PopLocalFrame(nullptr); } } frame{env};
+    jclass at = env->FindClass("android/app/ActivityThread");
+    jclass ctx_cls = env->FindClass("android/content/Context");
+    jclass cm_cls = env->FindClass("android/content/ClipboardManager");
+    jclass cd_cls = env->FindClass("android/content/ClipData");
+    if (Bad(env) || !at || !ctx_cls || !cm_cls || !cd_cls) return false;
+    jmethodID current = env->GetStaticMethodID(at, "currentApplication", "()Landroid/app/Application;");
+    jmethodID service = env->GetMethodID(ctx_cls, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+    jmethodID set_clip = env->GetMethodID(cm_cls, "setPrimaryClip", "(Landroid/content/ClipData;)V");
+    jmethodID make = env->GetStaticMethodID(cd_cls, "newPlainText", "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;");
+    if (Bad(env) || !current || !service || !set_clip || !make) return false;
+    jobject app = env->CallStaticObjectMethod(at, current);
+    if (Bad(env) || !app) return false;
+    jobject manager = env->CallObjectMethod(app, service, env->NewStringUTF("clipboard"));
+    if (Bad(env) || !manager) return false;
+    const std::u16string wide = Utf8ToUtf16(text);
+    jstring label = env->NewStringUTF("multiplayermod");
+    jstring body = env->NewString(reinterpret_cast<const jchar*>(wide.data()), static_cast<jsize>(wide.size()));
+    if (Bad(env) || !label || !body) return false;
+    jobject clip = env->CallStaticObjectMethod(cd_cls, make, label, body);
+    if (Bad(env) || !clip) return false;
+    env->CallVoidMethod(manager, set_clip, clip);
+    return !Bad(env);
+}
+
 bool ReadClipboard(std::string& out) {
     out.clear();
     JavaVM* vm = FindVM();

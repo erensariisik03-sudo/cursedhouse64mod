@@ -47,6 +47,7 @@ ImVec2 g_repeat_min{},g_repeat_max{};
 double g_repeat_at=0;
 size_t g_wardrobe_tab=0;
 keyboard_ui::PasteProvider g_paste=nullptr;
+keyboard_ui::CopyProvider g_copy=nullptr;
 struct Layout { float unit, gap, height; };
 struct ListTouch {
     ImVec2 min{},max{};ImGuiID window=0;uint64_t context=0;
@@ -541,8 +542,8 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             ActionKey("Ses+Metin → Ses",half,key_height,[]{voice_ai_bridge::Mode(2,1);InvalidateKeys();},v.settings.input==2&&v.settings.output==1);
             ActionKey(v.settings.destination?"Ses: yalnız bu cihaz":"Ses: oda / yerel",content,key_height,[local=!v.settings.destination]{voice_ai_bridge::Destination(local);InvalidateKeys();},v.settings.destination);
             {int tone=voice_ai_bridge::tone.load();ImGui::TextWrapped("Ses tonu: sol = kalın robot (şimdiki), sağ = bebek sesi");ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##voice_tone",&tone,0,100,"Ses tonu: %d%%"))voice_ai_bridge::SetTone(tone);}
-            ActionKey("Kendi mesajımı yaz ve seslendir",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);InvalidateKeys();});
-            {const auto saved=voice_ai_bridge::SpeechText();if(!saved.empty()){ImGui::TextWrapped("Mesajın: %s",chat_bot_core::PrefixScalars(saved,120).c_str());ImGui::BeginDisabled(!v.settings.enabled);ActionKey("Mesajı tekrar seslendir",content,key_height,[saved]{voice_ai_bridge::Speak(saved);InvalidateKeys();});ImGui::EndDisabled();}}
+            ActionKey("Kendi mesajımı yaz",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);InvalidateKeys();});
+            {const auto saved=voice_ai_bridge::SpeechText();if(!saved.empty()){ImGui::TextWrapped("Mesajın: %s",chat_bot_core::PrefixScalars(saved,120).c_str());ImGui::BeginDisabled(!v.settings.enabled);ActionKey("Mesajı seslendir",content,key_height,[saved]{voice_ai_bridge::Speak(saved);InvalidateKeys();});ImGui::EndDisabled();if(!v.settings.enabled)ImGui::TextWrapped("Seslendirmek için Sesli AI açık olmalı.");}}
             ImGui::TextWrapped("Açınca seçili kişilerin sesi Gemini'ye gönderilir. Oda sesi kapalıysa yanıtı bu cihaz okur.");
             ImGui::TextWrapped("AI konuşurken mikrofon yayına verilmez.");
         }else{
@@ -715,6 +716,23 @@ void GameplaySectionBody(float key_height,float content){
         ImGui::TextWrapped("Bu bir sohbet şakasıdır; kimse gerçekten atılmaz.");
         break;
     }
+    case 9:{
+        static std::string note;
+        const auto& vote=s.vote;
+        ImGui::TextWrapped("Bir oyuncuya dokun: ismi panoya kopyalanır.");
+        if(!note.empty())ImGui::TextWrapped("%s",note.c_str());
+        if(vote.players.empty())ImGui::TextWrapped("Odadaki oyuncu listesi bekleniyor.");
+        if(ImGui::BeginChild("##copy_players",ImVec2(0,key_height*4),false)){
+            for(const auto& p:vote.players){
+                ImGui::PushID(p.actor);
+                const auto label=p.name+(p.actor==vote.local?" (sen)":"");
+                ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name=p.name]{const bool ok=g_copy&&g_copy(name);note=ok?"Kopyalandı: "+name:"Kopyalanamadı.";InvalidateKeys();});
+                ImGui::PopID();
+            }
+        }ImGui::EndChild();
+        if(!vote.players.empty())ImGui::TextWrapped("Arkadaşlık kodu bu oyun sürümünden henüz okunamıyor.");
+        break;
+    }
     default:break;
     }
 }
@@ -723,16 +741,16 @@ void GameplayBody(float key_height,float content){
     if(previous_page!=g_gameplay_page){ImGui::SetScrollY(0);previous_page=g_gameplay_page;}
     if(g_gameplay_page>=0){
         static const char* titles[]={"Eşya spawn","","Düşman öldür","God Mode","Hayalet modu","","Oyuncu atma","Zorluk","Karakter hızı"};
-        if(g_gameplay_page<9)ImGui::Text("%s",titles[g_gameplay_page]);
+        if(g_gameplay_page<9)ImGui::Text("%s",titles[g_gameplay_page]);else if(g_gameplay_page==9)ImGui::Text("İsim kopyala");
         GameplaySectionBody(key_height,content);
         return;
     }
     ImGui::TextWrapped("Oyun özellikleri");
     ImGui::TextWrapped("Bir bölüm seç.");
-    const char* labels[]={"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Zorluk","Karakter hızı"};
-    const int pages[]={0,2,3,4,6,7,8};
+    const char* labels[]={"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Zorluk","Karakter hızı","İsim kopyala"};
+    const int pages[]={0,2,3,4,6,7,8,9};
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
-    for(int i=0;i<7;++i){
+    for(int i=0;i<8;++i){
         if(i%2)ImGui::SameLine();
         ImGui::PushID(i+300);
         ActionKey(labels[i],half,key_height,[page=pages[i]]{g_gameplay_page=page;InvalidateKeys();});
@@ -876,6 +894,7 @@ void DrawShowButton(const ImGuiIO& io) {
 }
 namespace keyboard_ui {
 void SetPasteProvider(PasteProvider provider) { g_paste=provider; }
+void SetCopyProvider(CopyProvider provider) { g_copy=provider; }
 void SetVisible(bool value) { if(value!=g_visible){g_rect_count=0;InvalidateKeys();}g_visible=value;if(value)Dirty(); }
 void SetIntegrated(bool value) { g_integrated=value; }
 void SetPassword(bool value) { g_password=value; }

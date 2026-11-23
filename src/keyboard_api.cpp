@@ -92,6 +92,7 @@ bool Init(int width, int height) {
         if (!g_context) return false;
         Setup(std::clamp(std::min(width, height) / 500.0f, 0.7f, 1.6f));
         keyboard_ui::SetPasteProvider(&chat_bot_http::ReadClipboard);
+        keyboard_ui::SetCopyProvider(&chat_bot_http::WriteClipboard);
         if (!ImGui_ImplOpenGL3_Init("#version 300 es")) {
             ImGui::DestroyContext(g_context); g_context = nullptr;
             ImGui::SetCurrentContext(previous); return false;

@@ -28,7 +28,7 @@ struct Fake {
  std::vector<std::unique_ptr<Object>> objects;std::map<Class*,Type> types;std::map<Handle,Object*> roots;Handle next=0;
  Object *current_room{},*manager{},*input{};Class *messages{},*managers{},*strings{},*arrays{},*players{};
  std::vector<Object*> chat_lines,others;std::vector<std::string> sent,sent_names;
- bool allowed=true,focused=false,panel=false;std::string own="Bot";
+ bool allowed=true,focused=false,panel=false,native_missing=false,open_secure=false;int kb_status=1,opens=0,closes=0;std::string own="Bot",kb_text="TEST_KEY",open_text;
  Class* C(const std::string& ns,const std::string& name){auto& c=classes[{ns,name}];if(!c){c=std::make_unique<Class>();c->ns=ns;c->name=name;}return c.get();}
  Object* O(Class* c){auto o=std::make_unique<Object>();o->klass=c;auto* p=o.get();objects.push_back(std::move(o));return p;}
  Object* S(const std::string& s){auto* o=O(strings);o->text=test_utf::FromUtf8(s);return o;}
@@ -48,7 +48,7 @@ const Assembly** Assemblies(Domain*,size_t* count){*count=1;return fake->assembl
 const Image* ImageGet(const Assembly*){return &fake->image;}
 Class* ClassGet(const Image*,const char* ns,const char* name){return fake->C(ns,name);}
 Class* Parent(Class*){return nullptr;}
-const Method* MethodGet(Class* c,const char* name,int count){auto& m=c->methods[{name,count}];m={c->name,name};return &m;}
+const Method* MethodGet(Class* c,const char* name,int count){if(c->name=="TouchScreenKeyboard"&&fake->native_missing)return nullptr;auto& m=c->methods[{name,count}];m={c->name,name};return &m;}
 Field* FieldGet(Class* c,const char* name){auto& f=c->fields[name];f.name=name;return &f;}
 const Type* ClassType(Class* c){return &(fake->types[c]={c});}
 Object* TypeObject(const Type* t){auto* o=fake->O(fake->C("System","Type"));o->reflection=t->klass;return o;}
@@ -70,6 +70,12 @@ const uint16_t* StringChars(String* s){return reinterpret_cast<const uint16_t*>(
 void* Unbox(Object* o){if(o->klass->name=="Boolean")return &o->flag;return &o->number;}
 Object* Invoke(const Method* m,void* self,void** args,Object** error){
  *error=nullptr;auto* o=static_cast<Object*>(self);const auto& name=m->name;
+ if(name=="Open"){ // UnityEngine.TouchScreenKeyboard.Open(text,type,autocorrect,multiline,secure,alert,placeholder,limit)
+  ++fake->opens;fake->open_text=test_utf::ToUtf8(static_cast<Object*>(args[0])->text);fake->open_secure=*static_cast<bool*>(args[4]);
+  auto* k=fake->O(fake->C("UnityEngine","TouchScreenKeyboard"));k->text=test_utf::FromUtf8(fake->kb_text);return k;
+ }
+ if(name=="get_status")return fake->I(fake->kb_status);
+ if(name=="set_active"){assert(!*static_cast<bool*>(args[0]));++fake->closes;return nullptr;}
  if(name=="FindObjectsByType"){
   auto* list=fake->O(fake->arrays);auto* type=static_cast<Object*>(args[0]);
   if(type->reflection==fake->messages)list->items=fake->chat_lines;
@@ -253,5 +259,25 @@ int main(){
   {std::lock_guard<std::mutex> lock(voice_ai_bridge::mutex);assert(voice_ai_bridge::texts.size()==1);auto t=voice_ai_bridge::texts.front();assert(t.name=="Ali"&&t.text=="Bot kapı nerede?"&&t.room);assert(voice_ai_bridge::config.key=="TEST_KEY");voice_ai_bridge::texts.clear();}
   assert(http_calls==0&&h.f.sent.empty());voice_ai_bridge::Toggle();
  }
+
+ // --- Android's own keyboard for API key / persona / own voice message (ImGui keyboard only as fallback) ---------
+ {Harness h;h.f.panel=false;
+  h.f.opens=h.f.closes=0;h.f.kb_status=1;h.f.kb_text="Sert bir kişilik";chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Persona);h.Step();
+  assert(h.f.opens==1&&h.f.closes==1&&!h.f.open_secure&&!h.f.panel&&chat_bot_bridge::Read().persona=="Sert bir kişilik"&&h.f.roots.empty()); // native keyboard, no ImGui keyboard, handle released
+  h.f.kb_status=2;h.f.kb_text="iptal edilen";chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Persona);h.Step();
+  assert(h.f.opens==2&&h.f.closes==2&&chat_bot_bridge::Read().persona=="Sert bir kişilik"); // Canceled keeps the old persona
+  h.f.kb_status=1;h.f.kb_text="  yeni-anahtar  ";chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Key);h.Step();
+  assert(h.f.open_secure&&h.f.opens==3&&chat_bot_bridge::Read().has_key&&chat_bot_bridge::Read().status.find("kaydedildi")!=std::string::npos); // key field is a secure field
+  h.f.kb_status=1;h.f.kb_text="Merhaba herkese";voice_ai_bridge::Mode(1,1);voice_ai_bridge::Toggle();h.Step(); // voice AI enabled
+  {std::lock_guard<std::mutex> lock(voice_ai_bridge::mutex);voice_ai_bridge::speaks.clear();}
+  chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);h.Step();
+  assert(voice_ai_bridge::SpeechText()=="Merhaba herkese");
+  {std::lock_guard<std::mutex> lock(voice_ai_bridge::mutex);assert(voice_ai_bridge::speaks.empty());} // saving never speaks: only the button does
+  assert(voice_ai_bridge::Speak(voice_ai_bridge::SpeechText()));{std::lock_guard<std::mutex> lock(voice_ai_bridge::mutex);assert(voice_ai_bridge::speaks.size()==1&&voice_ai_bridge::speaks.front()=="Merhaba herkese");voice_ai_bridge::speaks.clear();}
+  chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);h.Step();assert(h.f.open_text=="Merhaba herkese"); // editor starts with the saved message
+  voice_ai_bridge::Toggle();h.Step();
+  // Game build without TouchScreenKeyboard: falls back to the ImGui keyboard path.
+  h.f.native_missing=true;h.f.opens=0;chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);h.Step();
+  assert(h.f.opens==0&&voice_ai_bridge::SpeechText()=="TEST_KEY"&&!h.f.panel);}
  std::cout<<"Bot controller: zero HTTP for small talk, silent name-prefixed/chunk SKIP, timed strict-only reminders, draft/focus/cooldown/room/name guards and stale-result rejection; local profanity warnings with slang bypass and repeat bounds: PASS\n";
 }

@@ -19,6 +19,7 @@ inline void Toggle(){std::lock_guard<std::mutex> l(mutex);desired.enabled=!desir
 inline void Mode(int input,int output){std::lock_guard<std::mutex> l(mutex);desired.input=std::clamp(input,0,2);desired.output=std::clamp(output,0,1);++revision;}
 inline void Destination(int v){std::lock_guard<std::mutex> l(mutex);desired.destination=std::clamp(v,0,1);++revision;}
 inline void SetTone(int v){tone.store(std::clamp(v,0,100));}
+inline void SaveSpeech(std::string text){std::lock_guard<std::mutex> l(mutex);speech_text=std::move(text);} // saving never speaks
 inline std::string SpeechText(){std::lock_guard<std::mutex> l(mutex);return speech_text;}
 // Remember the typed message; speak it now if voice AI is on. Returns false when it could only be saved.
 inline bool Speak(std::string text){std::lock_guard<std::mutex> l(mutex);speech_text=text;if(text.empty()||!desired.enabled)return false;if(speaks.size()<2)speaks.push_back(std::move(text));return true;}

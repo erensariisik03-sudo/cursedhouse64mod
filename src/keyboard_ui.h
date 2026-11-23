@@ -7,6 +7,9 @@ namespace keyboard_ui {
 // Optional clipboard source for the Paste key (set by the host; null = key does nothing).
 using PasteProvider = bool (*)(std::string& out);
 void SetPasteProvider(PasteProvider provider);
+// Optional clipboard sink for "copy name" buttons (set by the host; null = copy fails).
+using CopyProvider = bool (*)(const std::string& text);
+void SetCopyProvider(CopyProvider provider);
 // Must be called between ImGui::NewFrame() and ImGui::Render().
 void Draw();
 // Direct rendered-key dispatch; caller holds the UI mutex/context.

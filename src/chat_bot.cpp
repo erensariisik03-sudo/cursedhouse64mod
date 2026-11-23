@@ -1,5 +1,6 @@
 #include "chat_bot.h"
 #include "voice_ai_bridge.h"
+#include "android_text_input.h"
 #include "chat_bot_bridge.h"
 #include "chat_bot_core.h"
 #include "chat_bot_fx.h"
@@ -64,6 +65,7 @@ class Controller {
     std::deque<std::string> outbox, recent_sent; // gönderilecek parçalar; kendi yolladıklarımız (yankı koruması)
     bool enabled = false, baseline = false, voice_routed=false;
     Edit editing = Edit::None;
+    android_text_input::Session text_input{api};bool native_input=false;
     std::string issue, own_name, request_sender, reminder_name;
     chat_bot_core::NameReminder reminder;
     uintptr_t active_room=0,reminder_room=0;
@@ -406,21 +408,33 @@ class Controller {
     }
     void BeginEdit(Edit e) {
         editing = e;
-        const std::string speech = e == Edit::Speech ? voice_ai_bridge::SpeechText() : std::string();
-        keyboard_bridge::OpenNative(e == Edit::Persona ? custom.c_str() : e == Edit::Speech ? speech.c_str() : "", e == Edit::Key);
+        const std::string initial = e == Edit::Persona ? custom : e == Edit::Speech ? voice_ai_bridge::SpeechText() : std::string();
+        native_input = text_input.Open(initial, e == Edit::Key); // Android's own keyboard
+        if (!native_input) keyboard_bridge::OpenNative(initial.c_str(), e == Edit::Key); // fallback: ImGui keyboard
         Status(e == Edit::Key ? u8"AI | API anahtarını yaz, Enter'a bas." : e == Edit::Speech ? u8"AI | Seslendirilecek mesajı yaz, Enter'a bas." : u8"AI | Kişiliği yaz, Enter'a bas.");
+    }
+    void FinishEdit(const std::string& raw) {
+        const std::string value = chat_bot_core::Trim(chat_bot_core::PrefixScalars(raw, 1024));
+        if (editing == Edit::Key) { key = value; SaveConfig(); Status(key.empty() ? u8"AI | Anahtar silindi." : u8"AI | Anahtar kaydedildi (cihazda kalıcı)."); }
+        else if (editing == Edit::Speech) { voice_ai_bridge::SaveSpeech(chat_bot_core::PrefixScalars(value, 300)); Status(value.empty() ? u8"AI | Mesaj silindi." : u8"AI | Mesaj kaydedildi; okutmak için 'Mesajı seslendir' düğmesine bas."); }
+        else { custom = value; mode = value.empty() ? 0 : chat_bot_core::kPersonaCount; SaveConfig(); InvalidateReplies(); history.clear(); QueueStatus(chat_bot_fx::Event::Profile,chat_bot_core::PersonaName(mode));Status(u8"AI | Özel kişilik kaydedildi, hafıza sıfırlandı."); }
+        editing = Edit::None;
     }
     void PollEdit() {
         if (editing == Edit::None) return;
+        if (native_input) {
+            std::string value;
+            const auto state = text_input.Poll(value);
+            if (state == android_text_input::State::Open) return;
+            text_input.Close(); native_input = false;
+            if (state == android_text_input::State::Done) FinishEdit(value);
+            else { editing = Edit::None; Status(u8"AI | Düzenleme iptal."); }
+            return;
+        }
         std::array<char, text_buffer::kCapacity> buffer{}; bool submit = false, visible = false;
         if (!keyboard_bridge::PollNative(buffer.data(), buffer.size(), submit, visible)) { editing = Edit::None; Status(u8"AI | Düzenleme iptal."); return; }
-        if (submit) {
-            const std::string value = chat_bot_core::Trim(buffer.data());
-            if (editing == Edit::Key) { key = value; SaveConfig(); Status(key.empty() ? u8"AI | Anahtar silindi." : u8"AI | Anahtar kaydedildi (cihazda kalıcı)."); }
-            else if (editing == Edit::Speech) { Status(voice_ai_bridge::Speak(chat_bot_core::PrefixScalars(value, 300)) ? u8"AI | Mesaj seslendiriliyor." : u8"AI | Mesaj kaydedildi; Sesli AI açıkken seslendirilir."); }
-            else { custom = value; mode = value.empty() ? 0 : chat_bot_core::kPersonaCount; SaveConfig(); InvalidateReplies(); history.clear(); QueueStatus(chat_bot_fx::Event::Profile,chat_bot_core::PersonaName(mode));Status(u8"AI | Özel kişilik kaydedildi, hafıza sıfırlandı."); }
-            editing = Edit::None; keyboard_bridge::CloseNative();
-        } else if (!visible) { editing = Edit::None; keyboard_bridge::CloseNative(); Status(u8"AI | Düzenleme iptal."); }
+        if (submit) { FinishEdit(buffer.data()); keyboard_bridge::CloseNative(); }
+        else if (!visible) { editing = Edit::None; keyboard_bridge::CloseNative(); Status(u8"AI | Düzenleme iptal."); }
     }
     void Commands() {
         const auto c = chat_bot_bridge::Take();
