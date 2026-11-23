@@ -43,18 +43,29 @@ if(MM_ENABLE_SEDA)
     if(NOT SHERPA_ONNX_ROOT)
         message(FATAL_ERROR "MM_ENABLE_SEDA=ON requires -DSHERPA_ONNX_ROOT=<sherpa-onnx Android install prefix>")
     endif()
-    find_path(SHERPA_ONNX_INCLUDE_DIR
-        NAMES sherpa-onnx/c-api/c-api.h
-        PATHS "${SHERPA_ONNX_ROOT}/include" NO_DEFAULT_PATH)
-    find_library(SHERPA_ONNX_C_API_LIBRARY
-        NAMES sherpa-onnx-c-api
-        PATHS "${SHERPA_ONNX_ROOT}/lib" NO_DEFAULT_PATH)
-    find_library(SHERPA_ONNX_RUNTIME_LIBRARY
-        NAMES onnxruntime
-        PATHS "${SHERPA_ONNX_ROOT}/lib" NO_DEFAULT_PATH)
-    if(NOT SHERPA_ONNX_INCLUDE_DIR OR NOT SHERPA_ONNX_C_API_LIBRARY OR NOT SHERPA_ONNX_RUNTIME_LIBRARY)
-        message(FATAL_ERROR "sherpa-onnx C API not found. Expected include/sherpa-onnx/c-api/c-api.h and lib/libsherpa-onnx-c-api.so + libonnxruntime.so under SHERPA_ONNX_ROOT=${SHERPA_ONNX_ROOT}")
-    endif()
+    # IMPORTANT: Use direct filesystem checks and absolute library paths.
+    # find_path()/find_library() are intentionally forbidden here because the
+    # Android toolchain can re-root PATHS into its sysroot and miss a valid
+    # host-side install prefix produced by build-android-arm64-v8a.sh.
+    get_filename_component(SHERPA_ONNX_ROOT_REAL "${SHERPA_ONNX_ROOT}" REALPATH)
+    set(SHERPA_ONNX_INCLUDE_DIR "${SHERPA_ONNX_ROOT_REAL}/include")
+    set(SHERPA_ONNX_C_API_LIBRARY "${SHERPA_ONNX_ROOT_REAL}/lib/libsherpa-onnx-c-api.so")
+    set(SHERPA_ONNX_RUNTIME_LIBRARY "${SHERPA_ONNX_ROOT_REAL}/lib/libonnxruntime.so")
+    set(SHERPA_ONNX_C_API_HEADER "${SHERPA_ONNX_INCLUDE_DIR}/sherpa-onnx/c-api/c-api.h")
+
+    message(STATUS "SEDA_CMAKE_DIRECT_PATH_CHECK_V2: using sherpa-onnx prefix: ${SHERPA_ONNX_ROOT_REAL}")
+    foreach(required_file IN ITEMS
+            "${SHERPA_ONNX_C_API_HEADER}"
+            "${SHERPA_ONNX_C_API_LIBRARY}"
+            "${SHERPA_ONNX_RUNTIME_LIBRARY}")
+        if(NOT EXISTS "${required_file}")
+            message(FATAL_ERROR "SEDA dependency is missing: ${required_file}. Check the sherpa-onnx install step and SHERPA_ONNX_ROOT=${SHERPA_ONNX_ROOT_REAL}")
+        endif()
+    endforeach()
+    message(STATUS "SEDA sherpa header: ${SHERPA_ONNX_C_API_HEADER}")
+    message(STATUS "SEDA C API library: ${SHERPA_ONNX_C_API_LIBRARY}")
+    message(STATUS "SEDA ONNX Runtime: ${SHERPA_ONNX_RUNTIME_LIBRARY}")
+
     target_include_directories(multiplayermod PRIVATE "${SHERPA_ONNX_INCLUDE_DIR}")
     target_compile_definitions(multiplayermod PRIVATE MM_ENABLE_SEDA=1)
     target_link_libraries(multiplayermod PRIVATE "${SHERPA_ONNX_C_API_LIBRARY}" "${SHERPA_ONNX_RUNTIME_LIBRARY}")

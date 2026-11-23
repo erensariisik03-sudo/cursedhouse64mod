@@ -36,12 +36,23 @@ jobs:
       - name: Test native editor and shared AI filters
         run: bash tests/run.sh
 
+      - name: Verify patched SEDA CMake integration
+        shell: bash
+        run: |
+          if ! grep -q "SEDA_CMAKE_DIRECT_PATH_CHECK_V2" CMakeLists.txt; then
+            echo "::error::This checkout still has the old sherpa find_path/find_library logic. Replace the project files with the CMake root-path fix v2 package."
+            exit 1
+          fi
+          echo "SEDA CMake direct-path fix v2 is present."
+
       - name: Build sherpa-onnx C API for Android ARM64
         shell: bash
         run: |
           git clone --depth 1 --branch v2.0.3 https://github.com/k2-fsa/sherpa-onnx.git "$RUNNER_TEMP/sherpa-onnx"
           cd "$RUNNER_TEMP/sherpa-onnx"
-          # The C API is used from native C++; JNI, TTS and diarization are not needed.
+          # The C API is used from native C++; JNI, TTS, diarization and websocket
+          # support are not needed by this mod. sherpa-onnx v2.0.3 itself adds the
+          # Android 16 KiB max-page-size linker flag in its top-level CMakeLists.
           export ANDROID_NDK="$ANDROID_NDK_HOME"
           export BUILD_SHARED_LIBS=ON
           export SHERPA_ONNX_ENABLE_C_API=ON
@@ -49,29 +60,28 @@ jobs:
           export SHERPA_ONNX_ENABLE_TTS=OFF
           export SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=OFF
           export SHERPA_ONNX_ENABLE_BINARY=OFF
-          # The mod only needs the local ASR C API; omit optional websocket support.
           python3 - <<'PY'
           from pathlib import Path
           script = Path("build-android-arm64-v8a.sh")
           lines = script.read_text().splitlines()
-          # NDK r27 requires an explicit 16 KiB page-size linker flag.
-          for index, line in enumerate(lines):
-              if line.strip().startswith("cmake -DCMAKE_TOOLCHAIN_FILE="):
-                  lines.insert(index + 1, "    -DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 " + chr(92))
-                  break
           for index, line in enumerate(lines):
               if line.strip().startswith("-DSHERPA_ONNX_ENABLE_JNI="):
-                  lines.insert(index + 1, "    -DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF " + chr(92))
+                  if index + 1 >= len(lines) or "SHERPA_ONNX_ENABLE_WEBSOCKET" not in lines[index + 1]:
+                      lines.insert(index + 1, "    -DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF " + chr(92))
                   break
           else:
-              raise SystemExit("Could not patch sherpa-onnx v2.0.3 build flags")
+              raise SystemExit("Could not find the sherpa-onnx JNI flag to disable websocket")
           script.write_text("\n".join(lines) + "\n")
           PY
           ./build-android-arm64-v8a.sh
-          test -f build-android-arm64-v8a/install/include/sherpa-onnx/c-api/c-api.h
-          test -f build-android-arm64-v8a/install/lib/libsherpa-onnx-c-api.so
-          test -f build-android-arm64-v8a/install/lib/libonnxruntime.so
-          echo "SHERPA_ONNX_ROOT=$RUNNER_TEMP/sherpa-onnx/build-android-arm64-v8a/install" >> "$GITHUB_ENV"
+          SHERPA_INSTALL="$RUNNER_TEMP/sherpa-onnx/build-android-arm64-v8a/install"
+          test -s "$SHERPA_INSTALL/include/sherpa-onnx/c-api/c-api.h"
+          test -s "$SHERPA_INSTALL/lib/libsherpa-onnx-c-api.so"
+          test -s "$SHERPA_INSTALL/lib/libonnxruntime.so"
+          echo "Sherpa install tree verified: $SHERPA_INSTALL"
+          find "$SHERPA_INSTALL/include/sherpa-onnx/c-api" -maxdepth 1 -type f -printf '%p\n' | sort
+          find "$SHERPA_INSTALL/lib" -maxdepth 1 -type f -name '*.so' -printf '%f\n' | sort
+          echo "SHERPA_ONNX_ROOT=$SHERPA_INSTALL" >> "$GITHUB_ENV"
 
       - name: Download SEDA v0.2-Tiny c32 model package
         shell: bash
@@ -102,8 +112,11 @@ jobs:
         run: |
           mkdir -p dist/arm64-v8a
           cp build/libmultiplayermod.so dist/arm64-v8a/libmultiplayermod.so
-          cp "$SHERPA_ONNX_ROOT/lib/libsherpa-onnx-c-api.so" dist/arm64-v8a/
-          cp "$SHERPA_ONNX_ROOT/lib/libonnxruntime.so" dist/arm64-v8a/
+          # The C API .so has transitive dependencies (sherpa core, fbank,
+          # decoder, FST, etc.). Package every shared library from the install.
+          cp "$SHERPA_ONNX_ROOT"/lib/*.so dist/arm64-v8a/
+          test -f dist/arm64-v8a/libsherpa-onnx-c-api.so
+          test -f dist/arm64-v8a/libonnxruntime.so
           STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
           READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
           for library in dist/arm64-v8a/*.so; do

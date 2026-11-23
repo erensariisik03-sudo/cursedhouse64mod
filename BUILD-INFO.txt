@@ -72,3 +72,10 @@ Known limitations / device checks:
   keep the three ARM64 shared libraries together in the native loader path.
 - No physical Android game, real Photon room, or real Gemini key was used for
   these local fixture tests.
+
+CMake fix v2 (2026-11-23):
+- Replaced all sherpa `find_path`/`find_library` discovery with direct checks of the
+  three installed absolute paths.
+- Added the `SEDA_CMAKE_DIRECT_PATH_CHECK_V2` build-log marker.
+- GitHub Actions now fails early if the checkout still contains the old CMake block,
+  and prints the installed sherpa header/shared-library tree before configuring.
