@@ -76,7 +76,11 @@ build/tests/navmesh_api_test
     tests/room_vote_test.cpp -o build/tests/room_vote_test
 build/tests/room_vote_test
 
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src tests/message_gate_test.cpp -o build/tests/message_gate_test
+build/tests/message_gate_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src -pthread tests/voice_ai_core_test.cpp -o build/tests/voice_ai_core_test
 build/tests/voice_ai_core_test
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -DMM_ENABLE_SEDA=1 -I tests/stubs -I src tests/seda_asr_compile_test.cpp -pthread -o build/tests/seda_asr_compile_test
+build/tests/seda_asr_compile_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -I tests/stubs -I src -pthread tests/voice_ai_runtime_test.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/voice_ai_runtime_test
 build/tests/voice_ai_runtime_test

@@ -3,6 +3,7 @@
 #include "android_text_input.h"
 #include "chat_bot_bridge.h"
 #include "chat_bot_core.h"
+#include "message_gate.h"
 #include "chat_bot_fx.h"
 #include "chat_send_gate.h"
 #include "chat_bot_engine.h"
@@ -313,49 +314,56 @@ class Controller {
                 const auto vote_command=chat_bot_core::Fold(chat_bot_core::Trim(*msg));
                 if(vote_command=="/evet"||vote_command=="/hayir")break; // room moderation commands never reach the AI
                 if (std::find(recent_sent.begin(), recent_sent.end(), *msg) != recent_sent.end()) break; // yankı koruması
-                if(voice_ai_bridge::RoutesText()) {voice_ai_bridge::PushText({active_room,name,*msg});break;}
-                // Gereksiz istek göndermemek için yerel süzgeçler (AI'ya gitmeden):
-                if (message_filter&&chat_bot_core::IsNoise(*msg)) { snap.last_in = u8"(anlamsız/kahkaha; atlandı)"; break; }
                 const bool mentions_me=chat_bot_core::MentionsBot(*msg,own_name);
                 std::vector<std::string> others;
                 for(const auto& p:snap.players)if(p!=name)others.push_back(p);
-                if(message_filter&&!mentions_me&&chat_bot_core::AddressedToOther(*msg,others,own_name)){
-                    talking[name]=now_+kSideTalkWindow;
-                    for(const auto& o:others)if(chat_bot_core::AddressedToOther(*msg,{o},own_name))talking[o]=now_+kSideTalkWindow;
-                    snap.last_in=u8"(başkasına yazılmış; atlandı)";break;
-                }
                 const auto eng=engaged.find(name);
                 const bool in_conversation=eng!=engaged.end()&&now_<eng->second;
-                if(chat_bot_core::DirectedProfanity(*msg,own_name,others,in_conversation)){
-                    WarnProfanity(name);break;
+                const auto side=talking.find(name);
+                message_gate::Context gate_context;
+                gate_context.general_filter=message_filter;
+                gate_context.name_filter=strict;
+                gate_context.all_mode=all;
+                gate_context.in_conversation=in_conversation;
+                gate_context.side_conversation=side!=talking.end()&&now_<side->second;
+                gate_context.persona=mode;
+                gate_context.sender=name;
+                gate_context.own_name=own_name;
+                gate_context.other_players=others;
+                const auto decision=message_gate::Evaluate(*msg,gate_context);
+                if(decision.action==message_gate::Action::Drop){
+                    if(decision.reason==message_gate::Reason::AddressedToOther){
+                        talking[name]=now_+kSideTalkWindow;
+                        for(const auto& o:others)if(chat_bot_core::AddressedToOther(*msg,{o},own_name))talking[o]=now_+kSideTalkWindow;
+                        snap.last_in=u8"(başkasına yazılmış; atlandı)";
+                    }else if(decision.reason==message_gate::Reason::Noise)snap.last_in=u8"(anlamsız/kahkaha; atlandı)";
+                    else if(decision.reason==message_gate::Reason::NameRequired)snap.last_in=u8"(adımla gelmedi; atlandı)";
+                    else if(decision.reason==message_gate::Reason::SideConversation)snap.last_in=u8"(başkalarıyla konuşuyor; atlandı)";
+                    break;
                 }
-                // A complete hello/how-are-you phrase is handled locally even
-                // without a name mention. A greeting plus a real question is not.
-                const auto smalltalk=chat_bot_core::SmallTalkReply(*msg,name,own_name,mode);
-                if(smalltalk){
+                if(decision.action==message_gate::Action::Warn){WarnProfanity(name);break;}
+                if(decision.action==message_gate::Action::Instant){
                     const auto previous=last_smalltalk.find(name);
                     if(previous!=last_smalltalk.end()&&now_-previous->second<kSmallTalkGap)break;
                     last_smalltalk[name]=now_;
-                    pending.push_back({name,*smalltalk,true});
-                    while(pending.size()>6)pending.pop_front();
                     if(mentions_me)engaged[name]=now_+kConversationWindow;
+                    if(voice_ai_bridge::RoutesText())voice_ai_bridge::PushText({active_room,name,*msg,true,decision.instant_reply});
+                    else {pending.push_back({name,decision.instant_reply,true});while(pending.size()>6)pending.pop_front();}
                     break;
                 }
                 const auto previous=last_accept.find(name);
                 if(previous!=last_accept.end()&&now_-previous->second<kPerSenderGap)break;
-                // An explicit audience selection already addresses the bot.
-                // Name gating is useful for the whole room, not a private
-                // conversation with a player the user deliberately selected.
-                if(all&&strict&&!mentions_me&&!in_conversation){snap.last_in=u8"(adımla gelmedi; atlandı)";break;}
                 if(mentions_me)engaged[name]=now_+kConversationWindow;
-                const auto side = talking.find(name);
-                if (message_filter && all && !mentions_me && !in_conversation && side != talking.end() && now_ < side->second) { snap.last_in = u8"(başkalarıyla konuşuyor; atlandı)"; break; }
-                last_accept[name] = now_;
-                // Aynı kişinin bekleyen eski mesajı varsa yenisiyle değiştir (kuyruk şişmesin).
-                bool merged = false;
-                for (auto& q : pending) if (!q.canned && q.name == name) { q.text = chat_bot_core::PrefixScalars(*msg, 400); merged = true; break; }
-                if (!merged) pending.push_back({name, chat_bot_core::PrefixScalars(*msg, 400), false});
-                while (pending.size() > 6) pending.pop_front();
+                last_accept[name]=now_;
+                // Both the normal chat path and voice-routed text have already
+                // passed the exact same local gate above.
+                if(voice_ai_bridge::RoutesText())voice_ai_bridge::PushText({active_room,name,*msg,false,{}});
+                else {
+                    bool merged=false;
+                    for(auto& q:pending)if(!q.canned&&q.name==name){q.text=chat_bot_core::PrefixScalars(*msg,400);merged=true;break;}
+                    if(!merged)pending.push_back({name,chat_bot_core::PrefixScalars(*msg,400),false});
+                    while(pending.size()>6)pending.pop_front();
+                }
                 break;
             }
         }
@@ -480,7 +488,7 @@ public:
         auto* running = api.Call(queue, nullptr, nullptr, &ok);
         if (!ok || !running || !*static_cast<bool*>(api.object_unbox(running))) { return; } // sahne yükleniyor
         Commands(); PollEdit();
-        voice_ai_bridge::Configure({key,System(),own_name,all,strict,selected});
+        voice_ai_bridge::Configure({key,System(),own_name,all,strict,selected,message_filter});
         const bool route_voice=voice_ai_bridge::RoutesText();
         if(route_voice!=voice_routed){InvalidateReplies();baseline=false;voice_routed=route_voice;}
 

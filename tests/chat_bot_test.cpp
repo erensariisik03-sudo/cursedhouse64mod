@@ -97,6 +97,7 @@ int main() {
     fail_models = 0; calls = 0;
     e.Submit("s", {{false, "x"}}, "K"); assert(Wait(e, r) && r.ok && r.model == chat_bot_engine::kModels[1] && calls == 1); // model0 dinleniyor
     assert(std::string(chat_bot_engine::kModels[0]).find("3.1-flash-lite-preview") != std::string::npos);
+    for (const auto* model : chat_bot_engine::kModels) assert(std::string(model).find("gemini-3.5-flash") == std::string::npos);
     // Hepsi hata: all_failed, son kod
     e.Reset(); calls = 0; fail_models = 1000; fail_code = 404;
     e.Submit("s", {{false, "x"}}, "K");

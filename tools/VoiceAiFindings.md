@@ -32,9 +32,15 @@ hook'lanır. Orijinal playback daima iletilir. Player kimliği PhotonVoiceView
 PhotonView.Owner üzerinden alınır. Pinned float dizisinin başlangıcı IL2CPP
 array_object_header_size export'undan çözülür; tahmini başlık/offset kullanılmaz.
 Audio thread yalnız sınırlı PCM kopyalar; HTTP/Unity nesne işlemi yapmaz.
-16 kHz mono WAV, konuşma/sessizlik bölümlendirmesi, Gemini transkripsiyon,
-mevcut sohbet model havuzu, ardından cihazın yerel Android TextToSpeech motoru (tr-TR,
-düşük perde; Gemini TTS kaldırıldı, ağ/kota yok). Ses yanıtı en çok 45 saniye PCM16 mono kabul edilir.
+16 kHz mono PCM, 0.55 s kısa-phrase VAD ve 0.9 s sessizlik bölümlendirmesi.
+SEDA v0.2-Tiny c32 streaming Zipformer2 transducer, sherpa-onnx C API ve ONNX
+Runtime ile cihaz üzerinde (CPU, 1 thread, greedy) transkripsiyon yapar. Ham ses
+Gemini'ye gönderilmez; transkript yazılı mesajla aynı `message_gate::Evaluate`
+kararından geçer. `Mesaj filtresi` ve `Adla çağırma` ayarları iki giriş türüne
+ortak uygulanır. Yalnızca AI kararı alan metin Gemini'ye gönderilir. Hazır
+selamlaşmalar/uyarılar yerel üretilir. Ardından cihazın Android TextToSpeech
+motoru (tr-TR, düşük perde; Gemini TTS kaldırıldı, ağ/kota yok). Ses yanıtı en
+çok 45 saniye PCM16 mono kabul edilir.
 Yankı metni, kendi mesajlarımız ve /evet-/hayır komutları tekrar işlenmez.
 
 ## Mikrofon ayrımı
@@ -62,3 +68,21 @@ kapalı oda; AI konuşurken mikrofona konuşma; ses ortasında Durdur/çıkış/
 ses ayarı; API kota/ağ kesilmesi ve oynatmadan sonra mikrofon geri dönüşü.
 Düşman görme testi God kapalı yapılmalı. Geç bağlanan klon ilk 12 denemeden
 sonra da 10 saniye arayla bağlamayı dener. Native AI/host yetkisi korunur.
+
+
+## Yerel Türkçe ASR entegrasyonu
+
+- Model: `atasoglu/seda-v0.2-tiny`, c32 (0.64 s streaming export), `tokens.txt`
+  + `encoder.int8.onnx`, `decoder.onnx`, `joiner.int8.onnx`.
+- Sherpa-onnx C API v2.0.3, Android `arm64-v8a`, ONNX Runtime paylaşımlı
+  bağımlılıkları. C++ kodu yalnızca native C API kullanır; JNI/TTS/VAD ek
+  modülleri build edilmez.
+- `tools/fetch_seda_model.sh` ağırlıkları ayrı ZIP'e indirir. `tools/install_seda_android.ps1`
+  uygulamanın app-specific external files dizinine yükler. `seda_asr.h` modeli
+  ilk ses isteğinde tembel (lazy) yükler; Photon/Unity callback'inde model
+  başlatılmaz.
+- SEDA yalnızca Türkçe içindir; yabancı dil, gürültülü/eko ses ve oyun özel
+  isimlerinde hata olabilir. Tiny sürümünün model kartında gürültülü/telefon
+  konuşması için özel ölçüm bulunmaz. Model lisansı CC BY-SA 4.0'dır.
+- ASR başarısızsa ses ham haliyle Gemini'ye yollanmaz; istek atlanır.
+- ASR gerçek cihaz ve örnek oyun sesleriyle henüz uçtan uca doğrulanmadı.

@@ -9,8 +9,8 @@
 namespace voice_ai_bridge {
 struct Settings { bool enabled=false;int input=2,output=1,destination=0; }; // input: audio/text/both; output: chat/voice; destination: auto/local
 struct Snapshot {Settings settings;bool ready=false,network_ready=false,busy=false,speaking=false,mic_blocked=false;unsigned streams=0;std::string status="Sesli AI kapalı.",heard,reply;};
-struct Config {std::string key,system,own_name;bool all=false,strict=true;std::vector<std::string> selected;};
-struct Text {uintptr_t room=0;std::string name,text;};
+struct Config {std::string key,system,own_name;bool all=false,strict=true;std::vector<std::string> selected;bool message_filter=true;};
+struct Text {uintptr_t room=0;std::string name,text;bool instant=false;std::string instant_reply;};
 inline std::mutex mutex;inline Snapshot snapshot;inline Config config;inline Settings desired;inline unsigned revision=0;inline bool cancel=false;inline std::deque<Text> texts;inline std::deque<std::string> speaks;inline std::string speech_text;inline std::atomic<int> tone{0}; // tone: 0 = deep robot (default) .. 100 = baby
 inline Snapshot Read(){std::lock_guard<std::mutex> l(mutex);return snapshot;}
 inline void Publish(Snapshot v){std::lock_guard<std::mutex> l(mutex);snapshot=std::move(v);}

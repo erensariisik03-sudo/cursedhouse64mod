@@ -1,55 +1,68 @@
-Artifact: libmultiplayermod.so
-Build marker: voice-ai-panel-latebind-arm64
-Target: Android arm64-v8a / ELF64 AArch64 / API21 / Release
-NDK: r27c 27.2.12479018 / c++_static / 16 KiB LOAD alignment
-Build ID: 1e830bee4a47af22934d772a6a8e4f2862094a44
-SHA-256: 5498fb4d6e3bbede9805673aa154ffc4556cc02b86a0d1c51a01e5dc86069092
-Size: 1745856 bytes
-Base: ai-recovery-player-speed ZIP; SHA-256 in tools/source-scope-check.json
+Artifact: source package for libmultiplayermod.so + local Turkish SEDA ASR
+Build target: Android arm64-v8a / ELF64 AArch64 / API 21+
+Android NDK (GitHub Actions): r27c 27.2.12479018
+Sherpa-ONNX: v2.0.3 C API, Android arm64-v8a
+SEDA model: atasoglu/seda-v0.2-tiny c32, greedy_search, CPU, 1 thread
+Model runtime package: separate gmm_seda/ model archive (CC BY-SA 4.0)
 
-Changes:
-- AI subpages: people, personality, response settings, Voice AI, history.
-- Voice -> Voice, Text -> Voice, Voice -> Text, Voice+Text -> Voice.
-- Shared Gemini key/persona/player selection; written bot may stay disabled.
-- Remote decoded float PCM via actual FrameOut<float>, runtime array header,
-  pinned buffers and original playback forwarding. Max 8 speakers, 12s segment,
-  4 queued inputs, one HTTP worker; cancellation rejects stale room/config jobs.
-- Voice question: ONE Gemini request (audio in -> "HEARD:/REPLY:" text, model pool order; old 2-step STT as fallback)
-  + LOCAL Android TextToSpeech
-  (tr-TR, lowered pitch; Gemini TTS removed). No raw audio/key/transcript logging. TTS failure falls back to chat.
-- VoiceChatEnabled and real Voice Client.InRoom both required for broadcast.
-  Voice-disabled room: text questions can receive local audible answers.
-  Other unmodified peers cannot hear without their own Voice-room connection.
-- Microphone off before AI clip; record/source/transmit/private-start guards,
-  extra active microphone Recorders muted; latest same-room mic preference
-  restored after playback. Old-room microphones are not reopened.
-- Enemy perception binding retries continue every 10s after first 12 failures.
-  Native host AI, clone behavior, doors, sound investigation and recovery retained.
-- God invisibility/fall/gas/ammo, Hamarat, speed, pause and chat-only prank retained.
+Important artifact distinction:
+- This ZIP contains source code and a GitHub Actions workflow.
+- It does NOT contain a prebuilt libmultiplayermod.so.
+- On push / pull_request / workflow_dispatch, GitHub Actions builds the
+  sherpa-onnx C API and ONNX Runtime, builds the mod with MM_ENABLE_SEDA=ON,
+  downloads the SEDA c32 model, validates ARM64 ELF LOAD alignment, and
+  uploads an artifact named:
+  multiplayermod-arm64-v8a-with-seda-v0.2-tiny
+- The Actions artifact contains dist/arm64-v8a/{libmultiplayermod.so,
+  libsherpa-onnx-c-api.so,libonnxruntime.so} and
+  dist/seda-v0.2-tiny-c32.zip.
 
-Validation:
-- Full tests/run.sh: exit 0. Existing keyboard/editor/clone/gameplay/bot tests and
-  new voice core/native fixtures passed; ImGui actions covered 5 viewports.
-- Final voice/native/bot route tests with ASan+UBSan: exit 0. Audio/text/voice,
-  TTS fallback, key isolation, echo/name filters, stage cancellation, mic guard,
-  extra/new microphones and latest mute restoration; voice-disabled/joined-room
-  gating; written-bot-off text routing and own/vote line exclusion.
-- Final gameplay behavior fixture with ASan+UBSan: exit 0, including attempt 13
-  late binding and prior clone, God, sound, speed and pause regressions.
-- PowerShell 7.4.19 fake ADB: 7 tests passed.
-- Reference game audit: 191 metadata targets / 45 exports; failures=0.
-- Final Android CMake/Ninja build exit 0; stripped ELF AArch64, all LOAD>=0x4000,
-  no shared C++ runtime. Matching exact-build symbols included in tools/.
-- Test logs and ELF report included in tools/validation/.
+Implemented changes:
+- Removed `gemini-3.5-flash` from the model list; `gemini-3.1-flash-lite-preview`
+  remains first. Existing sequential fallback/cooldown remains; the proposed
+  parallel two-model race is not part of this package yet.
+- Local SEDA v0.2-Tiny speech-to-text via sherpa-onnx C API; audio PCM is
+  transcribed on the device and is never attached to Gemini requests.
+- The same deterministic message_gate::Evaluate filter is used by typed chat
+  and voice transcripts. Existing general-filter and name-addressing toggles
+  are passed to both routes.
+- Locally generated small-talk replies, noise/laugh rejection, addressing to
+  other players, name requirements, profanity warnings and conversation state
+  are handled before any Gemini call.
+- Short-utterance segmentation threshold lowered to 0.55 s span / 0.35 s voiced
+  content; 0.9 s silence closes a segment; maximum recording 12 s.
+- PCM sample-rate conversion uses weighted averaging to reduce aliasing while
+  converting to 16 kHz mono.
+- Model files are downloaded separately and installed under the app-specific
+  external files path with tools/install_seda_android.ps1.
 
-Device/API limits:
-- No physical Android game or real Gemini key was used. Mock HTTP/native tests
-  do not prove remote voice delivery, device microphone isolation, recognition
-  in noisy rooms or account model/quota access. Internet and API access required.
-- Try a new room; enable Voice AI per room, select remote people/shared key.
-  Verify all three modes, voice-enabled and voice-disabled rooms, local-only
-  option, another receiving device, stop/room transition and mic restoration.
-- Enemy visual pursuit test requires God OFF; God hides our own AI target.
-  Full native chase/attack remains real-host authority. No host impersonation.
-- Windows/live ADB remains device-dependent; PowerShell tests used Linux/fake ADB.
-Research and operation details: README.md and tools/VoiceAiFindings.md.
+Validation performed in this workspace:
+- message_gate_test: PASS (ASan/UBSan)
+- voice_ai_core_test: PASS (ASan/UBSan; fake ASR/HTTP/TTS)
+- voice_ai_runtime_test: PASS (ASan/UBSan; fake IL2CPP/runtime)
+- seda_asr_compile_test: PASS against a test-only header stub matching the
+  documented sherpa-onnx v2.0.3 C API declarations.
+- Two complete tests/run.sh attempts exceeded local command limits (120 s and
+  300 s) while compiling/running the existing unity_editor fixture; the full
+  suite is therefore NOT marked as passed. The startup, editor-independent
+  regression tests reached before the timeout reported PASS.
+- The new message_gate_test, voice_ai_core_test, voice_ai_runtime_test and
+  seda_asr_compile_test all passed independently (ASan/UBSan where applicable).
+- A full end-to-end Android NDK build and runtime inference with the downloaded
+  model were NOT performed in this workspace.
+  The GitHub Actions workflow is configured to perform the Android build; the
+  first Actions run must pass before treating the binary as build-verified.
+
+Known limitations / device checks:
+- SEDA v0.2-Tiny is Turkish-only. The selected c32 greedy configuration is
+  latency-oriented; the model card reports 17.30 WER on FLEURS-TR for this
+  fast setting. Other languages, game-specific names, overlapping speech,
+  compression and noisy room audio may reduce accuracy further. The reported
+  ~7 MB is the acoustic model file size, not total runtime RAM.
+- Model inference and actual peak RAM/latency must be measured on the target
+  Android device; the source uses one CPU thread and lazy initialization.
+- The model archive is separate from the native libraries. Install model files
+  under /sdcard/Android/data/<package>/files/gmm_seda, restart the game, and
+  keep the three ARM64 shared libraries together in the native loader path.
+- No physical Android game, real Photon room, or real Gemini key was used for
+  these local fixture tests.

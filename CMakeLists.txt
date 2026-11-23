@@ -33,6 +33,33 @@ target_include_directories(multiplayermod PRIVATE include src)
 target_compile_definitions(multiplayermod PRIVATE MM_AUTO_UNITY=$<BOOL:${MM_AUTO_UNITY}>)
 target_compile_options(multiplayermod PRIVATE -Wall -Wextra -Wno-unused-parameter -fexceptions)
 target_link_libraries(multiplayermod PRIVATE imgui dobby_static dl)
+
+# SEDA v0.2-Tiny is an external model package; only the sherpa-onnx C API and
+# ONNX Runtime are linked into the ARM64 module. Model weights are installed
+# separately under the game's app-specific files/gmm_seda directory.
+option(MM_ENABLE_SEDA "Enable local Turkish SEDA v0.2-Tiny speech recognition" ON)
+set(SHERPA_ONNX_ROOT "" CACHE PATH "sherpa-onnx Android install prefix (include/ and lib/)")
+if(MM_ENABLE_SEDA)
+    if(NOT SHERPA_ONNX_ROOT)
+        message(FATAL_ERROR "MM_ENABLE_SEDA=ON requires -DSHERPA_ONNX_ROOT=<sherpa-onnx Android install prefix>")
+    endif()
+    find_path(SHERPA_ONNX_INCLUDE_DIR
+        NAMES sherpa-onnx/c-api/c-api.h
+        PATHS "${SHERPA_ONNX_ROOT}/include" NO_DEFAULT_PATH)
+    find_library(SHERPA_ONNX_C_API_LIBRARY
+        NAMES sherpa-onnx-c-api
+        PATHS "${SHERPA_ONNX_ROOT}/lib" NO_DEFAULT_PATH)
+    find_library(SHERPA_ONNX_RUNTIME_LIBRARY
+        NAMES onnxruntime
+        PATHS "${SHERPA_ONNX_ROOT}/lib" NO_DEFAULT_PATH)
+    if(NOT SHERPA_ONNX_INCLUDE_DIR OR NOT SHERPA_ONNX_C_API_LIBRARY OR NOT SHERPA_ONNX_RUNTIME_LIBRARY)
+        message(FATAL_ERROR "sherpa-onnx C API not found. Expected include/sherpa-onnx/c-api/c-api.h and lib/libsherpa-onnx-c-api.so + libonnxruntime.so under SHERPA_ONNX_ROOT=${SHERPA_ONNX_ROOT}")
+    endif()
+    target_include_directories(multiplayermod PRIVATE "${SHERPA_ONNX_INCLUDE_DIR}")
+    target_compile_definitions(multiplayermod PRIVATE MM_ENABLE_SEDA=1)
+    target_link_libraries(multiplayermod PRIVATE "${SHERPA_ONNX_C_API_LIBRARY}" "${SHERPA_ONNX_RUNTIME_LIBRARY}")
+endif()
+
 target_link_options(multiplayermod PRIVATE -Wl,--no-undefined -Wl,--exclude-libs,ALL
     -Wl,-z,max-page-size=16384 -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map)
 set_target_properties(imgui multiplayermod PROPERTIES

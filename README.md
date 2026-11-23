@@ -88,8 +88,22 @@ bağlıdır. Kaldır, normal ölüm/yeniden doğma akışı değildir.
    isteği zaman aşımına kadar tamamlanabilir; eski cevap uygulanmaz. Yeni
    konuşmalar için özelliği tamamen kapatmak üzere üstteki düğmeyi kullan.
 
-Seçili kişilerin sesi Gemini'ye gönderilir; özelliği odadakilerin bilgisiyle
-kullan. Ham ses dosyası, anahtar ve konuşma içeriği ADB tanı kaydına yazılmaz;
+Uzak oyuncuların sesi önce cihaz üzerinde SEDA v0.2-Tiny ile metne çevrilir.
+Gemini'ye ham ses değil, yalnızca ortak yerel filtreden geçen transkript gönderilir.
+AI panelindeki `Mesaj filtresi` ve `Adla çağırma` anahtarları artık aynı
+`message_gate::Evaluate` katmanında hem yazılı mesajı hem de ses transkriptini
+kontrol eder. Genel filtre kapatıldığında kahkaha/gürültü/yan konuşma elemesi
+kapanır; isim filtresi bağımsız çalışır. Seçili oyuncu modunda seçilmiş kişi
+zaten hedef kapsamıdır; Herkes modunda isim filtresi açıksa `zeka`, `yapay`,
+`yapayzeka` veya karakter adıyla hitap aranır. Selamlaşmalar mevcut davranışa
+uygun olarak yerel hazır cevap alır; Gemini çağrısı yapılmaz.
+SEDA modeli Türkçe içindir; başka diller/özel oyun adları doğru tanınmayabilir.
+Bu paket düşük gecikme için 0,64 saniyelik `c32` akışını ve greedy decoder'ı
+seçer. Model kartındaki Türkçe FLEURS testinde bu hızlı ayar %17,30 WER
+bildirir; daha doğru ayarlar daha büyük dil modeli/ek işlem gerektirir. Gürültülü
+Photon/telefon sesi için aynı doğruluk garanti edilmez. Yaklaşık 7 MB değeri
+akustik model dosyası boyutudur, toplam çalışma RAM'i değildir; cihazda ayrıca
+ölçülmelidir. Özelliği odadakilerin bilgisiyle kullan. Ham ses dosyası, anahtar ve konuşma içeriği ADB tanı kaydına yazılmaz;
 oyunun kendi logcat kayıtları ayrıca içerik içerebilir. Sesli AI geçmişi yalnız
 oturum belleğindedir. İnternet, geçerli anahtar ve ses modellerine erişim/kota
 şarttır; ücretsiz kota veya her hesapta model erişimi garanti edilmez.
@@ -99,13 +113,15 @@ Türkçe ses paketi yüklü olmalıdır (Ayarlar → Dil → Metin okuma). Logca
 sonucu 0 veya üzeri değilse motor/Türkçe yoktur ya da oyun TTS servisini göremiyordur.
 Seslendirme/oynatma başarısızsa cevap normal sohbet akışına yazılır.
 
-Bu sürüm anlık çift yönlü Live API kullanmaz. 0,7 saniye susma ile söz bölümü
-sonlandırılır; bölüm başına en çok 12 saniye, en çok 8 uzak konuşmacı ve 4
-bekleyen istek vardır. Tek arka plan işi çalışır; gecikme ağ ve modele bağlıdır.
-Türkçe ve sessizlik algılaması gerçek oda gürültüsünde ayrıca denenmelidir.
-API biçimi, PCM dönüşümü, mikrofon koruması ve oda kontrolleri sahte HTTP/IL2CPP
-ile sınandı; fiziksel Android ve gerçek Gemini anahtarıyla uçtan uca test
-**yapılmadı**. Ayrıntılı araştırma: `tools/VoiceAiFindings.md`.
+Bu sürüm anlık çift yönlü Live API kullanmaz. Ses bölümü en az 0,55 saniye konuşma
+ve en az 0,35 saniye ses etkinliği içerdiğinde tanımaya alınır; 0,9 saniye
+sessizlikte biter. Bölüm başına en çok 12 saniye, en çok 8 uzak konuşmacı ve 4
+bekleyen istek vardır. SEDA v0.2-Tiny c32 greedy decoder tek CPU thread'inde
+çalışır. Model dosyaları ayrı pakettir ve aşağıdaki kurulum adımı gerekir.
+Gerçek oda gürültüsünde Türkçe tanıma ayrıca cihazda test edilmelidir.
+Yerel ASR ve ortak filtre testleri sahte ASR/HTTP/IL2CPP ile doğrulanır; fiziksel
+Android ve gerçek Gemini anahtarıyla uçtan uca test **yapılmadı**. Ayrıntılar:
+`tools/VoiceAiFindings.md`.
 
 ## ADB kayıtları
 
@@ -143,20 +159,33 @@ kişisel içerik açısından kontrol et.
 
 ## Derleme
 
-Android NDK r27c (`27.2.12479018`), CMake 3.22.1+ ve Ninja:
+Android NDK r27c (`27.2.12479018`), CMake 3.22.1+, Ninja, Git, curl ve zip
+gerekir. SEDA açık olduğu için sherpa-onnx v2.0.3 Android ARM64 C API ile
+ONNX Runtime bağımlılıkları da derlenir. GitHub Actions bunları otomatik indirir
+ve derler; workflow `dist/` içinde mod kütüphanesi, `libsherpa-onnx-c-api.so`,
+`libonnxruntime.so` ve ayrı `seda-v0.2-tiny-c32.zip` model paketini üretir.
+Üç `.so` dosyası da aynı ARM64 yükleme paketinde birlikte tutulmalıdır.
 
-```bash
-cmake -S . -B build-arm64 -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-21 \
-  -DANDROID_STL=c++_static -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON
-cmake --build build-arm64 --parallel
+Modeli oyunun uygulama paket adına göre yükle (örnek paket adını kendi oyun
+paket kimliğinle değiştir):
+
+```powershell
+.\tools\install_seda_android.ps1 -PackageName com.example.game -ModelArchive .\seda-v0.2-tiny-c32.zip
 ```
 
-ImGui ve Dobby kaynakları ZIP'tedir. GitHub Actions iş akışı ARM64 derler ve
-`libmultiplayermod.so` çıktısını verir. NDK dışındaki bağımlılıklar için indirme
-gerekmez. Çıktı 16 KB LOAD hizalaması ve statik C++ çalışma zamanı kullanır.
+Kurulum hedefi `/sdcard/Android/data/<paket>/files/gmm_seda` dizinidir. Android
+cihazındaki ADB/scoped-storage politikası `adb push` işlemini engellerse model
+dosyalarını aynı uygulama dizinine yetkili bir yöntemle kopyala. Oyun sürecini
+yeniden başlat. Model dosyaları ana `.so` içine gömülmez.
+
+GitHub Actions ARM64 NDK derlemesini, sherpa-onnx C API bağlantısını ve model
+paketini üretir. Manuel CMake derlemesinde önce sherpa-onnx `v2.0.3`
+`build-android-arm64-v8a.sh` betiğini `SHERPA_ONNX_ENABLE_C_API=ON`,
+`SHERPA_ONNX_ENABLE_JNI=OFF`, `SHERPA_ONNX_ENABLE_TTS=OFF` ve
+`SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=OFF` ile çalıştır; ardından
+`-DMM_ENABLE_SEDA=ON -DSHERPA_ONNX_ROOT=<sherpa-install-prefix>` ver.
+Model lisansı CC BY-SA 4.0'dır; model ZIP'inde `MODEL-CREDITS.txt` ile
+atıf ve lisans bağlantısı bulunur. Yeniden dağıtırken lisans koşullarına uy.
 
 ## Testler
 
