@@ -1,0 +1,3 @@
+Voice core: PCM/WAV/base64 validation, per-speaker bounded VAD/resampling/silence, audio-to-text-to-AI-to-speech, text/voice modes, TTS failure to text, key isolation, name gating, echo rejection: PASS
+Voice native runtime: mic shutoff before clip, direct clip source/readback, external mic re-enable blocked, remembered mute restore, local playback mute, setup failure and stale-room fail-closed, pinned PCM with runtime array header and original frame forwarding: PASS
+Bot controller: zero HTTP for small talk, silent name-prefixed/chunk SKIP, timed strict-only reminders, draft/focus/cooldown/room/name guards and stale-result rejection; local profanity warnings with slang bypass and repeat bounds: PASS

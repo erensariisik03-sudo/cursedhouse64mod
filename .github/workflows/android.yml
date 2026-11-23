@@ -1,0 +1,135 @@
+name: Build Android .so (ARM64)
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Android arm64-v8a
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Test native editor and shared AI filters
+        run: bash tests/run.sh
+
+      - name: Build sherpa-onnx C API for Android ARM64
+        shell: bash
+        run: |
+          git clone --depth 1 --branch v2.0.3 https://github.com/k2-fsa/sherpa-onnx.git "$RUNNER_TEMP/sherpa-onnx"
+          cd "$RUNNER_TEMP/sherpa-onnx"
+          # The C API is used from native C++; JNI, TTS and diarization are not needed.
+          export ANDROID_NDK="$ANDROID_NDK_HOME"
+          export BUILD_SHARED_LIBS=ON
+          export SHERPA_ONNX_ENABLE_C_API=ON
+          export SHERPA_ONNX_ENABLE_JNI=OFF
+          export SHERPA_ONNX_ENABLE_TTS=OFF
+          export SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=OFF
+          export SHERPA_ONNX_ENABLE_BINARY=OFF
+          # The mod only needs the local ASR C API; omit optional websocket support.
+          python3 - <<'PY'
+          from pathlib import Path
+          script = Path("build-android-arm64-v8a.sh")
+          lines = script.read_text().splitlines()
+          # NDK r27 requires an explicit 16 KiB page-size linker flag.
+          for index, line in enumerate(lines):
+              if line.strip().startswith("cmake -DCMAKE_TOOLCHAIN_FILE="):
+                  lines.insert(index + 1, "    -DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 " + chr(92))
+                  break
+          for index, line in enumerate(lines):
+              if line.strip().startswith("-DSHERPA_ONNX_ENABLE_JNI="):
+                  lines.insert(index + 1, "    -DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF " + chr(92))
+                  break
+          else:
+              raise SystemExit("Could not patch sherpa-onnx v2.0.3 build flags")
+          script.write_text("\n".join(lines) + "\n")
+          PY
+          ./build-android-arm64-v8a.sh
+          test -f build-android-arm64-v8a/install/include/sherpa-onnx/c-api/c-api.h
+          test -f build-android-arm64-v8a/install/lib/libsherpa-onnx-c-api.so
+          test -f build-android-arm64-v8a/install/lib/libonnxruntime.so
+          echo "SHERPA_ONNX_ROOT=$RUNNER_TEMP/sherpa-onnx/build-android-arm64-v8a/install" >> "$GITHUB_ENV"
+
+      - name: Download SEDA v0.2-Tiny c32 model package
+        shell: bash
+        run: |
+          mkdir -p dist/model
+          bash tools/fetch_seda_model.sh dist/model/gmm_seda
+          (cd dist/model && zip -qr ../seda-v0.2-tiny-c32.zip gmm_seda)
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="arm64-v8a" \
+            -DANDROID_PLATFORM=android-21 \
+            -DANDROID_STL=c++_static \
+            -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
+            -DMM_ENABLE_SEDA=ON \
+            -DSHERPA_ONNX_ROOT="$SHERPA_ONNX_ROOT"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist/arm64-v8a
+          cp build/libmultiplayermod.so dist/arm64-v8a/libmultiplayermod.so
+          cp "$SHERPA_ONNX_ROOT/lib/libsherpa-onnx-c-api.so" dist/arm64-v8a/
+          cp "$SHERPA_ONNX_ROOT/lib/libonnxruntime.so" dist/arm64-v8a/
+          STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          for library in dist/arm64-v8a/*.so; do
+            "$STRIP" --strip-unneeded "$library"
+            file "$library"
+            "$READELF" -d "$library"
+            load_count=0
+            while IFS= read -r align; do
+              load_count=$((load_count + 1))
+              hex="${align#0x}"
+              if (( 16#$hex < 16384 )); then
+                echo "${library}: LOAD alignment ${align} is below 16 KiB" >&2
+                exit 1
+              fi
+            done < <("$READELF" -lW "$library" | awk '$1 == "LOAD" { print $NF }')
+            if (( load_count == 0 )); then echo "${library}: no LOAD segments found" >&2; exit 1; fi
+          done
+          echo "SEDA model archive:"
+          ls -lh dist/seda-v0.2-tiny-c32.zip
+
+      - name: Upload ARM64 binaries and SEDA model
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiplayermod-arm64-v8a-with-seda-v0.2-tiny
+          path: dist/
+          if-no-files-found: error
+          # Keep storage usage low to avoid hitting the account artifact quota.
+          retention-days: 3
+          compression-level: 9

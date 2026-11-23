@@ -1,0 +1,39 @@
+Size/color templates, arbitrary digit length, selection, cancel and atomic 1024 limit: PASS
+UTF-8 limit, selection replacement, cursor insertion and whole-character backspace: PASS
+Touch queue benchmark 1280x800: 6 taps legacy=18 frames, direct=0 extra render frames
+Touch queue benchmark 1920x1080: 6 taps legacy=18 frames, direct=0 extra render frames
+Touch queue benchmark 800x360: 6 taps legacy=18 frames, direct=0 extra render frames
+Touch queue benchmark 360x800: 6 taps legacy=18 frames, direct=0 extra render frames
+Touch queue benchmark 640x360: 6 taps legacy=18 frames, direct=0 extra render frames
+Press-on-down typing, held Delete and taller ImGui layouts, all symbols/block, size/color shortcuts, filtered emoji, cursor, 1024 limit and submit: PASS
+Startup regression: no VM access before Unity frame, original result/exception forwarding, one hook installation: PASS
+Live emoji probe: UTF-8 font/fallback query, full Unicode scalar, sprite fallback and unsupported/error filtering: PASS
+Near-only getter hook: four-byte patch preserves adjacent getter/return, no absolute fallback, allocation/relocation/patch failures rejected: PASS
+Real Dobby constructor: poisoned allocation, preserved address and deterministic metadata: PASS
+Username gate: ARM64 shapes, ambiguous/missing patterns rejected, 25/26/1024/1025 and UTF-16 emoji boundaries: PASS
+Game filters: actual IL2CPP reference ABI, old stack-pointer corruption reproduced, verified writes/rollback, GC roots: PASS
+In file included from tests/unity_editor_test.cpp:2:
+tests/../src/unity_keyboard.cpp:560:6: warning: ‘void {anonymous}::Bootstrap()’ defined but not used [-Wunused-function]
+  560 | void Bootstrap() {
+      |      ^~~~~~~~~
+Android editor: native typing/autocorrection, latest-text FIFO shortcuts, UTF-16 caret/selection, 1024-scalar callback/submit cap, restore/reentry/fallback and stale session rejection: PASS
+Native square shortcut: normal chat send, cooldown/owner checks, native refocus, newer Android draft and scene guards: PASS
+ARM64 observer: tail branches, cycle/unmapped guards and neighboring entry protection: PASS
+Cosmetic catalog: wardrobe change notification after complete commit, stale-view rebuild, no partial/repeated notification, listener failure/reentry guards, bounded edits, rollback, profile refresh and GC roots: PASS
+Cosmetic room plan: explicit selections, offline/reconnect/room transitions, empty-hat removal, local readback, bounded retries and account isolation: PASS
+Cosmetic room runtime: Unity delay, original publisher ABI/decoded keys, local readback, lobby/room/reconnect, inactive-preview reset, account-change dirty latch, bounded failures and GC roots: PASS
+Outfit retention: disconnected profile replacement, inactive manager, transient null/throwing UID, same-account recovery and real-account isolation: PASS
+Actual ARM64 native fixtures: username upper check, preserved minimum, malformed/ambiguous rejection and safe runtime-invoke veneer target: PASS
+V19 actor/tag-owned local waiting clones with empty legacy mesh/no PhotonView, explicit preview exclusion and actor/manager generation guards; visible waits/errors, disabled launcher discovery, disabled catalogue/command cleanup; garden retarget: separate menu/network mesh, read-only binding source, actual Bool support/hierarchy/ownership, native/fallback playback, no preview mutation, stale room/animator commands, ambiguity, readback/errors/reentry and read-only observed network stream: PASS
+Bot controller: zero HTTP for small talk, silent name-prefixed/chunk SKIP, timed strict-only reminders, draft/focus/cooldown/room/name guards and stale-result rejection; local profanity warnings with slang bypass and repeat bounds: PASS
+Chat bot: tag stripping, sender matching, reply sanitising, Gemini JSON, model failover (key only in header): PASS
+Gameplay: own-target God/death-day/camera guards, scoped ghost flight, stripped-API navigation pause/resume and position-write guards, clone route binding, fall damage own-player/scene/thread guards, authenticated client prank votes, owned infinite ammo, item flow and GC roots: PASS
+AI repair: no-original local Granny/Grandpa/Mom binding, unique scene DaysManager, accepted sound callback return/GC/dedupe, stationary/attack timeout recovery with pause/hit guards, own player speed noncompounding/base restoration/ownership: PASS
+Clone extensions: first-obstruction door RPC/cooldown/lock guards, Grandpa stripped fields, native lost-sight patrol, actual noise dedupe/investigation/sight priority, client chat-only vote/prank/draft/cooldown/tie/context: PASS
+AI visibility: own-target native local/RPC lifecycle, request preservation, rate limit, retries, model/ownership/context guards; native hidden-victim release for all three enemies and category pause: PASS
+Progression: own God interaction item/consumption scope, exception/fresh-hand restoration, prerequisite/ownership/scene guards, difficulty context/enum checks, retained combat helpers and Mom route restoration: PASS
+Enemy behavior: clone-local camera/AI remapping, scene-only bindings, independent target lists, animation enable/speed, hierarchy rejection, delayed God attack release preserving chase, other-player/host/death guards: PASS
+Actual stripped NavMesh metadata: all gameplay navigation lookups exist; absent Warp/isOnNavMesh/isStopped cannot gate pause or clone startup: PASS
+Room vote: automatic host yes, immutable actor votes, duplicate names, stale/replayed votes, deadline/tie rules, 1-60s bounds, cancellation and server-clock wrap: PASS
+Voice core: PCM/WAV/base64 validation, per-speaker bounded VAD/resampling/silence, audio-to-text-to-AI-to-speech, text/voice modes, TTS failure to text, key isolation, name gating, echo rejection: PASS
+Voice native runtime: mic shutoff before clip, direct clip source/readback, external mic re-enable blocked, remembered mute restore, local playback mute, setup failure and stale-room fail-closed, pinned PCM with runtime array header and original frame forwarding: PASS

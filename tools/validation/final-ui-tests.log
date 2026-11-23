@@ -1,0 +1,6 @@
+Touch queue benchmark 1280x800: 6 taps legacy=18 frames, direct=0 extra render frames
+Touch queue benchmark 1920x1080: 6 taps legacy=18 frames, direct=0 extra render frames
+Touch queue benchmark 800x360: 6 taps legacy=18 frames, direct=0 extra render frames
+Touch queue benchmark 360x800: 6 taps legacy=18 frames, direct=0 extra render frames
+Touch queue benchmark 640x360: 6 taps legacy=18 frames, direct=0 extra render frames
+Press-on-down typing, held Delete and taller ImGui layouts, all symbols/block, size/color shortcuts, filtered emoji, cursor, 1024 limit and submit: PASS

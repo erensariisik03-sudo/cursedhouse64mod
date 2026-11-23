@@ -1,0 +1,35 @@
+{
+  "base_zip_sha256": "559f754c35cff1bd6935b286d4c6b89a1bf9ccb7a616fcb34eca456a6f46382c",
+  "changed_source_files": [
+    "CMakeLists.txt",
+    "src/chat_bot.cpp",
+    "src/chat_bot_http.cpp",
+    "src/gameplay.cpp",
+    "src/il2cpp_runtime.cpp",
+    "src/il2cpp_runtime.h",
+    "src/keyboard_ui.cpp",
+    "src/unity_keyboard.cpp",
+    "src/voice_ai.cpp",
+    "src/voice_ai.h",
+    "src/voice_ai_bridge.h",
+    "src/voice_ai_core.h"
+  ],
+  "unchanged_source_file_count": 41,
+  "changes": [
+    "separate focused AI pages and voice modes",
+    "bounded remote PCM -> STT -> existing AI -> Gemini TTS pipeline",
+    "local playback for voice-disabled rooms; existing joined Voice room publication otherwise",
+    "microphone record/source/start guards and context-aware restoration",
+    "late enemy perception binding retries after initial twelve attempts"
+  ],
+  "preserved": [
+    "God invisibility/fall/gas protection",
+    "God-owned Infinity Ammo",
+    "Hamarat",
+    "native clone spawning and host AI",
+    "category pause",
+    "own player speed",
+    "host/client chat-only prank vote"
+  ],
+  "real_kick_symbols_absent": true
+}

@@ -1,0 +1,12 @@
+test_capture_and_zip (__main__.CollectorTest.test_capture_and_zip) ... ok
+test_disconnected_logger_preserves_evidence (__main__.CollectorTest.test_disconnected_logger_preserves_evidence) ... ok
+test_explicit_serial (__main__.CollectorTest.test_explicit_serial) ... ok
+test_failed_logger_still_archives (__main__.CollectorTest.test_failed_logger_still_archives) ... ok
+test_invalid_package (__main__.CollectorTest.test_invalid_package) ... ok
+test_multiple_devices_require_selection (__main__.CollectorTest.test_multiple_devices_require_selection) ... ok
+test_unauthorized_device (__main__.CollectorTest.test_unauthorized_device) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 11.644s
+
+OK

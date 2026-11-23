@@ -1,0 +1,32 @@
+public class NavMeshAgentSynchronizer : MonoBehaviour, IDisposable // TypeDefIndex: 2561
+{
+	// Fields
+	[SerializeField]
+	private float interpolationBackTime; // 0x20
+	[SerializeField]
+	private float maxCatchupSpeed; // 0x24
+	[SerializeField]
+	private float maxExtrapolation; // 0x28
+	private PhotonView qik; // 0x30
+	private NavMeshAgent qil; // 0x38
+	private readonly List<NavMeshAgentSynchronizer.State> qim; // 0x40
+	private Vector3 qin; // 0x48
+	private const float qio = 0.08;
+
+	// Methods
+
+	// RVA: 0x24D405C Offset: 0x24D005C VA: 0x24D405C
+	private void Awake() { }
+
+	// RVA: 0x24D40EC Offset: 0x24D00EC VA: 0x24D40EC
+	private void OnEnable() { }
+
+	// RVA: 0x24D4214 Offset: 0x24D0214 VA: 0x24D4214
+	private void Update() { }
+
+	// RVA: 0x24D47D0 Offset: 0x24D07D0 VA: 0x24D47D0 Slot: 4
+	public void OnPhotonSerializeView(PhotonStream stream, PhotonMessageInfo info) { }
+
+	// RVA: 0x24D4BCC Offset: 0x24D0BCC VA: 0x24D4BCC
+	public void .ctor() { }
+}
