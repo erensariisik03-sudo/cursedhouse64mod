@@ -10,7 +10,11 @@ void SetVM(JavaVM* vm);
 std::string EnsureInstalled();
 }
 #else
+// Desktop test builds are not Android, but they still compile JNI_OnLoad.
+// Keep the API visible without requiring an Android JVM or asset manager.
+struct JavaVM;
 namespace seda_assets {
+inline void SetVM(JavaVM*) {}
 inline std::string EnsureInstalled() { return {}; }
 }
 #endif
