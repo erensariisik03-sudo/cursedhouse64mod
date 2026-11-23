@@ -192,7 +192,7 @@ struct Runtime {
   Root text(a,reinterpret_cast<Object*>(a.string_new(line.c_str())));void* args[]={text.Get()};bool ok=false;a.Call(input_set,input.Get(),args,&ok);if(!ok)return false;a.Call(chat_send,chat.Get(),nullptr,&ok);bool sent=ok;Root after(a,a.Call(input_text,input.Get()));if(!after.Get())return false;
   std::string current=a.Utf8(reinterpret_cast<String*>(after.Get()));if(current==line){void* restore[]={old.Get()};a.Call(input_set,input.Get(),restore);return false;}return sent&&current.empty()&&reinterpret_cast<uintptr_t>(a.Call(current_room))==room_id;
  }
- void Queue(Request q){if(!Allowed(q.name)||cfg.key.empty())return;q.epoch=epoch;q.room=room_id;q.key=cfg.key;q.system=cfg.system;q.own_name=cfg.own_name;q.strict=cfg.all&&cfg.strict;q.voice=settings.output==1;q.history=history;if(!requests.empty()&&Merge(requests.back(),q))return;if(requests.size()>=3)requests.pop_front();requests.push_back(std::move(q));}
+ void Queue(Request q){if(!Allowed(q.name)||cfg.key.empty())return;q.epoch=epoch;q.room=room_id;q.key=cfg.key;q.system=cfg.system;q.own_name=cfg.own_name;q.strict=cfg.all&&cfg.strict;q.voice=settings.output==1;q.tone=voice_ai_bridge::tone.load();q.history=history;if(!requests.empty()&&Merge(requests.back(),q))return;if(requests.size()>=3)requests.pop_front();requests.push_back(std::move(q));}
 public:
  void Abort(){Reset(true);valid=false;}
  explicit Runtime(const Api& api):a(api),room_root(a),manager(a),recorder(a),lease_owner(a),old_clip(a),clip(a),local_go(a),local_source(a){}
@@ -200,12 +200,12 @@ public:
   if(std::this_thread::get_id()!=unity)return;
   double now=Now();if(!initialized){initialized=true;valid=Resolve();snap.ready=valid;}
   if(!valid){snap.status="Sesli AI: bu sürümün ses bağlantıları eksik.";voice_ai_bridge::Publish(snap);return;}
-  voice_ai_bridge::Settings wanted;voice_ai_bridge::Config next_cfg;std::deque<voice_ai_bridge::Text> texts;unsigned next_rev;bool cancel;
-  {std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);wanted=voice_ai_bridge::desired;next_cfg=voice_ai_bridge::config;next_rev=voice_ai_bridge::revision;cancel=voice_ai_bridge::cancel;voice_ai_bridge::cancel=false;texts.swap(voice_ai_bridge::texts);}
+  voice_ai_bridge::Settings wanted;voice_ai_bridge::Config next_cfg;std::deque<voice_ai_bridge::Text> texts;std::deque<std::string> speaks;unsigned next_rev;bool cancel;
+  {std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);wanted=voice_ai_bridge::desired;next_cfg=voice_ai_bridge::config;next_rev=voice_ai_bridge::revision;cancel=voice_ai_bridge::cancel;voice_ai_bridge::cancel=false;texts.swap(voice_ai_bridge::texts);speaks.swap(voice_ai_bridge::speaks);}
   Root observed_room(a,paused?nullptr:a.Call(current_room));uintptr_t next_room=reinterpret_cast<uintptr_t>(observed_room.Get());
   if(next_room!=room_id){Reset(room_id!=0);room_root.Set(observed_room.Get());room_id=next_room;wanted.enabled=false;{std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;}next_discovery=0;}
   bool config_changed=next_cfg.key!=cfg.key||next_cfg.system!=cfg.system||next_cfg.own_name!=cfg.own_name||next_cfg.all!=cfg.all||next_cfg.strict!=cfg.strict||next_cfg.selected!=cfg.selected;
-  if(next_rev!=revision||config_changed||cancel){Reset(false);revision=next_rev;settings=wanted;cfg=std::move(next_cfg);texts.clear();next_discovery=0;snap.status=settings.enabled?"Sesli AI hazır; yeni ses veya mesaj bekleniyor.":"Sesli AI kapalı.";}
+  if(next_rev!=revision||config_changed||cancel){Reset(false);revision=next_rev;settings=wanted;cfg=std::move(next_cfg);texts.clear();speaks.clear();next_discovery=0;snap.status=settings.enabled?"Sesli AI hazır; yeni ses veya mesaj bekleniyor.":"Sesli AI kapalı.";}
   if(settings.enabled&&(cfg.key.empty()||(!cfg.all&&cfg.selected.empty())||!room_id)){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;snap.status=cfg.key.empty()?"Önce AI bölümünden API anahtarı gir.":!room_id?"Bir odaya gir.":"AI > Kişiler bölümünden kişi seç veya Herkes'i aç.";}
   if(now>=next_discovery){next_discovery=now+1;Discover();}
   if(snap.speaking){
@@ -216,12 +216,13 @@ public:
   capture=valid&&settings.enabled&&settings.input!=1&&!snap.speaking&&now>=next_request&&room_id;
   {std::lock_guard<std::mutex> l(segments_mutex);segments.Flush(now);Utterance utterance;while(segments.Take(utterance)){Request q;q.actor=utterance.actor;q.name=utterance.name;q.pcm=std::move(utterance.samples);Queue(std::move(q));}}
   if(settings.enabled&&settings.input!=0)for(auto& t:texts)if(t.room==room_id&&t.name!=cfg.own_name){Request q;q.name=std::move(t.name);q.text=std::move(t.text);Queue(std::move(q));}
+  if(settings.enabled&&room_id)for(auto& t:speaks){Request q;q.speak=true;q.voice=true;q.text=chat_bot_core::PrefixScalars(t,300);q.epoch=epoch;q.room=room_id;q.name=cfg.own_name;q.tone=voice_ai_bridge::tone.load();while(requests.size()>=3)requests.pop_back();requests.push_front(std::move(q));}
   Result result;if(worker.Poll(result)&&result.epoch==epoch&&result.room==room_id&&settings.enabled){
    __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice result actor=%d http=%d skipped=%d audio_samples=%zu",result.actor,result.code,result.skipped,result.audio.samples.size());
    snap.heard=chat_bot_core::PrefixScalars(result.heard,120);snap.reply=chat_bot_core::PrefixScalars(result.reply,160);snap.status=result.status;
    if(!result.reply.empty()){
-    history.push_back({false,result.name+": "+result.heard});history.push_back({true,result.reply});chat_bot_core::TrimHistory(history,12);
-    if(result.audio.samples.empty()||!Play(result.audio,now)){for(auto& part:chat_bot_core::SplitChunks(result.reply,200,8))text_out.push_back(part);text_deadline=now+30;text_next=now;}
+    if(!result.speak){history.push_back({false,result.name+": "+result.heard});history.push_back({true,result.reply});chat_bot_core::TrimHistory(history,12);}
+    if(result.audio.samples.empty()||!Play(result.audio,now)){if(!result.speak)for(auto& part:chat_bot_core::SplitChunks(result.reply,200,8))text_out.push_back(part);text_deadline=now+30;text_next=now;}
    }next_request=now+2;
   }
   if(!text_out.empty()&&now>text_deadline)text_out.clear();

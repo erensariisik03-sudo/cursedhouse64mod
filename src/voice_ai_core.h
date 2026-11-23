@@ -85,14 +85,14 @@ public:
  void Flush(double now){for(auto& [id,c]:channels)if(c.voiced&&now-c.last_voice>=kHang)Finish(id,c);}
  bool Take(Utterance& out){if(ready.empty())return false;out=std::move(ready.front());ready.pop_front();return true;}
 };
-struct Request {uint64_t epoch=0;int actor=0;uintptr_t room=0;std::string name,text,key,system,own_name;bool strict=false,voice=true;std::vector<float> pcm;std::vector<chat_bot_core::Turn> history;std::shared_ptr<std::atomic<bool>> canceled;};
+struct Request {uint64_t epoch=0;int tone=0;bool speak=false;int actor=0;uintptr_t room=0;std::string name,text,key,system,own_name;bool strict=false,voice=true;std::vector<float> pcm;std::vector<chat_bot_core::Turn> history;std::shared_ptr<std::atomic<bool>> canceled;};
 // While the AI is busy, further speech from the same player is appended to the queued clip (max 12 s) instead of becoming another request.
 inline bool Merge(Request& last,const Request& next){
  constexpr size_t gap=4800;
  if(last.pcm.empty()||next.pcm.empty()||last.actor!=next.actor||last.epoch!=next.epoch||last.room!=next.room||last.pcm.size()+gap+next.pcm.size()>kMaxSamples)return false;
  last.pcm.insert(last.pcm.end(),gap,0.f);last.pcm.insert(last.pcm.end(),next.pcm.begin(),next.pcm.end());return true;
 }
-struct Result {uint64_t epoch=0;uintptr_t room=0;int actor=0,code=0;std::string name,heard,reply,status;Audio audio;bool skipped=false;};
+struct Result {uint64_t epoch=0;uintptr_t room=0;int actor=0,code=0;std::string name,heard,reply,status;Audio audio;bool skipped=false,speak=false;};
 inline std::string EchoKey(const std::string& text){std::string out;for(unsigned char c:chat_bot_core::Fold(text))if(chat_bot_core::IsWordChar(c))out+=char(c);return out;}
 inline bool Echo(const std::string& text,const std::vector<chat_bot_core::Turn>& history){const auto key=EchoKey(text);if(key.size()<8)return false;for(auto it=history.rbegin();it!=history.rend();++it)if(it->model){auto old=EchoKey(it->text);if(key==old||(key.size()>=24&&key.size()*5>=old.size()*4&&old.find(key)!=std::string::npos))return true;}return false;}
 inline Result Run(chat_bot_engine::HttpFn http,const Request& q){
@@ -100,6 +100,10 @@ inline Result Run(chat_bot_engine::HttpFn http,const Request& q){
  const auto cancelled=[&]{return q.canceled&&q.canceled->load();};
  auto post=[&](const std::string& url,const std::string& body,std::string& response){if(cancelled())return false;return http(url,q.key,body,r.code,response)&&r.code==200;};
  if(cancelled()){r.skipped=true;return r;}
+ // Local Android TextToSpeech (no network, no quota) + deep/baby voice effect. tone: 0..100 slider.
+ const auto synth=[&]{std::string wav;if(tts&&!cancelled()&&tts(r.reply,wav)&&DecodeAudio(wav,"audio/wav",r.audio)){if(deep_voice)voice_fx::DeepRobot(r.audio.samples,r.audio.rate,double(std::clamp(q.tone,0,100))/100.);return true;}return false;};
+ // Own message: speak the typed text directly, no AI request at all.
+ if(q.speak){r.speak=true;r.heard="Kendi mesajın";r.reply=PrefixScalars(Trim(q.text),300);if(r.reply.empty()){r.skipped=true;r.status="Seslendirilecek mesaj boş.";return r;}r.status=synth()?"Kendi mesajın seslendiriliyor.":"Ses üretilemedi (cihaz TTS).";return r;}
  // One request for audio: transcript + reply together (audio-capable chat model). Falls back to the old 2-step path.
  bool merged=false;std::string merged_reply;
  if(!q.pcm.empty()){
@@ -135,7 +139,7 @@ inline Result Run(chat_bot_engine::HttpFn http,const Request& q){
  if(r.reply.empty()){r.status=r.code==200?"AI yanıtı alınamadı / yanıt gerekmedi.":"AI yanıtı alınamadı (HTTP "+std::to_string(r.code)+(r.code==429?", kota doldu":"")+").";return r;}
  if(!q.voice){r.status="Yazılı cevap hazır.";return r;}
  // Local Android TextToSpeech (same engine Termux:API uses): no network, no quota. Gemini TTS removed.
- {std::string wav;if(tts&&!cancelled()&&tts(r.reply,wav)&&DecodeAudio(wav,"audio/wav",r.audio)){if(deep_voice)voice_fx::DeepRobot(r.audio.samples,r.audio.rate);r.status="Sesli cevap hazır.";return r;}}
+ if(synth()){r.status="Sesli cevap hazır.";return r;}
  r.status="Ses üretilemedi (cihaz TTS); cevap sohbete yazılacak.";return r;
 }
 class Worker {

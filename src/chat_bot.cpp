@@ -406,8 +406,9 @@ class Controller {
     }
     void BeginEdit(Edit e) {
         editing = e;
-        keyboard_bridge::OpenNative(e == Edit::Persona ? custom.c_str() : "", e == Edit::Key);
-        Status(e == Edit::Key ? u8"AI | API anahtarını yaz, Enter'a bas." : u8"AI | Kişiliği yaz, Enter'a bas.");
+        const std::string speech = e == Edit::Speech ? voice_ai_bridge::SpeechText() : std::string();
+        keyboard_bridge::OpenNative(e == Edit::Persona ? custom.c_str() : e == Edit::Speech ? speech.c_str() : "", e == Edit::Key);
+        Status(e == Edit::Key ? u8"AI | API anahtarını yaz, Enter'a bas." : e == Edit::Speech ? u8"AI | Seslendirilecek mesajı yaz, Enter'a bas." : u8"AI | Kişiliği yaz, Enter'a bas.");
     }
     void PollEdit() {
         if (editing == Edit::None) return;
@@ -416,6 +417,7 @@ class Controller {
         if (submit) {
             const std::string value = chat_bot_core::Trim(buffer.data());
             if (editing == Edit::Key) { key = value; SaveConfig(); Status(key.empty() ? u8"AI | Anahtar silindi." : u8"AI | Anahtar kaydedildi (cihazda kalıcı)."); }
+            else if (editing == Edit::Speech) { Status(voice_ai_bridge::Speak(chat_bot_core::PrefixScalars(value, 300)) ? u8"AI | Mesaj seslendiriliyor." : u8"AI | Mesaj kaydedildi; Sesli AI açıkken seslendirilir."); }
             else { custom = value; mode = value.empty() ? 0 : chat_bot_core::kPersonaCount; SaveConfig(); InvalidateReplies(); history.clear(); QueueStatus(chat_bot_fx::Event::Profile,chat_bot_core::PersonaName(mode));Status(u8"AI | Özel kişilik kaydedildi, hafıza sıfırlandı."); }
             editing = Edit::None; keyboard_bridge::CloseNative();
         } else if (!visible) { editing = Edit::None; keyboard_bridge::CloseNative(); Status(u8"AI | Düzenleme iptal."); }

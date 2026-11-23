@@ -7,6 +7,7 @@
 #include <vector>
 namespace voice_fx {
 constexpr double kPi=3.14159265358979323846;
+constexpr double kBabyRatio=1.9;   // slider end: baby / chipmunk voice
 constexpr double kPitchRatio=.62; // ~ -8 semitones: a female TTS voice ends up as a deep male/giant voice
 // Linear-interpolation resampler. step>1 = faster/higher, step<1 = slower/lower.
 inline std::vector<float> Resample(const std::vector<float>& in,double step){
@@ -37,17 +38,22 @@ inline std::vector<float> Stretch(const std::vector<float>& in,double alpha,int 
  out.resize(end);return out;
 }
 // Lower the pitch (and vocal-tract size) without changing the duration.
-inline std::vector<float> PitchDown(const std::vector<float>& in,int rate,double ratio=kPitchRatio){
- if(in.size()<2||rate<8000||!(ratio>0.2&&ratio<1))return in;
+// ratio<1 = lower/deeper, ratio>1 = higher/babier.
+inline std::vector<float> PitchShift(const std::vector<float>& in,int rate,double ratio){
+ if(in.size()<2||rate<8000||!(ratio>0.2&&ratio<4)||std::fabs(ratio-1)<.02)return in;
  std::vector<float> padded=in;padded.resize(in.size()+size_t(rate)*.1,0.f); // WSOLA drops the last partial grain
  auto out=Resample(Stretch(padded,ratio,rate),ratio);
  if(out.size()>in.size()+size_t(rate)/10)out.resize(in.size()+size_t(rate)/10);
  return out;
 }
+inline std::vector<float> PitchDown(const std::vector<float>& in,int rate,double ratio=kPitchRatio){return PitchShift(in,rate,ratio);}
+inline double ToneRatio(double t){t=std::clamp(t,0.,1.);return kPitchRatio*std::pow(kBabyRatio/kPitchRatio,t);} // 0 -> .62 (deep), 1 -> 1.9 (baby)
+inline double RobotAmount(double t){return std::clamp(1.-std::clamp(t,0.,1.)*1.25,0.,1.);}                          // robot colour fades out towards the baby end
 inline void Normalize(std::vector<float>& s,float peak){float m=0;for(float v:s)m=std::max(m,std::fabs(v));if(m>1e-6f){const float g=peak/m;for(float& v:s)v*=g;}}
 // Metallic "robot" colouring: bit/sample crush, 55 Hz amplitude flutter, short comb, soft clip.
-inline void Robot(std::vector<float>& s,int rate){
- if(s.empty()||rate<8000)return;
+inline void Robot(std::vector<float>& s,int rate,double amount=1.){
+ if(s.empty()||rate<8000||!(amount>0))return;
+ const std::vector<float> dry=amount<1?s:std::vector<float>();
  double px=0,py=0;for(float& v:s){const double x=v;py=x-px+.995*py;px=x;v=float(py);} // DC / rumble block
  Normalize(s,.8f);
  const size_t hold=std::max<size_t>(1,size_t(std::lround(double(rate)/9000)));float held=0;
@@ -56,10 +62,12 @@ inline void Robot(std::vector<float>& s,int rate){
  const size_t d=std::max<size_t>(1,size_t(double(rate)*.0045));for(size_t i=s.size();i-->d;)s[i]+=.5f*s[i-d];
  for(float& v:s)v=std::tanh(2.f*v);
  Normalize(s,.9f);
+ if(amount<1){const float a=float(amount);std::vector<float> d=dry;Normalize(d,.9f);for(size_t i=0;i<s.size();++i)s[i]=d[i]*(1-a)+s[i]*a;}
 }
-inline void DeepRobot(std::vector<float>& s,int rate){
+// tone 0 = deep robot (default), 1 = baby voice; in between slides pitch and robot amount.
+inline void DeepRobot(std::vector<float>& s,int rate,double tone=0){
  for(float& v:s)if(!std::isfinite(v))v=0;
  if(s.empty()||rate<8000||rate>48000)return;
- auto out=PitchDown(s,rate);Robot(out,rate);s=std::move(out);
+ auto out=PitchShift(s,rate,ToneRatio(tone));Robot(out,rate,RobotAmount(tone));Normalize(out,.9f);s=std::move(out);
 }
 }

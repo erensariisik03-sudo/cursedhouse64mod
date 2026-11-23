@@ -540,6 +540,9 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             ActionKey("Ses → Metin",half,key_height,[]{voice_ai_bridge::Mode(0,0);InvalidateKeys();},v.settings.input==0&&v.settings.output==0);ImGui::SameLine();
             ActionKey("Ses+Metin → Ses",half,key_height,[]{voice_ai_bridge::Mode(2,1);InvalidateKeys();},v.settings.input==2&&v.settings.output==1);
             ActionKey(v.settings.destination?"Ses: yalnız bu cihaz":"Ses: oda / yerel",content,key_height,[local=!v.settings.destination]{voice_ai_bridge::Destination(local);InvalidateKeys();},v.settings.destination);
+            {int tone=voice_ai_bridge::tone.load();ImGui::TextWrapped("Ses tonu: sol = kalın robot (şimdiki), sağ = bebek sesi");ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##voice_tone",&tone,0,100,"Ses tonu: %d%%"))voice_ai_bridge::SetTone(tone);}
+            ActionKey("Kendi mesajımı yaz ve seslendir",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);InvalidateKeys();});
+            {const auto saved=voice_ai_bridge::SpeechText();if(!saved.empty()){ImGui::TextWrapped("Mesajın: %s",chat_bot_core::PrefixScalars(saved,120).c_str());ImGui::BeginDisabled(!v.settings.enabled);ActionKey("Mesajı tekrar seslendir",content,key_height,[saved]{voice_ai_bridge::Speak(saved);InvalidateKeys();});ImGui::EndDisabled();}}
             ImGui::TextWrapped("Açınca seçili kişilerin sesi Gemini'ye gönderilir. Oda sesi kapalıysa yanıtı bu cihaz okur.");
             ImGui::TextWrapped("AI konuşurken mikrofon yayına verilmez.");
         }else{

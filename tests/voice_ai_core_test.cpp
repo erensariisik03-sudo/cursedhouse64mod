@@ -5,7 +5,7 @@ using namespace voice_ai_core;
 namespace {
 // Speech-like 20 ms frames: harmonic voice with a syllable-rate envelope.
 std::vector<float> VoiceFrame(int frame,int rate=16000){std::vector<float> f(rate/50);for(size_t i=0;i<f.size();++i){const double t=(double(frame)*f.size()+i)/rate,env=.04+.2*std::fabs(std::sin(2*3.14159265*3*t));f[i]=float(env*(std::sin(2*3.14159265*140*t)+.5*std::sin(2*3.14159265*280*t)+.3*std::sin(2*3.14159265*420*t))/1.6);}return f;}
-double Pitch(const std::vector<float>& s,int rate){const size_t at=s.size()/2-4096,n=8192;double best=-1e300;int lag=0;for(int l=rate/400;l<=rate/60;++l){double d=0;for(size_t i=0;i<n;++i)d+=double(s[at+i])*s[at+i+l];if(d>best){best=d;lag=l;}}return double(rate)/lag;}
+double Pitch(const std::vector<float>& s,int rate,double lo=60,double hi=400){const size_t at=s.size()/2-4096,n=8192;double best=-1e300;int lag=0;for(int l=int(rate/hi);l<=int(rate/lo);++l){double d=0;for(size_t i=0;i<n;++i)d+=double(s[at+i])*s[at+i+l];if(d>best){best=d;lag=l;}}return double(rate)/lag;}
 std::shared_ptr<std::atomic<bool>> cancel_after_http;int calls=0;bool fail_tts=false,unaddressed=false;std::vector<std::string> requests;
 bool Http(const std::string& url,const std::string& key,const std::string& body,int& code,std::string& response){
  assert(key=="secret"&&url.find("secret")==std::string::npos&&body.find("secret")==std::string::npos);++calls;requests.push_back(body);code=200;
@@ -50,6 +50,19 @@ int main(){
   const auto low=voice_fx::PitchDown(v,rate);assert(low.size()>=v.size()*.95&&low.size()<=v.size()+rate/10+1);const double hz=Pitch(low,rate);assert(hz>220*.62*.92&&hz<220*.62*1.08);
   auto robot=v;voice_fx::DeepRobot(robot,rate);float peak=0;for(float f:robot){assert(std::isfinite(f));peak=std::max(peak,std::fabs(f));}assert(peak>.85f&&peak<=.91f&&robot.size()>=v.size()*.95&&robot.size()<=v.size()+rate/10+1);
   std::vector<float> tiny(50,.2f);voice_fx::DeepRobot(tiny,rate);assert(!tiny.empty());std::vector<float> none;voice_fx::DeepRobot(none,rate);assert(none.empty());}
+
+ // --- Tone slider: 0 = current deep robot, 100 = baby; pitch follows the slider, robot colour fades out ----------
+ {using namespace voice_fx;assert(std::fabs(ToneRatio(0)-kPitchRatio)<1e-9&&std::fabs(ToneRatio(1)-kBabyRatio)<1e-9&&ToneRatio(.5)>ToneRatio(.25)&&RobotAmount(0)==1&&RobotAmount(1)==0&&RobotAmount(.4)>0&&RobotAmount(.4)<1);
+  const int rate=24000;std::vector<float> v(rate*2);for(size_t i=0;i<v.size();++i){const double t=double(i)/rate;v[i]=float(.3*std::sin(2*3.14159265*220*t)+.15*std::sin(2*3.14159265*440*t)+.1*std::sin(2*3.14159265*660*t));}
+  auto baby=v;DeepRobot(baby,rate,1.0);float peak=0;for(float f:baby){assert(std::isfinite(f));peak=std::max(peak,std::fabs(f));}assert(peak>.85f&&peak<=.91f&&baby.size()>=v.size()*.95&&baby.size()<=v.size()+rate/10+1);
+  const double hz=Pitch(baby,rate,220*kBabyRatio*.8,220*kBabyRatio*1.2);assert(hz>220*kBabyRatio*.92&&hz<220*kBabyRatio*1.08); // ~418 Hz: far higher than the 220 Hz input
+  auto mid=v;DeepRobot(mid,rate,.5);const double hm=Pitch(mid,rate,220*.7,220*1.6);assert(hm>220*ToneRatio(.5)*.92&&hm<220*ToneRatio(.5)*1.08);
+  auto same=v;DeepRobot(same,rate,0);assert(same.size()>=v.size()*.95);}
+ // --- Own message: spoken directly (TTS + tone), zero HTTP / AI requests -------------------------------------------
+ {Request m;m.epoch=3;m.room=5;m.speak=true;m.voice=true;m.name="Ben";m.text="Merhaba herkese!";m.tone=100;calls=0;auto r=Run(Http,m);assert(r.speak&&calls==0&&r.epoch==3&&r.room==5&&r.reply=="Merhaba herkese!"&&!r.audio.samples.empty()&&r.audio.rate==22050);
+  m.tone=0;auto d=Run(Http,m);assert(d.audio.samples.size()>=1&&calls==0);
+  m.text="   ";r=Run(Http,m);assert(r.skipped&&r.audio.samples.empty()&&calls==0);
+  m.text="Merhaba";fail_tts=true;r=Run(Http,m);assert(r.speak&&r.audio.samples.empty()&&calls==0);fail_tts=false;}
  Request q;q.epoch=7;q.room=12;q.name="Ali";q.key="secret";q.system="Türkçe cevapla.";q.own_name="Bot";q.voice=true;q.pcm=std::vector<float>(6400,.15f);
  auto r=Run(Http,q);assert(r.epoch==7&&r.room==12&&r.heard=="Bot kapı nerede?"&&!r.reply.empty()&&!r.audio.samples.empty()&&r.audio.rate==22050&&calls==1);
  {auto u=q;u.strict=true;unaddressed=true;calls=0;auto ru=Run(Http,u);assert(ru.skipped&&ru.reply.empty()&&calls==1);unaddressed=false;}
@@ -60,5 +73,5 @@ int main(){
  q.history.clear();q.text="Bot kapı nerede?";q.canceled=std::make_shared<std::atomic<bool>>(true);calls=0;r=Run(Http,q);assert(r.skipped&&calls==0);
  q.canceled->store(false);cancel_after_http=q.canceled;r=Run(Http,q);assert(r.skipped&&r.reply.empty()&&calls==1);cancel_after_http.reset();q.canceled.reset();
  voice_ai_bridge::desired={};voice_ai_bridge::Mode(99,-1);assert(voice_ai_bridge::desired.input==2&&voice_ai_bridge::desired.output==0);voice_ai_bridge::desired={};
- std::cout<<"Voice core: PCM/WAV/base64 validation, per-speaker bounded VAD/resampling/silence, audio-to-text-to-AI-to-speech, text/voice modes, TTS failure to text, key isolation, name gating, echo rejection, noise/click/tone/2 s-minimum gate, 12 s cap clip, queue merge, deep robot voice pitch/duration: PASS\n";
+ std::cout<<"Voice core: PCM/WAV/base64 validation, per-speaker bounded VAD/resampling/silence, audio-to-text-to-AI-to-speech, text/voice modes, TTS failure to text, key isolation, name gating, echo rejection, noise/click/tone/2 s-minimum gate, 12 s cap clip, queue merge, deep robot voice pitch/duration, tone slider deep→baby, own-message speech without AI call: PASS\n";
 }
