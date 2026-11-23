@@ -2,8 +2,7 @@
 #include <cassert>
 #include <map>
 #include <iostream>
-#include <codecvt>
-#include <locale>
+#include "utf_conversion.h"
 using namespace il2cpp;
 namespace {
 struct C;struct F{const char* name;C* type;uint32_t flags=0;};
@@ -32,7 +31,7 @@ int sight_checks=0,mom_checks=0,door_requests=0;bool fake_sight=true;
 gameplay::Vec3 ray_end{};std::map<C*,N*> find_arrays;N *ray_collider=nullptr;bool ray_hits=true,ray_error=false;
 N *chat_array=nullptr,*room_players=nullptr;bool input_focus=false;std::u16string draft;
 std::vector<std::u16string> notices;std::vector<std::unique_ptr<std::u16string>> strings;
-String* NewString(const char* text){auto s=std::make_unique<std::u16string>(std::wstring_convert<std::codecvt_utf8_utf16<char16_t>,char16_t>{}.from_bytes(text));auto* p=s.get();strings.push_back(std::move(s));return reinterpret_cast<String*>(p);}
+String* NewString(const char* text){auto s=std::make_unique<std::u16string>(test_utf::FromUtf8(text));auto* p=s.get();strings.push_back(std::move(s));return reinterpret_cast<String*>(p);}
 F* test_difficulty_field=nullptr;uint8_t test_difficulty=1;bool refresh_error=false;int difficulty_helper_calls=0;
 N* assist_list=nullptr;int assist_rays=0,assisted_uses=0;uint8_t observed_hand=0;bool observed_placing=true,assist_throw=false,assist_fresh=false,prerequisite=true;
 int sight_local_calls=0,sight_network_calls=0,recover_clears=0,recover_resets=0,recover_routes=0;
