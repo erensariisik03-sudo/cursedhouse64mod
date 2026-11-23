@@ -11,7 +11,7 @@ int main() {
     d=Evaluate("zeka nasılsın",c); assert(d.action==Action::Instant);
     d=Evaluate("yapay, kapı nerede?",c); assert(d.action==Action::Ai&&d.mentions_bot);
     d=Evaluate("kapı nerede?",c); assert(d.action==Action::Drop&&d.reason==Reason::NameRequired);
-    d=Evaluate("selam",c); assert(d.action==Action::Drop&&d.reason==Reason::NameRequired); // strict gate applies before canned greetings
+    d=Evaluate("selam",c); assert(d.action==Action::Instant&&d.reason==Reason::SmallTalk); // local greetings do not require a name mention
     d=Evaluate("zeka selam",c); assert(d.action==Action::Instant); // addressed greeting remains local
     c.name_filter=false; d=Evaluate("kapı nerede?",c); assert(d.action==Action::Ai);
     c.general_filter=false; d=Evaluate("ahahahah",c); assert(d.action==Action::Ai);

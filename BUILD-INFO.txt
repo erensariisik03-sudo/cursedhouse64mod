@@ -28,7 +28,9 @@ Implemented changes:
   are passed to both routes.
 - Locally generated small-talk replies, noise/laugh rejection, addressing to
   other players, name requirements, profanity warnings and conversation state
-  are handled before any Gemini call.
+  are handled before any Gemini call. Complete local greetings are answered
+  without a bot-name mention (preserving the project's established behavior);
+  the name gate applies to normal AI requests only.
 - Short-utterance segmentation threshold lowered to 0.55 s span / 0.35 s voiced
   content; 0.9 s silence closes a segment; maximum recording 12 s.
 - PCM sample-rate conversion uses weighted averaging to reduce aliasing while
@@ -46,8 +48,12 @@ Validation performed in this workspace:
   300 s) while compiling/running the existing unity_editor fixture; the full
   suite is therefore NOT marked as passed. The startup, editor-independent
   regression tests reached before the timeout reported PASS.
+- `chat_bot_runtime_test` passed independently after correcting the name-gate
+  ordering; all existing greeting cases now produce local replies without HTTP.
 - The new message_gate_test, voice_ai_core_test, voice_ai_runtime_test and
   seda_asr_compile_test all passed independently (ASan/UBSan where applicable).
+- All tests after the chat_bot_runtime_test step in tests/run.sh passed when
+  compiled and run independently in this workspace.
 - A full end-to-end Android NDK build and runtime inference with the downloaded
   model were NOT performed in this workspace.
   The GitHub Actions workflow is configured to perform the Android build; the

@@ -44,19 +44,21 @@ inline Decision Evaluate(const std::string& raw, const Context& c) {
         d.action = Action::Drop; d.reason = Reason::SideConversation; return d;
     }
 
-    // Audience selection already scopes a private conversation. In room-wide
-    // mode the name toggle is authoritative, including for local greetings.
-    if (c.all_mode && c.name_filter && !d.mentions_bot && !c.in_conversation) {
-        d.action = Action::Drop; d.reason = Reason::NameRequired; return d;
-    }
     if (chat_bot_core::DirectedProfanity(message, c.own_name, c.other_players, c.in_conversation)) {
         d.action = Action::Warn; d.reason = Reason::Profanity; return d;
     }
 
-    // Complete greetings stay local; general filtering does not turn a canned
-    // greeting into an unnecessary API call. Name-gating above still applies.
+    // Preserve the project's established behavior: complete greetings and
+    // short pleasantries are answered locally, even when they do not mention
+    // the bot name. The name gate controls only messages sent to the AI.
     if (auto reply = chat_bot_core::SmallTalkReply(message, c.sender, c.own_name, c.persona)) {
         d.action = Action::Instant; d.reason = Reason::SmallTalk; d.instant_reply = std::move(*reply); return d;
+    }
+
+    // Audience selection already scopes a private conversation. In room-wide
+    // mode require a bot name only for normal AI requests, not local greetings.
+    if (c.all_mode && c.name_filter && !d.mentions_bot && !c.in_conversation) {
+        d.action = Action::Drop; d.reason = Reason::NameRequired; return d;
     }
     return d;
 }
