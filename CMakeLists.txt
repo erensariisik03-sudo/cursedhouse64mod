@@ -28,15 +28,15 @@ set(Plugin.SymbolResolver OFF CACHE BOOL "" FORCE)
 set(Plugin.ImportTableReplace OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/dobby EXCLUDE_FROM_ALL)
 add_library(multiplayermod SHARED src/keyboard_api.cpp src/keyboard_ui.cpp
-    src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/voice_ai.cpp src/ad_block.cpp src/auto_join.cpp src/chat_bot_http.cpp src/gameplay.cpp src/unity_keyboard.cpp)
+    src/il2cpp_runtime.cpp src/emoji_support.cpp src/game_text_rules.cpp src/observer_target.cpp src/cosmetic_catalog.cpp src/cosmetic_room.cpp src/lobby_emotes.cpp src/chat_bot.cpp src/voice_ai.cpp src/seda_assets.cpp src/ad_block.cpp src/auto_join.cpp src/chat_bot_http.cpp src/gameplay.cpp src/unity_keyboard.cpp)
 target_include_directories(multiplayermod PRIVATE include src)
 target_compile_definitions(multiplayermod PRIVATE MM_AUTO_UNITY=$<BOOL:${MM_AUTO_UNITY}>)
 target_compile_options(multiplayermod PRIVATE -Wall -Wextra -Wno-unused-parameter -fexceptions)
 target_link_libraries(multiplayermod PRIVATE imgui dobby_static dl)
 
-# SEDA v0.2-Tiny is an external model package; only the sherpa-onnx C API and
-# ONNX Runtime are linked into the ARM64 module. Model weights are installed
-# separately under the game's app-specific files/gmm_seda directory.
+# SEDA model weights are bundled in APK assets/gmm_seda and extracted on demand
+# to Context.getFilesDir()/gmm_seda by native code. The ONNX runtime and C API
+# stay in APK lib/arm64-v8a (they are not Android assets).
 option(MM_ENABLE_SEDA "Enable local Turkish SEDA v0.2-Tiny speech recognition" ON)
 set(SHERPA_ONNX_ROOT "" CACHE PATH "sherpa-onnx Android install prefix (include/ and lib/)")
 if(MM_ENABLE_SEDA)

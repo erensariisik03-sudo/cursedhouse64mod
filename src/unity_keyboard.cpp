@@ -13,6 +13,7 @@
 #include "ad_block.h"
 #include "auto_join.h"
 #include "chat_bot_http.h"
+#include "seda_assets.h"
 #include "chat_shortcut.h"
 #include "chat_send_gate.h"
 #include "native_shortcuts.h"
@@ -593,5 +594,5 @@ extern "C" MM_EXPORT uint32_t mm_get_status() {
            (g_ready.load(std::memory_order_acquire) && g_rules.display_filter ? 32u : 0u) |
            (g_ready.load(std::memory_order_acquire) && g_rules.username_limit ? 64u : 0u);
 }
-extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) { chat_bot_http::SetVM(vm); Start(); return JNI_VERSION_1_6; }
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) { chat_bot_http::SetVM(vm); seda_assets::SetVM(vm); Start(); return JNI_VERSION_1_6; }
 __attribute__((constructor)) static void OnLibraryLoaded() { Start(); }

@@ -83,12 +83,15 @@ jobs:
           find "$SHERPA_INSTALL/lib" -maxdepth 1 -type f -name '*.so' -printf '%f\n' | sort
           echo "SHERPA_ONNX_ROOT=$SHERPA_INSTALL" >> "$GITHUB_ENV"
 
-      - name: Download SEDA v0.2-Tiny c32 model package
+      - name: Stage SEDA model as APK assets
         shell: bash
         run: |
-          mkdir -p dist/model
-          bash tools/fetch_seda_model.sh dist/model/gmm_seda
-          (cd dist/model && zip -qr ../seda-v0.2-tiny-c32.zip gmm_seda)
+          mkdir -p dist/assets
+          cp -a assets/gmm_seda dist/assets/gmm_seda
+          test -s dist/assets/gmm_seda/asset-version.txt
+          test -s dist/assets/gmm_seda/c32/encoder.int8.onnx
+          # Legacy standalone archive for manual testing; APK packaging uses dist/assets.
+          (cd dist/assets && zip -qr ../seda-v0.2-tiny-c32.zip gmm_seda)
 
       - name: Configure CMake
         shell: bash

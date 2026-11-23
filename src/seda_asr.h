@@ -9,13 +9,15 @@
 #include <string>
 #include <vector>
 #include <unistd.h>
+#include "seda_assets.h"
 
 #if defined(MM_ENABLE_SEDA)
 #include <sherpa-onnx/c-api/c-api.h>
 #endif
 
 // Local Turkish ASR adapter. It is initialized lazily on the voice worker,
-// never from Photon/Unity audio callbacks. Model weights remain external files.
+// never from Photon/Unity audio callbacks. The bundled APK assets are
+// extracted to private files before sherpa-onnx receives filesystem paths.
 namespace seda_asr {
 inline std::string Join(const std::string& a, const char* b) { return a + "/" + b; }
 inline bool IsFile(const std::string& p) { return ::access(p.c_str(), R_OK) == 0; }
@@ -29,13 +31,18 @@ inline std::string PackageName() {
     return p;
 }
 inline std::string ModelDirectory() {
+    // Try APK's assets/gmm_seda first. sherpa-onnx only accepts ordinary file paths,
+    // so seda_assets extracts them into Context.getFilesDir()/gmm_seda once per APK version.
+    const std::string from_apk = seda_assets::EnsureInstalled();
+    if (!from_apk.empty()) return from_apk;
+    // Backwards-compatible fallback for manual test installations and old APKs.
     const std::string package = PackageName();
     if (package.empty()) return {};
     const std::string candidates[] = {
-        "/sdcard/Android/data/" + package + "/files/gmm_seda",
-        "/storage/emulated/0/Android/data/" + package + "/files/gmm_seda",
         "/data/user/0/" + package + "/files/gmm_seda",
-        "/data/data/" + package + "/files/gmm_seda"
+        "/data/data/" + package + "/files/gmm_seda",
+        "/sdcard/Android/data/" + package + "/files/gmm_seda",
+        "/storage/emulated/0/Android/data/" + package + "/files/gmm_seda"
     };
     for (const auto& dir : candidates) {
         if (IsFile(Join(dir, "tokens.txt")) && IsFile(Join(dir, "c32/encoder.int8.onnx")) &&
@@ -64,7 +71,8 @@ inline bool InitLocked() {
     cfg.model_config.tokens = tokens.c_str();
     cfg.model_config.num_threads = 1;
     cfg.model_config.provider = "cpu";
-    cfg.model_config.modeling_unit = "bpe";
+    // No hotwords are configured: leave modeling_unit unset so sherpa-onnx
+    // does not require a separate bpe_vocab file for this BPE-token model.
     cfg.model_config.model_type = "zipformer2";
     // c32 is SEDA's 0.64 s streaming export. Greedy decoding avoids loading
     // the optional ~20 MB language-model bundle and keeps RAM/CPU usage low.

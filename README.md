@@ -1,3 +1,35 @@
+
+## SEDA ONNX modeli APK assets içinde (2026-11)
+
+Bu sürüm artık modeli APK içinden otomatik yükler. **APK'nin kökünde** şu yollar bulunmalı:
+
+```text
+assets/gmm_seda/asset-version.txt
+assets/gmm_seda/tokens.txt
+assets/gmm_seda/c32/encoder.int8.onnx
+assets/gmm_seda/c32/decoder.onnx
+assets/gmm_seda/c32/joiner.int8.onnx
+```
+
+`assets/bin/Data/datapack.unity3d` dosyasını **değiştirmeyin**; `assets/gmm_seda/` ayrı bir klasördür.
+
+Yeni `libmultiplayermod.so` (kaynak yeniden derlenmeli) Android NDK AssetManager ile
+`assets/gmm_seda` içindeki dört gerekli dosyayı ilk ASR kullanımında APK'den
+`Context.getFilesDir()/gmm_seda` klasörüne **otomatik** çıkarır. Sherpa-ONNX bir
+`AAsset` tanıtıcısı değil gerçek dosya yolu istediğinden bu çıkarma gereklidir.
+Model güncellemeleri `asset-version.txt` kimliğine göre yeniden çıkarılır; yazma
+`*.tmp-XXXXXX` geçici dosyası ve atomik rename kullanır.
+
+GitHub Actions çıktısında `dist/assets/gmm_seda/` hazır bulunur. Apktool veya APK
+editöründe **dist içindeki `assets` klasörünün içeriğini APK'nin `assets/`
+klasörüne** yerleştirin; `dist/assets` adlı ikinci bir klasör oluşturmayın.
+Native `.so` kütüphanelerini `lib/arm64-v8a/` içine koyun. APK'yi yeniden
+imzalayıp yükleyin. Dosyaları `Android/data` altına manuel kopyalamanız gerekmez.
+
+APK editörü `asset-version.txt` dahil dört model dosyasını yerleştirmeli. Logcat'te
+`GMM_SEDA_ASSETS ready (APK assets -> internal files/gmm_seda)` mesajı ilk
+yüklemeyi doğrular. Manuel kurulum yedeği eskisi gibi çalışır.
+
 # ARM64 Android klavyesi ve oyun panelleri
 
 Unity IL2CPP Android modu. Çıktı `libmultiplayermod.so`; yalnız **arm64-v8a**
