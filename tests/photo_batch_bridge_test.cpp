@@ -10,6 +10,7 @@ int main(){
     SelectAll();c=Take();assert(c.select_all);
     ClearSelection();c=Take();assert(c.clear_selection);
     Fetch();c=Take();assert(c.fetch);
+    EnableSharing();c=Take();assert(c.enable_sharing);
     StopSharing();c=Take();assert(c.stop_sharing);
     std::cout << "GMM batch commands and session revocation: PASS\n";
 }

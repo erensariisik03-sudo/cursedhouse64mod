@@ -119,6 +119,9 @@ class Session {
  uint64_t outgoing_id=0;
  bool tx_accepted=false;
  int pending_actor=0;
+ // Local, explicit opt-in for photo sharing during the CURRENT room only.
+ // No remote packet can turn this on. It resets on room exit/change.
+ bool sharing_enabled=false;
  std::string pending_file;
  std::vector<bridge::Peer> peers;
  std::string private_files_dir;
@@ -141,7 +144,7 @@ class Session {
  bool IsPeer(int actor)const {return actor>0&&std::any_of(peers.begin(),peers.end(),[&](const auto& p){return p.actor==actor;});}
  void Note(std::string s){snap.status=std::move(s);}
  void ResetBrowse(){
-  share_request_id=approved_id=browse_id=0;share_request_actor=approved_actor=browse_actor=0;
+  share_request_id=approved_id=browse_id=0;share_request_actor=approved_actor=browse_actor=0;sharing_enabled=false;
   share_deadline=approval_deadline=browse_deadline=next_browse_send=0;
   browse_granted=browse_fetching=false;approved_files.clear();browse_outbox.clear();selected_remote_file.clear();
   selections.clear();batch.clear();sharing_with.clear();batch_finished=0;
@@ -409,17 +412,40 @@ class Session {
   PHOTO_LOG("GMM photo save: all destinations failed");return false;
  }
 
+ // Sharing is enabled locally for the current Photon room, not by a packet.
+ // Any peer in that room may request a listing while the owner has sharing enabled.
+ bool GrantBrowseToRoom(int actor,uint64_t id,double now){
+  if(!room_id||!sharing_enabled||!IsPeer(actor))return false;
+  auto files=LocalImages();
+  if(!SendEvent(actor,browse::Encode(browse::Kind::Grant,id,actor)))return false;
+  approved_id=id;approved_actor=actor;approval_deadline=now+900;
+  approved_files=std::move(files);
+  sharing_with=std::to_string(actor);
+  for(const auto& peer:peers)if(peer.actor==actor)sharing_with=peer.display;
+  for(const auto& name:approved_files)
+   browse_outbox.emplace_back(actor,browse::Encode(browse::Kind::Listing,id,actor,name));
+  browse_outbox.emplace_back(actor,browse::Encode(browse::Kind::End,id,actor));
+  PHOTO_LOG("GMM photo owner: locally enabled room share granted actor=%d files=%zu",actor,approved_files.size());
+  return true;
+ }
  void IncomingBrowse(const Message& msg){
   browse::Packet p;if(!browse::Decode(msg.data,p)||!IsPeer(msg.sender)||!local_actor||p.recipient!=local_actor)return;
   const double now=Now();
   switch(p.kind){
-   case browse::Kind::Request:
-    if(share_request_id||approved_id||!room_id){SendEvent(msg.sender,browse::Encode(browse::Kind::Deny,p.id,msg.sender));break;}
-    share_request_id=p.id;share_request_actor=msg.sender;share_deadline=now+60;
-    snap.share_request=true;snap.share_request_from=std::to_string(msg.sender);
-    for(const auto& peer:peers)if(peer.actor==msg.sender)snap.share_request_from=peer.display;
-    Note("Paylasim istegi: Karsi oyuncu Pictures fotograflarini istiyor. Kabul veya Reddet.");
+   case browse::Kind::Request: {
+    // No per-request popup. The owner must first enable sharing locally for
+    // this room. Without it requests are denied before any filenames leak.
+    if(!room_id||!sharing_enabled||outgoing_id){
+     SendEvent(msg.sender,browse::Encode(browse::Kind::Deny,p.id,msg.sender));break;
+    }
+    // Allow a refreshed listing only while owner-enabled room sharing is on,
+    // and do not interrupt a currently sending photo.
+    approved_id=0;approved_actor=0;approval_deadline=0;
+    approved_files.clear();browse_outbox.clear();sharing_with.clear();
+    if(!GrantBrowseToRoom(msg.sender,p.id,now))
+     SendEvent(msg.sender,browse::Encode(browse::Kind::Deny,p.id,msg.sender));
     break;
+   }
    case browse::Kind::Grant:
     if(browse_id==p.id&&browse_actor==msg.sender){browse_granted=true;Note("Oyuncu izin verdi. Fotograf listesi geliyor...");}
     break;
@@ -558,28 +584,22 @@ class Session {
    }
    pending_actor=c.choose_actor;pending_file.clear();
   }
-  if(c.allow_browse&&share_request_id&&now<share_deadline&&IsPeer(share_request_actor)){
-   PHOTO_LOG("GMM photo UI: owner consent accepted for actor=%d",share_request_actor);
-   const int actor=share_request_actor;const uint64_t id=share_request_id;
-   auto files=LocalImages();
-   if(SendEvent(actor,browse::Encode(browse::Kind::Grant,id,actor))){
-    approved_id=id;approved_actor=actor;approval_deadline=now+900;approved_files=std::move(files);
-    sharing_with=std::to_string(actor);for(const auto& peer:peers)if(peer.actor==actor)sharing_with=peer.display;
-    for(const auto& filename:approved_files)browse_outbox.emplace_back(actor,browse::Encode(browse::Kind::Listing,id,actor,filename));
-    browse_outbox.emplace_back(actor,browse::Encode(browse::Kind::End,id,actor));
-    Note("Pictures fotograflari paylasildi; ayni oturumda tekrar onay gerekmiyor.");
-   }else Note("Paylasim izni gonderilemedi.");
-   share_request_id=0;share_request_actor=0;share_deadline=0;snap.share_request=false;snap.share_request_from.clear();
+  if(c.enable_sharing&&room_id){
+   // Only a direct tap on this device can enable room-wide sharing.
+   sharing_enabled=true;
+   Note("Pictures bu odadaki oyuncularla paylasima acildi.");
   }
-  if(c.deny_browse&&share_request_id){
-   SendEvent(share_request_actor,browse::Encode(browse::Kind::Deny,share_request_id,share_request_actor));
-   share_request_id=0;share_request_actor=0;share_deadline=0;snap.share_request=false;snap.share_request_from.clear();
-   Note("Paylasim istegi reddedildi.");
-  }
-  if(c.stop_sharing&&approved_id){
-   SendEvent(approved_actor,browse::Encode(browse::Kind::Deny,approved_id,approved_actor));
-   approved_id=0;approved_actor=0;approved_files.clear();browse_outbox.clear();sharing_with.clear();approval_deadline=0;
-   Note("Paylasim durduruldu; yeni istek yeniden izin gerektirir.");
+  if(c.stop_sharing&&(sharing_enabled||approved_id)){
+   sharing_enabled=false;
+   if(approved_id){
+    if(IsPeer(approved_actor))SendEvent(approved_actor,browse::Encode(browse::Kind::Deny,approved_id,approved_actor));
+    approved_id=0;approved_actor=0;approved_files.clear();browse_outbox.clear();sharing_with.clear();approval_deadline=0;
+   }
+   if(outgoing_id&&IsPeer(outgoing_peer)){
+    SendEvent(outgoing_peer,wire::EncodeCancel(outgoing_id));
+    ResetSession();
+   }
+   Note("Pictures paylasimi kapatildi.");
   }
   if(c.cancel_browse&&browse_id&&!browse_fetching){
    PHOTO_LOG("GMM photo UI: browse cancelled target=%d",browse_actor);
@@ -657,7 +677,6 @@ class Session {
  }
  void TransferStep(){
   const double now=Now();
-  if(share_request_id&&now>share_deadline){share_request_id=0;share_request_actor=0;snap.share_request=false;snap.share_request_from.clear();Note("Paylasim isteginin suresi doldu.");}
   if(approved_id&&(now>approval_deadline||!IsPeer(approved_actor))){approved_id=0;approved_actor=0;approved_files.clear();browse_outbox.clear();sharing_with.clear();}
   if(browse_id&&(now>browse_deadline||!IsPeer(browse_actor))){browse_id=0;browse_actor=0;browse_granted=browse_fetching=false;batch.clear();selections.clear();
    snap.browsing=snap.fetching=snap.listing_ready=false;snap.remote_files.clear();selected_remote_file.clear();Note("Fotograf isteginde zaman asimi.");}
@@ -699,7 +718,7 @@ public:
   snap.local_actor=local_actor;
   if(Now()>next_diagnostic){
    next_diagnostic=Now()+8.0;
-   PHOTO_LOG("GMM photo runtime: room=%d local_actor=%d peers=%zu selected=%d browse=%d pending_consent=%d",!!room_id,local_actor,peers.size(),pending_actor,!!browse_id,!!share_request_id);
+   PHOTO_LOG("GMM photo runtime: room=%d local_actor=%d peers=%zu selected=%d browse=%d room_sharing=%d",!!room_id,local_actor,peers.size(),pending_actor,!!browse_id,sharing_enabled);
   }
   if(!room_id){ResetSession();ResetBrowse();snap.peers.clear();snap.ready=valid;bridge::Publish(snap);return;}
   std::deque<Message> pending;{std::lock_guard<std::mutex> l(inbox_mutex);pending.swap(inbox);}
@@ -719,7 +738,7 @@ public:
   TransferStep();
   snap.selected_actor=pending_actor;snap.selected_file=pending_file;snap.selected_remote_file=selected_remote_file;
   snap.selected_remote_files=selections;snap.queue_remaining=batch.size()+(browse_fetching?1U:0U);
-  snap.share_active=approved_id!=0;snap.share_with=sharing_with;
+  snap.share_active=sharing_enabled;
   snap.selected_name.clear();for(const auto& peer:peers)if(peer.actor==pending_actor)snap.selected_name=peer.display;
   bridge::Publish(snap);
  }

@@ -249,7 +249,20 @@ int main() {
   }
   // Oyun paneli: bölüm listesi -> tek bölüm -> geriyle tam liste.
   Direct("Oyun");Frame();Frame();
-  for(auto label:{"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Karakter hızı","İsim/mesaj kopyalama"})assert(items.count(label));
+  for(auto label:{"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Karakter hızı","İsim/mesaj kopyalama","Fotoğraf paylaşımı"})assert(Reveal(label));
+  {
+    auto net=photo_transport_bridge::Read();net.ready=true;net.in_room=true;net.peers={{42,"Test player"}};
+    photo_transport_bridge::Publish(net);Frame();Frame();
+    Direct("Fotoğraf paylaşımı");Frame();Frame();
+    assert(!items.count("Paylaşımı aç: Test player"));
+    Direct("Bu odada paylasimi ac");
+    auto cmd=photo_transport_bridge::Take();assert(cmd.enable_sharing);
+    net.share_active=true;
+    photo_transport_bridge::Publish(net);Frame();Frame();
+    Direct("Paylasimi kapat");cmd=photo_transport_bridge::Take();assert(cmd.stop_sharing);
+    net.share_active=false;photo_transport_bridge::Publish(net);Frame();Frame();
+    Direct(u8"< Bölümlere dön");Frame();Frame();
+  }
   { // Exact rich-text copy of room name and visible chat lines.
     static std::string copied;
     keyboard_ui::SetCopyProvider([](const std::string& value){copied=value;return true;});
@@ -371,17 +384,12 @@ int main() {
     Direct("Vazgeç");assert(auto_join_bridge::Take().cancel);
     auto_join_bridge::Publish({});Frame();Frame();assert(!items.count("Vazgeç"));
   }
-  { // Incoming photo permission is actionable even with developer menu locked.
+  { // Incoming network requests cannot open an unsolicited permission popup.
     photo_transport_bridge::Snapshot invite;
-    invite.ready=true;invite.share_request=true;invite.share_request_from="Test player";
+    invite.ready=true;invite.in_room=true;invite.share_request=true;
+    invite.share_request_from="Test player";invite.peers={{42,"Test player"}};
     photo_transport_bridge::Publish(invite);Frame();Frame();
-    assert(items.count("Kabul et")&&items.count("Reddet"));
-    {const auto hit=items.at("Kabul et").GetCenter();assert(keyboard_ui::TouchDown(hit.x,hit.y));keyboard_ui::TouchUp();}
-    assert(photo_transport_bridge::Take().allow_browse);
-    photo_transport_bridge::Publish({});Frame();Frame();
-    invite.share_request=true;photo_transport_bridge::Publish(invite);Frame();Frame();
-    {const auto hit=items.at("Reddet").GetCenter();assert(keyboard_ui::TouchDown(hit.x,hit.y));keyboard_ui::TouchUp();}
-    assert(photo_transport_bridge::Take().deny_browse);
+    assert(!items.count("Kabul et")&&!items.count("Reddet"));
     photo_transport_bridge::Publish({});Frame();Frame();
   }
   // Hybrid mode renders only shortcuts; device text stays authoritative and

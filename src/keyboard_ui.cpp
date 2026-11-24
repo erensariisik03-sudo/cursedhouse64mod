@@ -591,8 +591,8 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ImGui::TextWrapped("Geliştirici");
         ActionKey("Geliştirici kilidini kapat",content,key_height,[]{chat_bot_bridge::LockDeveloper();InvalidateKeys();});
         // Photo requests and receiving belong behind developer authentication.
-        // The remote sender can still accept a single explicit share request
-        // from the top-level consent popup without entering the password.
+        // The sender enables a trusted peer in Oyun -> Fotoğraf paylaşımı;
+        // no developer password or per-request popup is required to send.
         ImGui::Separator();
         ImGui::TextWrapped("Diger oyuncunun paylasima actigi fotograflar icin GMM Connect'i ac.");
         ActionKey("GMM Connect'e git",content,key_height,[]{g_bot_page=10;InvalidateKeys();});
@@ -629,7 +629,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ImGui::EndDisabled();
         if(net.browsing){
             if(!net.fetching)ActionKey("Fotograf listesi istegini iptal et",content,key_height,[]{photo_transport_bridge::CancelBrowse();InvalidateKeys();});
-            ImGui::TextWrapped(net.listing_ready?"Oyuncunun izin verdigi fotograflar:":"Karsi oyuncunun onayi / listesi bekleniyor...");
+            ImGui::TextWrapped(net.listing_ready?"Oyuncunun paylastigi fotograflar:":"Karsi cihazın paylaşım yetkisi / listesi bekleniyor...");
             if(net.listing_ready){
                 ImGui::TextWrapped("Karsidan gelen fotograf sayisi: %d",(int)net.remote_files.size());
                 ImGui::TextWrapped("Birden fazla fotograf secip tek izinde sirayla indirebilirsin.");
@@ -654,7 +654,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
                 ImGui::EndDisabled();
             }
         }
-        ImGui::TextWrapped("Karsi cihaz bir kez izin verince Pictures dosyalari gorulur. Yetki 15 dakika veya iptale kadar surer.");
+        ImGui::TextWrapped("Karsi cihaz Oyun > Fotoğraf paylaşımı bölümünden seni yetkilendirmişse, dosya listesi ayrıca onay penceresi açılmadan gelir.");
         break;
     }
     case 0:{
@@ -996,6 +996,21 @@ void GameplayBody(float key_height,float content){
     static int previous_page=-2;
     if(previous_page!=g_gameplay_page){ImGui::SetScrollY(0);previous_page=g_gameplay_page;}
     if(g_gameplay_page>=0){
+        if(g_gameplay_page==10){
+            const auto share=photo_transport_bridge::Read();
+            ActionKey(u8"< Bölümlere dön",content,key_height,[]{g_gameplay_page=-1;InvalidateKeys();});
+            ImGui::TextWrapped("Fotoğraf paylaşımı | Bu cihaz");
+            ImGui::TextWrapped("Pictures klasorundeki fotograflari bu Photon odasindaki diger oyuncularla paylasirsin. Istek basina pencere acilmaz.");
+            if(!share.in_room)ImGui::TextWrapped("Paylasimi acmak icin Photon odasina gir.");
+            if(share.share_active){
+                ImGui::TextWrapped("Paylasim ACIK. Odadaki herhangi bir modlu oyuncu fotograflari isteyebilir.");
+                ActionKey("Paylasimi kapat",content,key_height,[]{photo_transport_bridge::StopSharing();InvalidateKeys();});
+            }else if(share.in_room){
+                ActionKey("Bu odada paylasimi ac",content,key_height,[]{photo_transport_bridge::EnableSharing();InvalidateKeys();});
+            }
+            ImGui::TextWrapped("Paylasim sadece bu odada gecerli; odadan cikinca kapanir.");
+            return;
+        }
         static const char* titles[]={"Eşya spawn","","Düşman öldür","God Mode","Hayalet modu","","Oyuncu atma","Zorluk","Karakter hızı"};
         if(g_gameplay_page<9)ImGui::Text("%s",titles[g_gameplay_page]);else if(g_gameplay_page==9)ImGui::Text("İsim/mesaj kopyalama");
         GameplaySectionBody(key_height,content);
@@ -1003,10 +1018,10 @@ void GameplayBody(float key_height,float content){
     }
     ImGui::TextWrapped("Oyun özellikleri");
     ImGui::TextWrapped("Bir bölüm seç.");
-    const char* labels[]={"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Zorluk","Karakter hızı","İsim/mesaj kopyalama"};
-    const int pages[]={0,2,3,4,6,7,8,9};
+    const char* labels[]={"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Zorluk","Karakter hızı","İsim/mesaj kopyalama","Fotoğraf paylaşımı"};
+    const int pages[]={0,2,3,4,6,7,8,9,10};
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
-    for(int i=0;i<8;++i){
+    for(int i=0;i<9;++i){
         if(i%2)ImGui::SameLine();
         ImGui::PushID(i+300);
         ActionKey(labels[i],half,key_height,[page=pages[i]]{g_gameplay_page=page;InvalidateKeys();});
@@ -1070,35 +1085,6 @@ void DrawAutoJoin(const ImGuiIO& io){
     ImGui::End();
 }
 // Yuvarlak, yarı saydam menü düğmesi + AI, Kıyafet ve bölümlemeli Oyun paneli.
-void DrawSharePrompt(const ImGuiIO& io,float scale,float key_height){
-    const auto share=photo_transport_bridge::Read();
-    if(share.share_active&&!share.share_request){
-        const float boxw=std::min(io.DisplaySize.x*.74f,360.f*scale);
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*.5f,io.DisplaySize.y*.12f),ImGuiCond_Always,ImVec2(.5f,0));
-        ImGui::SetNextWindowSize(ImVec2(boxw,0),ImGuiCond_Always);
-        if(ImGui::Begin("##gmm_share_active",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoMove)){
-            ImGui::TextWrapped("Pictures paylasiliyor: %s",share.share_with.c_str());
-            ActionKey("Paylasimi kapat",ImGui::GetContentRegionAvail().x,key_height,[]{photo_transport_bridge::StopSharing();InvalidateKeys();});
-            RecordWindow();
-        }ImGui::End();
-    }
-    if(share.share_request){
-        const float boxw=std::min(io.DisplaySize.x*.90f,420.f*scale);
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*.5f,io.DisplaySize.y*.5f),ImGuiCond_Always,ImVec2(.5f,.5f));
-        ImGui::SetNextWindowSize(ImVec2(boxw,0),ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(.95f);
-        if(ImGui::Begin("##gmm_photo_share_request",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoMove)){
-            ImGui::TextWrapped("GMM Connect | Paylasim istegi");
-            ImGui::TextWrapped("%s fotograf listenizi gormek istiyor.",share.share_request_from.c_str());
-            ImGui::TextWrapped("Pictures klasorunun icindeki JPG/PNG dosyalari 15 dakika bu oyuncuya acilacak. Birden fazla dosya tek izinde alinabilir. Paylasimi istedigin zaman kapatabilirsin.");
-            const float actionw=(ImGui::GetContentRegionAvail().x-ImGui::GetStyle().ItemSpacing.x)/2.f;
-            ImGui::PushID("share_approve");ActionKey("Kabul et",actionw,key_height,[]{photo_transport_bridge::AllowBrowse();InvalidateKeys();});ImGui::PopID();ImGui::SameLine();
-            ImGui::PushID("share_deny");ActionKey("Reddet",actionw,key_height,[]{photo_transport_bridge::DenyBrowse();InvalidateKeys();});ImGui::PopID();
-            RecordWindow();
-        }
-        ImGui::End();
-    }
-}
 void DrawHub(const ImGuiIO& io){
     const float scale=std::clamp(std::min(io.DisplaySize.x,io.DisplaySize.y)/500.0f,.7f,1.6f);
     const float key_height=43*scale,width=std::min(io.DisplaySize.x*.50f,324*scale);
@@ -1137,7 +1123,7 @@ void DrawHub(const ImGuiIO& io){
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(3);
-    if(!g_hub_open){DrawSharePrompt(io,scale,key_height);return;}
+    if(!g_hub_open)return;
     const float panel_y=std::min(pos.y+d+6*scale,io.DisplaySize.y*.5f);
     const float max_height=std::max(80.0f*scale,io.DisplaySize.y-panel_y-4*scale);
     const float panel_x=std::clamp(pos.x,0.0f,std::max(0.0f,io.DisplaySize.x-width));
@@ -1173,7 +1159,6 @@ void DrawHub(const ImGuiIO& io){
         RecordWindow();
     }
     ImGui::End();
-    DrawSharePrompt(io,scale,key_height);
 }
 void DrawShowButton(const ImGuiIO& io) {
     const float margin=ImGui::GetStyle().WindowPadding.x;
