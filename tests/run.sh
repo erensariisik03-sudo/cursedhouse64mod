@@ -99,3 +99,6 @@ build/tests/photo_browse_protocol_test
 # GMM developer Kickle: authenticated actor-bound remote leave command
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I src tests/kick_protocol_test.cpp -o build/tests/kick_protocol_test
 build/tests/kick_protocol_test
+
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I src tests/github_repo_status_test.cpp -o build/tests/github_repo_status_test
+build/tests/github_repo_status_test

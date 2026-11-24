@@ -15,5 +15,10 @@ int main(){
     auto tampered=msg;tampered.back()=(tampered.back()=='0'?'1':'0');
     assert(!kick_protocol::Decode(tampered,3,7,key,nonce));
     assert(!kick_protocol::Decode("GMMKCK1|K|1|3|7|x",3,7,key,nonce));
-    std::cout<<"kick message signature and actor binding: PASS\n";
+    const auto host=kick_protocol::EncodeHost(987654321,3,7);
+    assert(kick_protocol::DecodeHost(host,3,7,nonce)&&nonce==987654321);
+    assert(!kick_protocol::DecodeHost(host,4,7,nonce));
+    assert(!kick_protocol::DecodeHost(host,3,8,nonce));
+    assert(!kick_protocol::DecodeHost("GMMKCK2|K|1|3|7|x",3,7,nonce));
+    std::cout<<"kick message host actor and legacy signature checks: PASS\n";
 }

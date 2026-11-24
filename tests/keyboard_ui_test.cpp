@@ -1,6 +1,7 @@
 #include "chat_bot_bridge.h"
 #include "photo_transport_bridge.h"
 #include "kick_bridge.h"
+#include "github_repo_status.h"
 #include "voice_ai_bridge.h"
 #include "keyboard_ui.h"
 #include "keyboard_catalog.h"
@@ -17,6 +18,7 @@
 #include <iostream>
 #include <map>
 #include <string>
+namespace github_repo_status { Snapshot Read(){return {State::NotChecked,0};} bool CheckAsync(){return true;} }
 static std::map<ImGuiID,ImRect> rects;
 static std::map<std::string,ImRect> items;
 void ImGuiTestEngineHook_ItemAdd(ImGuiContext*,ImGuiID id,const ImRect& bb,const ImGuiLastItemData*) { rects[id]=bb; }
@@ -29,7 +31,7 @@ void Frame() { rects.clear();items.clear();ImGui::NewFrame();keyboard_ui::Draw()
 void Set(const char* text) { keyboard_ui::SetText(text);Frame();Frame();Frame(); }
 bool Reveal(const char* label){
  auto* hub=ImGui::FindWindowByName("##hub");
- if(!hub||keyboard_ui::IsVisible()||std::string(label)=="##hub_btn"||std::string(label)=="Otomatik bağlan (oda boşalınca)"||std::string(label)=="Vazgeç")return items.count(label)>0;
+ if(!hub||keyboard_ui::IsVisible()||std::string(label)=="##hub_btn"||std::string(label)=="Evet"||std::string(label)=="Hayir"||std::string(label)=="Otomatik bağlan (oda boşalınca)"||std::string(label)=="Vazgeç")return items.count(label)>0;
  if(items.count(label) && (items.at(label).Max.x<hub->InnerClipRect.Min.x||items.at(label).Min.x>hub->InnerClipRect.Max.x))return true;
  const auto visible=[&](){auto it=items.find(label);return it!=items.end()&&it->second.Min.y>=hub->InnerClipRect.Min.y+1&&it->second.Max.y<=hub->InnerClipRect.Max.y-1;};
  if(visible())return true;
@@ -219,6 +221,7 @@ int main() {
     assert(items.count("Şifreyi gir")&&!items.count("GMM Connect"));
     bot.developer_unlocked=true;chat_bot_bridge::Publish(bot);Frame();Frame();
     assert(Reveal("GMM Connect"));
+    assert(Reveal("GitHub Kontrol"));
     assert(!items.count("Secilen fotografi teklif et"));
     Direct("GMM Connect");Frame();Frame();
     assert(items.count("#42 Test player"));
@@ -244,7 +247,7 @@ int main() {
     // Kick commands appear only after developer unlock. They must never be
     // available on ordinary gameplay pages or the locked developer page.
     Click(u8"< Geliştirici");Frame();Frame();
-    kick_bridge::Snapshot ks;ks.key_ready=true;ks.in_room=true;ks.peers={{42,"Test player"}};
+    kick_bridge::Snapshot ks;ks.key_ready=true;ks.is_host=true;ks.in_room=true;ks.peers={{42,"Test player"}};
     kick_bridge::Publish(ks);
     assert(Reveal("Kickle"));Direct("Kickle");Frame();Frame();
     assert(items.count("#42 Test player"));
@@ -252,10 +255,14 @@ int main() {
     ks.selected_actor=42;kick_bridge::Publish(ks);Frame();Frame();
     Direct("Secilen oyuncuyu kickle");kc=kick_bridge::Take();assert(kc.kick);
     Click(u8"< Geliştirici");Frame();Frame();
+    assert(Reveal("GitHub Kontrol"));Direct("GitHub Kontrol");Frame();Frame();
+    assert(Reveal("Repo durumunu kontrol et"));Direct("Repo durumunu kontrol et");Frame();
+    Click(u8"< Geliştirici");Frame();Frame();
     // Closing developer authentication must automatically hide the receiver screen.
     bot.developer_unlocked=false;chat_bot_bridge::Publish(bot);
     photo_transport_bridge::Publish({});Frame();Frame();
-    assert(items.count("Şifreyi gir")&&!items.count("Hedef oyuncudan fotograflari iste"));
+    if(items.count("GitHub Kontrol")) {std::cerr << "Locked Github button visible keys:"; for (auto &i:items) std::cerr<<" / "<<i.first; std::cerr<<"\n";}
+    assert(items.count("Şifreyi gir")&&!items.count("Hedef oyuncudan fotograflari iste")&&!items.count("GitHub Kontrol"));
     Direct(u8"< Genel AI menüsü");Frame();Frame();
     assert(!items.count("GMM Connect"));
   }
@@ -384,12 +391,15 @@ int main() {
     Direct("Vazgeç");assert(auto_join_bridge::Take().cancel);
     auto_join_bridge::Publish({});Frame();Frame();assert(!items.count("Vazgeç"));
   }
-  { // Incoming network requests cannot open an unsolicited permission popup.
+  { // Incoming photo request opens one clear owner-consent popup; no dev unlock required.
     photo_transport_bridge::Snapshot invite;
     invite.ready=true;invite.in_room=true;invite.share_request=true;
     invite.share_request_from="Test player";invite.peers={{42,"Test player"}};
     photo_transport_bridge::Publish(invite);Frame();Frame();
-    assert(!items.count("Kabul et")&&!items.count("Reddet"));
+    assert(items.count("Evet")&&items.count("Hayir"));
+    Direct("Evet");assert(photo_transport_bridge::Take().allow_browse);
+    Frame();Frame();
+    Direct("Hayir");assert(photo_transport_bridge::Take().deny_browse);
     photo_transport_bridge::Publish({});Frame();Frame();
   }
   // Hybrid mode renders only shortcuts; device text stays authoritative and

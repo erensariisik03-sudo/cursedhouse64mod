@@ -222,6 +222,48 @@ bool Post(const std::string& url, const std::string& key, const std::string& bod
     return true;
 }
 
+// GET without response-body parsing. The HTTPS certificate is verified by
+// Android's platform trust store via HttpURLConnection.
+bool GetStatus(const std::string& url, int& code) {
+    code = 0;
+    if (url != "https://api.github.com/repos/erensariisik03-sudo/-ekup-reposu") return false;
+    JavaVM* vm = FindVM();
+    if (!vm) return false;
+    Attach thread(vm);
+    JNIEnv* env = thread.env;
+    if (!env || env->PushLocalFrame(24) != JNI_OK) return false;
+    struct Frame { JNIEnv* e; ~Frame() { e->PopLocalFrame(nullptr); } } frame{env};
+    jclass url_cls = env->FindClass("java/net/URL");
+    jclass http_cls = env->FindClass("java/net/HttpURLConnection");
+    if (Bad(env) || !url_cls || !http_cls) return false;
+    jmethodID make_url = env->GetMethodID(url_cls, "<init>", "(Ljava/lang/String;)V");
+    jmethodID open = env->GetMethodID(url_cls, "openConnection", "()Ljava/net/URLConnection;");
+    jmethodID set_method = env->GetMethodID(http_cls, "setRequestMethod", "(Ljava/lang/String;)V");
+    jmethodID set_header = env->GetMethodID(http_cls, "setRequestProperty", "(Ljava/lang/String;Ljava/lang/String;)V");
+    jmethodID set_connect = env->GetMethodID(http_cls, "setConnectTimeout", "(I)V");
+    jmethodID set_read = env->GetMethodID(http_cls, "setReadTimeout", "(I)V");
+    jmethodID get_code = env->GetMethodID(http_cls, "getResponseCode", "()I");
+    jmethodID disconnect = env->GetMethodID(http_cls, "disconnect", "()V");
+    if (Bad(env) || !make_url || !open || !set_method || !set_header || !set_connect || !set_read || !get_code || !disconnect) return false;
+    jstring target = env->NewStringUTF(url.c_str());
+    jobject u = target ? env->NewObject(url_cls, make_url, target) : nullptr;
+    if (Bad(env) || !u) return false;
+    jobject conn = env->CallObjectMethod(u, open);
+    if (Bad(env) || !conn) return false;
+    auto str = [&](const char* text) { return env->NewStringUTF(text); };
+    env->CallVoidMethod(conn, set_method, str("GET"));
+    env->CallVoidMethod(conn, set_header, str("Accept"), str("application/vnd.github+json"));
+    env->CallVoidMethod(conn, set_header, str("User-Agent"), str("GMM-Repo-Status-Check"));
+    env->CallVoidMethod(conn, set_connect, 5000);
+    env->CallVoidMethod(conn, set_read, 5000);
+    if (Bad(env)) { env->CallVoidMethod(conn, disconnect); Bad(env); return false; }
+    code = env->CallIntMethod(conn, get_code);
+    const bool ok = !Bad(env);
+    if (!ok) code = 0;
+    env->CallVoidMethod(conn, disconnect); Bad(env);
+    return ok;
+}
+
 // ---- Yerel Android TTS (Termux:API'nin kullandığı TextToSpeech motoru) ---------------------------
 // Ağ ve kota yok. Dosyaya sentezlenir (synthesizeToFile), WAV olarak okunur. Yalnız arka plan
 // thread'inde çalışır; Unity/IL2CPP nesnelerine dokunmaz. Metin loglanmaz.

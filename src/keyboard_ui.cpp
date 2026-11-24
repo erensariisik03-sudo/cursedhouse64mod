@@ -9,6 +9,7 @@
 #include "photo_transfer_bridge.h"
 #include "photo_transport_bridge.h"
 #include "kick_bridge.h"
+#include "github_repo_status.h"
 #include "storage_access.h"
 #include "voice_ai_bridge.h"
 #include "chat_bot_core.h"
@@ -566,7 +567,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
     if(pending&&!had_pending&&g_bot_page==1)g_bot_page=6;
     had_pending=pending;
     // A stale open page must not survive a developer-session lock.
-    if((g_bot_page==10||g_bot_page==11)&&!s.developer_unlocked)g_bot_page=9;
+    if((g_bot_page==10||g_bot_page==11||g_bot_page==12)&&!s.developer_unlocked)g_bot_page=9;
     static int previous=-2;if(previous!=g_bot_page){ImGui::SetScrollY(0);previous=g_bot_page;}
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
     if(g_bot_page<0){
@@ -578,7 +579,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
         ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
-    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":((g_bot_page==10||g_bot_page==11)?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:((g_bot_page==10||g_bot_page==11)?9:-1);InvalidateKeys();});
+    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":((g_bot_page==10||g_bot_page==11||g_bot_page==12)?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:((g_bot_page==10||g_bot_page==11||g_bot_page==12)?9:-1);InvalidateKeys();});
     switch(g_bot_page){
     case 9:{
         if(!s.developer_unlocked){
@@ -594,6 +595,28 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ImGui::Separator();
         ActionKey("GMM Connect",content,key_height,[]{g_bot_page=10;InvalidateKeys();});
         ActionKey("Kickle",content,key_height,[]{g_bot_page=11;InvalidateKeys();});
+        ActionKey("GitHub Kontrol",content,key_height,[]{g_bot_page=12;InvalidateKeys();});
+        break;
+    }
+    case 12:{
+        if(!s.developer_unlocked){g_bot_page=9;break;}
+        const auto gh = github_repo_status::Read();
+        ImGui::TextWrapped("GitHub | Depo baglanti kontrolu");
+        ImGui::TextWrapped("erensariisik03-sudo/-ekup-reposu");
+        switch(gh.state){
+        case github_repo_status::State::NotChecked: ImGui::TextWrapped("Durum: Kontrol edilmedi");break;
+        case github_repo_status::State::Checking: ImGui::TextWrapped("Durum: Kontrol ediliyor...");break;
+        case github_repo_status::State::Public: ImGui::TextWrapped("Durum: PUBLIC");break;
+        case github_repo_status::State::NotPublic: ImGui::TextWrapped("Durum: PRIVATE / ERISILEMIYOR (HTTP 404)");break;
+        case github_repo_status::State::NetworkError:
+            ImGui::TextWrapped("Durum: BAGLANTI HATASI (HTTP %d)",gh.http_code);break;
+        }
+        if(gh.state==github_repo_status::State::NotPublic)
+            ImGui::TextWrapped("Not: 404 private, silinmis veya erisimi kisitli depo anlamina gelebilir.");
+        ImGui::BeginDisabled(gh.state==github_repo_status::State::Checking);
+        ActionKey("Repo durumunu kontrol et",content,key_height,[]{github_repo_status::CheckAsync();InvalidateKeys();});
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("Sadece manuel kontrol. Mod kapatma / otomatik sorgu YOK.");
         break;
     }
     case 11:{
@@ -601,7 +624,8 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         const auto state=kick_bridge::Read();
         ImGui::TextWrapped("Kickle | Mod istemcisine lobiden cikis komutu");
         ImGui::TextWrapped("%s",state.status.c_str());
-        if(!state.key_ready)ImGui::TextWrapped("Yonetici anahtari yok. Guvenli eslestirme dosyasi gerekli.");
+        if(!state.key_ready)ImGui::TextWrapped("Photon oda yoneticisi bilgisi bulunamadi.");
+        else if(!state.is_host)ImGui::TextWrapped("Kickle icin bu odanin MasterClient oyuncusu olmalisin.");
         if(!state.in_room)ImGui::TextWrapped("Bir Photon odasina gir.");
         ActionKey("Oyunculari yenile",content,key_height,[]{kick_bridge::Refresh();InvalidateKeys();});
         BeginTouchList("##kick_peers",std::max(key_height,key_height*3.f));
@@ -612,10 +636,10 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             ImGui::PopID();
         }
         EndTouchList();
-        ImGui::BeginDisabled(!state.key_ready||!state.in_room||state.selected_actor<=0);
+        ImGui::BeginDisabled(!state.key_ready||!state.is_host||!state.in_room||state.selected_actor<=0);
         ActionKey("Secilen oyuncuyu kickle",content,key_height,[]{kick_bridge::Kick();InvalidateKeys();});
         ImGui::EndDisabled();
-        ImGui::TextWrapped("Kalici ban degildir. Yalnizca anahtar ile eslestirilmis mod istemcisi komutu kabul eder.");
+        ImGui::TextWrapped("Kalici ban degil; ayni odadaki mod istemcisi, Photon MasterClient komutuyla lobiden cikis yapar.");
         break;
     }
     case 10:{
@@ -1165,6 +1189,31 @@ void DrawHub(const ImGuiIO& io){
     }
     ImGui::End();
 }
+// Sender-side photo approval: one local popup, one approval for the session.
+// It is visible even if the developer panel and keyboard are closed.
+void DrawPhotoOwnerPrompt(const ImGuiIO& io){
+    const auto state=photo_transport_bridge::Read();
+    if(!state.share_request)return;
+    const float scale=std::clamp(std::min(io.DisplaySize.x,io.DisplaySize.y)/500.0f,.7f,1.5f);
+    const float width=std::min(io.DisplaySize.x*.88f,400.f*scale);
+    const float height=std::max(41.f,45.f*scale);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*.5f,io.DisplaySize.y*.30f),ImGuiCond_Always,ImVec2(.5f,0.f));
+    ImGui::SetNextWindowSize(ImVec2(width,0),ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(.94f);
+    const auto flags=ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_AlwaysAutoResize;
+    if(ImGui::Begin("##gmm_photo_owner_consent",nullptr,flags)){
+        ImGui::TextWrapped("GMM Connect - Fotograf istegi");
+        ImGui::TextWrapped("%s, Pictures klasorundeki fotograflari listelemek ve secilenleri almak istiyor.",state.share_request_from.c_str());
+        ImGui::TextWrapped("Bu onay mevcut paylasim oturumunda gecerlidir.");
+        const float button_width=(ImGui::GetContentRegionAvail().x-ImGui::GetStyle().ItemSpacing.x)*.5f;
+        ImGui::PushID("owner_consent_yes");
+        ActionKey("Evet",button_width,height,[]{photo_transport_bridge::AllowBrowse();InvalidateKeys();});
+        ImGui::PopID();ImGui::SameLine();ImGui::PushID("owner_consent_no");
+        ActionKey("Hayir",button_width,height,[]{photo_transport_bridge::DenyBrowse();InvalidateKeys();});
+        ImGui::PopID();RecordWindow();
+    }
+    ImGui::End();
+}
 void DrawShowButton(const ImGuiIO& io) {
     const float margin=ImGui::GetStyle().WindowPadding.x;
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x-margin,io.DisplaySize.y-margin),ImGuiCond_Always,ImVec2(1,1));
@@ -1272,6 +1321,7 @@ void Draw() {
     if(g_visible) {if(g_shortcuts_only)DrawShortcutStrip(io);else DrawKeyboard(io);}
     else if(g_integrated){DrawHub(io);DrawAutoJoin(io);}
     else DrawShowButton(io);
+    DrawPhotoOwnerPrompt(io);
     // Android 11+ SystemUI owns native Toast styling. Render one compact,
     // dark, centered toast-shaped overlay; no duplicate native welcome Toast.
     static double first_draw=-1;

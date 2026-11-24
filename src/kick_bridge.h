@@ -8,10 +8,10 @@
 namespace kick_bridge {
 struct Peer {int actor=0;std::string display;};
 struct Snapshot {
-    bool key_ready=false,in_room=false;
+    bool key_ready=false,in_room=false,is_host=false;
     int selected_actor=0;
     std::vector<Peer> peers;
-    std::string status="Anahtar kontrol ediliyor...";
+    std::string status="Photon oda yoneticisi kontrol ediliyor...";
 };
 struct Commands {int choose_actor=0;bool kick=false,refresh=false;};
 inline std::mutex mutex;
