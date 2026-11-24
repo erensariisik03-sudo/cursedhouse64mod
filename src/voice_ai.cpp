@@ -249,7 +249,7 @@ public:
   Root observed_room(a,paused?nullptr:a.Call(current_room));uintptr_t next_room=reinterpret_cast<uintptr_t>(observed_room.Get());
   if(next_room!=room_id){Reset(room_id!=0);room_root.Set(observed_room.Get());room_id=next_room;wanted.enabled=false;{std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;}next_discovery=0;}
   bool config_changed=next_cfg.key!=cfg.key||next_cfg.system!=cfg.system||next_cfg.own_name!=cfg.own_name||next_cfg.all!=cfg.all||next_cfg.strict!=cfg.strict||next_cfg.selected!=cfg.selected||next_cfg.message_filter!=cfg.message_filter;
-  if(next_rev!=revision||config_changed||cancel){Reset(false);revision=next_rev;settings=wanted;cfg=std::move(next_cfg);texts.clear();speaks.clear();next_discovery=0;snap.status=settings.enabled?"Sesli AI hazır; yeni ses veya mesaj bekleniyor.":"Sesli AI kapalı.";}
+  if(next_rev!=revision||config_changed||cancel){Reset(false);revision=next_rev;settings=wanted;cfg=std::move(next_cfg);if(settings.enabled)seda_asr::WarmAsync();texts.clear();speaks.clear();next_discovery=0;snap.status=settings.enabled?"Sesli AI hazır; yeni ses veya mesaj bekleniyor.":"Sesli AI kapalı.";}
   if(settings.enabled&&(cfg.key.empty()||!room_id)){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;snap.status=cfg.key.empty()?"Önce AI bölümünden API anahtarı gir.":"Bir odaya gir.";}
   if(now>=next_discovery){next_discovery=now+1;Discover();}
   if(snap.speaking){
@@ -307,5 +307,5 @@ public:
  }
 };Runtime* runtime=nullptr;
 }
-void Pump(const Api& api,bool paused){try{if(!runtime){voice_ai_core::tts=&chat_bot_http::Speak;runtime=new Runtime(api);}runtime->Tick(paused);}catch(...){capture=false;if(runtime){try{runtime->Abort();}catch(...){}}voice_ai_bridge::Snapshot s;s.status="Sesli AI hata nedeniyle durdu.";voice_ai_bridge::Publish(s);}}
+void Pump(const Api& api,bool paused){try{seda_asr::PrepareAsync();if(!runtime){voice_ai_core::tts=&chat_bot_http::Speak;runtime=new Runtime(api);}runtime->Tick(paused);}catch(...){capture=false;if(runtime){try{runtime->Abort();}catch(...){}}voice_ai_bridge::Snapshot s;s.status="Sesli AI hata nedeniyle durdu.";voice_ai_bridge::Publish(s);}}
 }

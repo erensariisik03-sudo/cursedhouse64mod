@@ -13,3 +13,8 @@ Android ARM64 ve gercek telefon davranisi bu ortamda dogrulanmadi.
 
 Not: Sesli sohbet listesi dogrulanmis uzaktaki ses kanallarini baz alir; daha once hic ses kanali acmamis ama hesap sahibi olan tum oyunculari tespit etmek icin daha fazla oyun metaverisi gerekir.
 Not: Gorunen adla mesaj gondermek Photon hesap/aktor kimligini degistirmez.
+
+Duzeltme (24 Kasim, 2):
+- Surgu (slider) kontrolleri artik surukleniyor: dokunus kaydirma isleyicisi yerine ImGui'ye gidiyor.
+- Metin AI: "Kisileri yenile" dugmesi kaldirildi. Sesli AI: "Ses odaya gonderilir" dugmesi kaldirildi.
+- Geri dugmelerindeki "←" (yazi tipinde yok, "?" gorunuyordu) "<" ile degistirildi.

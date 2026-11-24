@@ -60,6 +60,9 @@ struct ListTouch {
     ImVec2 bar_min{},bar_max{};
 };
 ListTouch g_list_touch,g_hub_touch;
+// ImGui sliders must receive the touch themselves; otherwise the hub/list scroll handler swallows the drag.
+std::vector<std::pair<ImVec2,ImVec2>> g_slider_rects;
+void TrackSlider(){g_slider_rects.emplace_back(ImGui::GetItemRectMin(),ImGui::GetItemRectMax());}
 bool g_touching_hub=false;
 void InvalidateKeys(){g_touch_keys.clear();g_touch_repeat={};g_list_touch={};g_hub_touch={};}
 
@@ -569,7 +572,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
         ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
-    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"← Sesli AI":u8"← Genel AI menüsü",content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:-1;InvalidateKeys();});
+    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":u8"< Genel AI menüsü",content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:-1;InvalidateKeys();});
     switch(g_bot_page){
     case 0:{
         ImGui::TextWrapped("METİN AI - diğer AI türü açıksa otomatik kapatılır.");
@@ -578,7 +581,6 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             if(enabled){voice_ai_bridge::Enable(false);chat_bot_bridge::VoiceFx(false);}
             chat_bot_bridge::Enable(enabled);InvalidateKeys();},s.enabled);
         ImGui::EndDisabled();
-        ActionKey("Kişileri yenile",content,key_height,[]{chat_bot_bridge::Refresh();InvalidateKeys();});
         ActionKey(s.all?"Herkes: AÇIK":"Herkes: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleAll();InvalidateKeys();},s.all);
         float list_height=std::max(key_height,std::min(key_height*3,max_height-ImGui::GetCursorPosY()-key_height*3));
         BeginTouchList("##bot_players",list_height);
@@ -587,7 +589,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         EndTouchList();
         ActionKey(s.message_filter?"Mesaj filtresi: AÇIK":"Mesaj filtresi: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleFilter();InvalidateKeys();},s.message_filter);
         ActionKey(s.strict?"Adla çağırma: AÇIK":"Adla çağırma: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleStrict();InvalidateKeys();},s.strict);
-        int words=s.words;ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##bot_len",&words,chat_bot_core::kMinWords,chat_bot_core::kMaxWords,"Yanıt: %d kelime"))chat_bot_bridge::SetWords(words);
+        int words=s.words;ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##bot_len",&words,chat_bot_core::kMinWords,chat_bot_core::kMaxWords,"Yanıt: %d kelime"))chat_bot_bridge::SetWords(words);TrackSlider();
         ActionKey("Sohbet hafızasını sıfırla",content,key_height,[]{chat_bot_bridge::ResetMemory();InvalidateKeys();});break;
     }
     case 1:{
@@ -603,8 +605,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ActionKey("Konuşmayı durdur",content,key_height,[]{voice_ai_bridge::Stop();InvalidateKeys();});
         ActionKey("Yanıt türünü seç",content,key_height,[]{g_bot_page=8;InvalidateKeys();});
         ActionKey(v.settings.manual_keywords?"Manuel kelime seçimi: AÇIK":"Manuel kelime seçimi: KAPALI",content,key_height,[enabled=!v.settings.manual_keywords]{voice_ai_bridge::ManualKeywords(enabled);InvalidateKeys();},v.settings.manual_keywords);
-        ActionKey(v.settings.destination?"Ses yalnızca bu cihazda":"Ses odaya gönderilir",content,key_height,[local=!v.settings.destination]{voice_ai_bridge::Destination(local);InvalidateKeys();},v.settings.destination);
-        {int tone=voice_ai_bridge::tone.load();ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##voice_tone",&tone,0,100,"Ses tonu: %d%%"))voice_ai_bridge::SetTone(tone);}
+        {int tone=voice_ai_bridge::tone.load();ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##voice_tone",&tone,0,100,"Ses tonu: %d%%"))voice_ai_bridge::SetTone(tone);TrackSlider();}
         ActionKey("Kendi mesajımı yaz",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);InvalidateKeys();});
         const auto saved=voice_ai_bridge::SpeechText();if(!saved.empty()){
             ImGui::TextWrapped("Metin: %s",chat_bot_core::PrefixScalars(saved,110).c_str());
@@ -702,7 +703,7 @@ void GameplaySectionBody(float key_height,float content){
     const auto s=gameplay_bridge::Read();
     const auto back=[]{g_gameplay_page=-1;InvalidateKeys();};
     ImGui::PushID("gameplay_back");
-    ActionKey(u8"← Bölümlere dön",content,key_height,back);
+    ActionKey(u8"< Bölümlere dön",content,key_height,back);
     ImGui::PopID();
     ImGui::Spacing();ImGui::TextWrapped("%s",s.status.c_str());
     if(!s.ready)ImGui::TextWrapped("Odaya girip sahnenin yüklenmesini bekle.");
@@ -775,9 +776,9 @@ void GameplaySectionBody(float key_height,float content){
             ImGui::Text("Kategorideki düşmanlar: %d",s.enemies[clone_kind].count);
             ImGui::TextWrapped("Durdur, seçilen türün asıllarını ve klonlarını etkiler.");
             if(!s.authority)ImGui::TextWrapped("Durdurma bu cihazda uygulanır.");
-            ImGui::SliderFloat("Klon hızı",&clone_speed,.1f,5.f,"%.1fx");
-            ImGui::SliderFloat("Klon boyutu",&clone_size,.25f,3.f,"%.2fx");
-            ImGui::SliderFloat("Ön mesafe",&clone_distance,2.f,6.f,"%.1f m");
+            ImGui::SliderFloat("Klon hızı",&clone_speed,.1f,5.f,"%.1fx");TrackSlider();
+            ImGui::SliderFloat("Klon boyutu",&clone_size,.25f,3.f,"%.2fx");TrackSlider();
+            ImGui::SliderFloat("Ön mesafe",&clone_distance,2.f,6.f,"%.1f m");TrackSlider();
         }else for(size_t k=0;k<gameplay_bridge::kEnemies;++k){
             if(k%2)ImGui::SameLine();ImGui::PushID(static_cast<int>(k)+500);
             ImGui::BeginDisabled(operation==0?!s.enemies[k].death_ready:s.enemies[k].count==0);
@@ -808,7 +809,7 @@ void GameplaySectionBody(float key_height,float content){
         ActionKey("2x hız",half,key_height,[change]{change(2);},s.player_speed==2);ImGui::SameLine();
         ActionKey("3x hız",half,key_height,[change]{change(3);},s.player_speed==3);
         float factor=s.player_speed;ImGui::SetNextItemWidth(content);
-        if(ImGui::SliderFloat("##player_speed",&factor,1.f,5.f,"Hız: %.1fx"))change(factor);
+        if(ImGui::SliderFloat("##player_speed",&factor,1.f,5.f,"Hız: %.1fx"))change(factor);TrackSlider();
         ImGui::EndDisabled();
         ImGui::TextWrapped(s.player_speed_ready?"Yürüme ve çömelme hızını ayarlar.":"Kendi maç karakterin bekleniyor.");
         break;
@@ -841,7 +842,7 @@ void GameplaySectionBody(float key_height,float content){
             ActionKey("Oylamayı iptal et",content,key_height,[queue,context=s.context]{queue({gameplay_bridge::Kind::CancelVote,context});});
         }else{
             ImGui::BeginDisabled(!vote.ready);
-            ImGui::SetNextItemWidth(content);ImGui::SliderInt("##vote_seconds",&seconds,1,60,u8"Oylama: %d saniye");
+            ImGui::SetNextItemWidth(content);ImGui::SliderInt("##vote_seconds",&seconds,1,60,u8"Oylama: %d saniye");TrackSlider();
             const auto player=std::find_if(vote.players.begin(),vote.players.end(),[&](const auto& p){return p.actor==selected&&p.actor!=vote.local;});
             ImGui::BeginDisabled(player==vote.players.end());
             ActionKey("Seçili oyuncu için oylama başlat",content,key_height,[queue,context=s.context,actor=selected,duration=seconds]{gameplay_bridge::Command c{gameplay_bridge::Kind::StartVote,context};c.item=actor;c.seconds=duration;queue(c);});
@@ -1018,7 +1019,7 @@ void DrawHub(const ImGuiIO& io){
         if(g_hub_tab==0&&g_bot_page>=0){BotBody(io,key_height,content,max_height);}
         else if(g_hub_tab==2){
             // Subpage is focused: hide unrelated top-level tabs to keep the panel short.
-            if(g_gameplay_page<0)ActionKey(u8"← Ana menü",content,key_height,[]{g_hub_tab=0;InvalidateKeys();});
+            if(g_gameplay_page<0)ActionKey(u8"< Ana menü",content,key_height,[]{g_hub_tab=0;InvalidateKeys();});
             GameplayBody(key_height,content);
         }else{
             ImGui::PushID("hub_tab0");ActionKey("AI",half,key_height,[]{g_hub_tab=0;g_gameplay_page=-1;InvalidateKeys();},g_hub_tab==0);ImGui::PopID();
@@ -1078,6 +1079,8 @@ void SetEmojiSupport(uint64_t mask,bool query_ok) {
 }
 bool TouchDown(float x,float y){
     g_touching_hub=false;
+    for(const auto& r:g_slider_rects)if(x>=r.first.x&&x<r.second.x&&y>=r.first.y&&y<r.second.y)return false; // let ImGui drag the slider
+
     auto within=[&](const ListTouch& l){return l.visible&&x>=l.min.x&&x<l.max.x&&y>=l.min.y&&y<l.max.y;};
     auto within_bar=[&](const ListTouch& l){return l.visible&&l.scroll_max>1&&x>=l.bar_min.x&&x<l.bar_max.x&&y>=l.bar_min.y&&y<l.bar_max.y;};
     g_touching_hub=!(within(g_list_touch)||within_bar(g_list_touch))&&(within(g_hub_touch)||within_bar(g_hub_touch));
@@ -1131,7 +1134,7 @@ void ResetTransientState() {
     g_emoji_mask=0; g_emoji_ready=g_emoji_query_ok=g_emoji_request=false; g_emoji_page=0;
 }
 void Draw() {
-    g_touch_keys.clear();
+    g_touch_keys.clear();g_slider_rects.clear();
     g_list_touch.visible=false;g_list_touch.recording=false;
     g_hub_touch.visible=false;g_hub_touch.recording=false;
     g_rect_count=0;

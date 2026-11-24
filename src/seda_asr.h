@@ -1,5 +1,8 @@
 #pragma once
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstddef>
@@ -118,6 +121,30 @@ inline bool Available() {
     return recognizer != nullptr || !ModelDirectory().empty();
 #else
     return false;
+#endif
+}
+
+// Game-load preparation: copy APK assets/gmm_seda -> files/gmm_seda in the background so the first
+// spoken sentence never pays for the extraction. Retries briefly because the Application object
+// may not exist yet on the very first frames. Android only; desktop tests do nothing.
+inline void PrepareAsync() {
+#if defined(__ANDROID__)
+    static std::atomic<bool> started{false};
+    if (started.exchange(true)) return;
+    std::thread([] {
+        for (int i = 0; i < 8; ++i) {
+            if (!seda_assets::EnsureInstalled().empty()) return;
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+        }
+    }).detach();
+#endif
+}
+// When Voice AI is switched on: load the ONNX recognizer once in the background (a few seconds).
+inline void WarmAsync() {
+#if defined(MM_ENABLE_SEDA)
+    static std::atomic<bool> started{false};
+    if (started.exchange(true)) return;
+    std::thread([] { std::lock_guard<std::mutex> lock(mutex); InitLocked(); }).detach();
 #endif
 }
 } // namespace seda_asr

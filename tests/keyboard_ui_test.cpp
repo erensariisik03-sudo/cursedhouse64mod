@@ -196,13 +196,16 @@ int main() {
    Direct("Cool Modu: AÇIK");auto cool=chat_bot_bridge::Take();assert(cool.toggle_cool);Frame();Frame();
    Direct("Metin AI");Frame();Frame();assert(Reveal("Mesaj filtresi: AÇIK"));
    Direct("Ali");auto bot_command=chat_bot_bridge::Take();assert(bot_command.select&&bot_command.name=="Ali");
-   Frame();Frame();Direct(u8"← Genel AI menüsü");Frame();Frame();
+   Frame();Frame();Direct(u8"< Genel AI menüsü");Frame();Frame();
    Direct("Sesli AI");Frame();Frame();assert(Reveal("Manuel kelime seçimi: KAPALI")&&Reveal("Konuşmayı durdur"));
+   assert(!items.count("Kişileri yenile")&&!items.count("Ses odaya gönderilir")&&!items.count("Ses yalnızca bu cihazda"));
+   {Reveal("Ses tonu: 50%");bool found=false;for(const auto& [name,r]:items)if(name.find("voice_tone")!=std::string::npos||name.find("Ses tonu")!=std::string::npos){found=true;const ImVec2 c((r.Min.x+r.Max.x)*.5f,(r.Min.y+r.Max.y)*.5f);const bool consumed=keyboard_ui::TouchDown(c.x,c.y);keyboard_ui::TouchUp();assert(!consumed);} // slider touch must reach ImGui, not the scroll handler
+    assert(found);}
    Direct("Manuel kelime seçimi: KAPALI");Frame();Frame();assert(voice_ai_bridge::desired.manual_keywords);
    Direct("Sesli AI: KAPALI - aç");Frame();Frame();assert(voice_ai_bridge::desired.enabled);
    auto switching=chat_bot_bridge::Take();assert(switching.set_enabled&&!switching.enable&&switching.voice_fx&&switching.voice_fx_on);
    Direct("Konuşmayı durdur");Frame();Frame();assert(voice_ai_bridge::cancel);
-   Direct(u8"← Genel AI menüsü");Frame();Frame();
+   Direct(u8"< Genel AI menüsü");Frame();Frame();
    {std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired={};voice_ai_bridge::cancel=false;voice_ai_bridge::texts.clear();}
   }
   // Oyun paneli: bölüm listesi -> tek bölüm -> geriyle tam liste.
@@ -216,20 +219,20 @@ int main() {
     tools.ghost=true;gameplay_bridge::Publish(tools);Frame();Frame();assert(!items.count("Yüksel")&&!items.count("Alçal"));
     Frame();Frame();
     tools.god_ready=true;gameplay_bridge::Publish(tools);
-    Direct(u8"← Bölümlere dön");Frame();Frame();Direct("God Mode");Frame();Frame();Direct("God Mode KAPALI - aç");
+    Direct(u8"< Bölümlere dön");Frame();Frame();Direct("God Mode");Frame();Frame();Direct("God Mode KAPALI - aç");
     queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::God&&queued.front().context==77&&queued.front().flag);
     tools.god=tools.infinity=true;gameplay_bridge::Publish(tools);Frame();Frame();
     assert(!items.count("Infinity Ammo AÇIK - kapat"));Direct("God Mode AÇIK - kapat");
     queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::God&&!queued.front().flag);
-    Frame();Frame();Direct(u8"← Bölümlere dön");
+    Frame();Frame();Direct(u8"< Bölümlere dön");
     tools.player_speed_ready=true;gameplay_bridge::Publish(tools);Frame();Frame();Direct("Karakter hızı");Frame();Frame();Direct("2x hız");
     queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::PlayerSpeed&&queued.front().factor==2&&queued.front().context==77);
     tools.player_speed=2;gameplay_bridge::Publish(tools);Frame();Frame();Direct("Normal hız (1x)");queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().factor==1);
-    Frame();Frame();Direct(u8"← Bölümlere dön");Frame();Frame();
+    Frame();Frame();Direct(u8"< Bölümlere dön");Frame();Frame();
     tools.vote.ready=true;tools.vote.local=1;tools.vote.players={{1,"Host"},{2,"Ali"}};gameplay_bridge::Publish(tools);Frame();Frame();Direct("Oyuncu atma");Frame();Frame();
     assert(!items.count("Host (#1)"));Direct("Ali (#2)");Frame();Frame();Direct("Seçili oyuncu için oylama başlat");
     queued=gameplay_bridge::Take();assert(queued.size()==1&&queued.front().kind==gameplay_bridge::Kind::StartVote&&queued.front().item==2&&queued.front().seconds==10&&queued.front().context==77);
-    gameplay_bridge::Publish({});Frame();Frame();Direct(u8"← Bölümlere dön");Frame();Frame();
+    gameplay_bridge::Publish({});Frame();Frame();Direct(u8"< Bölümlere dön");Frame();Frame();
   }
   {
     gameplay_bridge::Snapshot clone_view;clone_view.ready=true;clone_view.context=77;
@@ -248,20 +251,20 @@ int main() {
     Frame();Frame();Direct("MomSpider");Frame();Frame();Direct("Durdur");pause=gameplay_bridge::Take();
     assert(pause.size()==1&&pause[0].enemy==2&&pause[0].flag);
     Frame();Frame();
-    Direct(u8"← Bölümlere dön");Frame();Frame();
+    Direct(u8"< Bölümlere dön");Frame();Frame();
   }
   {
     gameplay_bridge::Snapshot progression;progression.ready=progression.authority=progression.difficulty_ready=true;progression.context=77;progression.difficulty=2;
     gameplay_bridge::Publish(progression);Frame();Frame();assert(items.count("Zorluk"));Direct("Zorluk");Frame();Frame();Direct("Extreme");
     auto command=gameplay_bridge::Take();assert(command.size()==1&&command[0].kind==gameplay_bridge::Kind::Difficulty&&command[0].item==3&&command[0].context==77);
-    Frame();Frame();Direct(u8"← Bölümlere dön");Frame();Frame();
+    Frame();Frame();Direct(u8"< Bölümlere dön");Frame();Frame();
   }
   assert(!items.count("Düşman durdur"));
   Direct("Düşman öldür");Frame();Frame();Direct("Klonla");Frame();Frame();
   assert(!items.count("Ayarlar")&&!items.count("Süre"));
-  assert(items.count(u8"← Bölümlere dön")&&items.count("Granny"));
+  assert(items.count(u8"< Bölümlere dön")&&items.count("Granny"));
   assert(!items.count("Eşya spawn")&&!items.count("Düşman öldür")&&!items.count("God Mode"));
-  Direct(u8"← Bölümlere dön");Frame();Frame();
+  Direct(u8"< Bölümlere dön");Frame();Frame();
   for(auto label:{"Eşya spawn","Düşman öldür","God Mode"})assert(items.count(label));
   Direct("Eşya spawn");Frame();Frame();
   assert(items.count("Seçili eşyayı oluştur")&&!items.count("Düşman durdur"));
@@ -299,8 +302,8 @@ int main() {
     assert(pending.size()==1&&pending.front().kind==gameplay_bridge::Kind::Spawn&&pending.front().context==42&&pending.front().item==1);
     gameplay_bridge::Publish({});Frame();Frame();
   }
-  Direct(u8"← Bölümlere dön");Frame();Frame();
-  Direct(u8"← Ana menü");Frame();Frame();
+  Direct(u8"< Bölümlere dön");Frame();Frame();
+  Direct(u8"< Ana menü");Frame();Frame();
   Direct("AI");Frame();Frame();
   keyboard_ui::SetVisible(true);Frame();assert(!items.count("##hub_btn")&&!items.count("AI")&&items.count("q"));
   keyboard_ui::SetVisible(false);Frame();Frame();assert(items.count("##hub_btn")&&!items.count("Dans >"));
