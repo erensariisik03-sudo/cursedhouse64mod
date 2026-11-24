@@ -631,21 +631,24 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             if(!net.fetching)ActionKey("Fotograf listesi istegini iptal et",content,key_height,[]{photo_transport_bridge::CancelBrowse();InvalidateKeys();});
             ImGui::TextWrapped(net.listing_ready?"Oyuncunun izin verdigi fotograflar:":"Karsi oyuncunun onayi / listesi bekleniyor...");
             if(net.listing_ready){
-                ImGui::TextWrapped("Fotografi indirmek icin dosyanin 'Al:' satirina dokun.");
-                BeginTouchList("##gmm_remote_photo_files",std::max(key_height,key_height*3.f));
+                ImGui::TextWrapped("Karsidan gelen fotograf sayisi: %d",(int)net.remote_files.size());
+                if(net.remote_files.size()==1)
+                    ImGui::TextWrapped("Tek fotograf varsa otomatik secilir. Asagidaki Al butonuna basabilirsin.");
+                else
+                    ImGui::TextWrapped("Fotografi indirmek icin dosyanin 'Al:' satirina dokun.");
+                // Do not put the remote file buttons in a second scrollable
+                // child. On real devices the nested touch region can intercept
+                // their taps; the parent hub already supports touch scrolling.
                 for(const auto& name:net.remote_files){
                     ImGui::PushID(name.c_str());
-                    // A file row is itself an explicit download button. A single
-                    // atomic command avoids waiting for an asynchronous snapshot
-                    // before the old secondary button can become enabled.
                     const std::string label="Al: "+name;
                     ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{photo_transport_bridge::FetchRemoteFile(name);InvalidateKeys();},net.selected_remote_file==name);
                     ImGui::PopID();
                 }
                 if(net.remote_files.empty())ImGui::TextWrapped("Paylasilan klasorde JPG/PNG yok.");
-                EndTouchList();
                 if(!net.selected_remote_file.empty())ImGui::TextWrapped("Secilen dosya: %s",net.selected_remote_file.c_str());
-                ImGui::BeginDisabled(net.fetching);
+                else if(net.remote_files.size()>1)ImGui::TextWrapped("Henuz bir dosya secilmedi.");
+                ImGui::BeginDisabled(net.fetching||net.remote_files.empty());
                 ActionKey("Secilen fotografi al",content,key_height,[]{photo_transport_bridge::Fetch();InvalidateKeys();});
                 ImGui::EndDisabled();
             }

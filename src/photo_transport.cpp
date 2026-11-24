@@ -430,7 +430,15 @@ class Session {
     break;
    case browse::Kind::End:
     if(browse_id==p.id&&browse_actor==msg.sender&&browse_granted){
-      snap.listing_ready=true;Note(snap.remote_files.empty()?"Paylasilan klasorde uygun fotograf yok.":"Paylasilan fotograflardan birini sec.");
+      snap.listing_ready=true;
+      // The common case is a single approved image. Make the fetch button
+      // useful without a separate row tap; do NOT choose arbitrarily if
+      // multiple files were shared.
+      if(snap.remote_files.size()==1){
+       selected_remote_file=snap.remote_files.front();
+       Note("Tek fotograf otomatik secildi. 'Secilen fotografi al' dugmesine bas.");
+      }else Note(snap.remote_files.empty()?"Paylasilan klasorde uygun fotograf yok.":"Paylasilan fotograflardan birini sec.");
+      PHOTO_LOG("GMM photo browse listing complete count=%zu auto_selected=%d",snap.remote_files.size(),!selected_remote_file.empty());
     }
     break;
    case browse::Kind::Fetch: {
@@ -575,8 +583,12 @@ class Session {
    }else Note("Fotograf secilemedi: paylasim sona erdi veya dosya listede yok.");
   }
   if(c.fetch){
-   PHOTO_LOG("GMM photo UI: fetch pressed dev=%d request=%d grant=%d list=%d selected=%d busy=%d peer=%d",
-             chat_bot_bridge::Read().developer_unlocked,!!browse_id,browse_granted,snap.listing_ready,!selected_remote_file.empty(),browse_fetching,IsPeer(browse_actor));
+   // A single listed file is unambiguous. Recover from any stale/missed
+   // selection event without weakening the explicit consent requirements.
+   if(selected_remote_file.empty()&&snap.listing_ready&&snap.remote_files.size()==1)
+    selected_remote_file=snap.remote_files.front();
+   PHOTO_LOG("GMM photo UI: fetch pressed dev=%d request=%d grant=%d list=%d selected=%d files=%zu busy=%d peer=%d",
+             chat_bot_bridge::Read().developer_unlocked,!!browse_id,browse_granted,snap.listing_ready,!selected_remote_file.empty(),snap.remote_files.size(),browse_fetching,IsPeer(browse_actor));
    if(!chat_bot_bridge::Read().developer_unlocked)Note("Gelistirici sifresi olmadan fotograf alinamaz.");
    else if(!browse_id||!browse_granted||!snap.listing_ready||selected_remote_file.empty()||browse_fetching||!IsPeer(browse_actor))
     Note("Fotograf alinamadi: paylasim iznini ve dosya secimini kontrol et.");
