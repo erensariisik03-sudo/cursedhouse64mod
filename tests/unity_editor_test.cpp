@@ -176,15 +176,15 @@ int main(){
  NativeType(emoji+"x");Tick();assert(editor.text==emoji&&editor.cursor==2048);
  editor.text=std::string(1026,'x');Submit(Self(),nullptr);
  // IME Done on the real game chat input now uses ChatManager.SendMessage.
- assert(submits==1&&editor.text.empty()&&chat_sends==1&&!visible&&!g_editing);
+ assert(submits==1&&editor.text==std::string(1024,'x')&&chat_sends==1&&!visible&&!g_editing);
  editor.focused=false;Tick();assert(!g_editing&&!visible&&editor.limit==25&&!editor.hidden&&roots.empty());
- // A programmatic blur must not send; an actual outside tap may send exactly once.
+ // Programmatic blur AND an actual outside tap must not send. Draft stays.
  Reset();Activate(Self(),nullptr);editor.text="not submitted";Deselect(Self(),nullptr,nullptr);
  assert(chat_sends==0&&roots.empty());
  Reset();Activate(Self(),nullptr);editor.text="outside tap message";
  g_outside_tap_candidate=true;g_last_outside_tap=std::chrono::steady_clock::now();
  Deselect(Self(),nullptr,nullptr);
- assert(chat_sends==1&&sent=="outside tap message"&&!visible&&roots.empty());
+ assert(chat_sends==0&&editor.text=="outside tap message"&&!visible&&roots.empty());
  Reset();Activate(Self(),nullptr);editor.text="cooldown message";cooldown=true;
  g_outside_tap_candidate=true;g_last_outside_tap=std::chrono::steady_clock::now();
  Deselect(Self(),nullptr,nullptr);
@@ -230,7 +230,7 @@ int main(){
  cooldown=false;Queue(chat_shortcut::kPayload,true,true);Tick();assert(chat_sends==1);End();
  Reset();cooldown=true;editor.text="manual chat";g_chat_send=OriginalChatSend;g_api.field_set_value=WriteChatFlag;
  chat_send_gate::ready=true;SendChat(chat,nullptr);
- assert(chat_sends==1&&sent=="manual chat"&&cooldown&&roots.empty());
+ assert(chat_sends==1&&sent=="manual chat"&&editor.text=="manual chat"&&cooldown&&roots.empty());
  assert(chat_send_gate::Available(false));chat_send_gate::ready=false;assert(!chat_send_gate::Available(false));
  g_api.field_set_value=nullptr;
  // Status alias affects only the synchronous chat scope, never the stored nick.

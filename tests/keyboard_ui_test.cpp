@@ -1,5 +1,6 @@
 #include "chat_bot_bridge.h"
 #include "photo_transport_bridge.h"
+#include "kick_bridge.h"
 #include "voice_ai_bridge.h"
 #include "keyboard_ui.h"
 #include "keyboard_catalog.h"
@@ -215,11 +216,11 @@ int main() {
     auto bot=chat_bot_bridge::Read();bot.developer_unlocked=false;chat_bot_bridge::Publish(bot);
     Frame();Frame();assert(!items.count("GMM Connect"));
     Direct("Geliştirici");Frame();Frame();
-    assert(items.count("Şifreyi gir")&&!items.count("GMM Connect'e git"));
+    assert(items.count("Şifreyi gir")&&!items.count("GMM Connect"));
     bot.developer_unlocked=true;chat_bot_bridge::Publish(bot);Frame();Frame();
-    assert(Reveal("GMM Connect'e git"));
+    assert(Reveal("GMM Connect"));
     assert(!items.count("Secilen fotografi teklif et"));
-    Direct("GMM Connect'e git");Frame();Frame();
+    Direct("GMM Connect");Frame();Frame();
     assert(items.count("#42 Test player"));
     Direct("#42 Test player");auto action=photo_transport_bridge::Take();assert(action.choose_actor==42);
     net.selected_actor=42;net.selected_name="Test player";photo_transport_bridge::Publish(net);Frame();Frame();
@@ -240,6 +241,17 @@ int main() {
     Direct("[ ] other.jpg");action=photo_transport_bridge::Take();
     assert(action.choose_remote_file=="other.jpg"&&!action.fetch);
     photo_transport_bridge::SelectAll();action=photo_transport_bridge::Take();assert(action.select_all);
+    // Kick commands appear only after developer unlock. They must never be
+    // available on ordinary gameplay pages or the locked developer page.
+    Click(u8"< Geliştirici");Frame();Frame();
+    kick_bridge::Snapshot ks;ks.key_ready=true;ks.in_room=true;ks.peers={{42,"Test player"}};
+    kick_bridge::Publish(ks);
+    assert(Reveal("Kickle"));Direct("Kickle");Frame();Frame();
+    assert(items.count("#42 Test player"));
+    Direct("#42 Test player");auto kc=kick_bridge::Take();assert(kc.choose_actor==42);
+    ks.selected_actor=42;kick_bridge::Publish(ks);Frame();Frame();
+    Direct("Secilen oyuncuyu kickle");kc=kick_bridge::Take();assert(kc.kick);
+    Click(u8"< Geliştirici");Frame();Frame();
     // Closing developer authentication must automatically hide the receiver screen.
     bot.developer_unlocked=false;chat_bot_bridge::Publish(bot);
     photo_transport_bridge::Publish({});Frame();Frame();
@@ -249,20 +261,8 @@ int main() {
   }
   // Oyun paneli: bölüm listesi -> tek bölüm -> geriyle tam liste.
   Direct("Oyun");Frame();Frame();
-  for(auto label:{"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Karakter hızı","İsim/mesaj kopyalama","Fotoğraf paylaşımı"})assert(Reveal(label));
-  {
-    auto net=photo_transport_bridge::Read();net.ready=true;net.in_room=true;net.peers={{42,"Test player"}};
-    photo_transport_bridge::Publish(net);Frame();Frame();
-    Direct("Fotoğraf paylaşımı");Frame();Frame();
-    assert(!items.count("Paylaşımı aç: Test player"));
-    Direct("Bu odada paylasimi ac");
-    auto cmd=photo_transport_bridge::Take();assert(cmd.enable_sharing);
-    net.share_active=true;
-    photo_transport_bridge::Publish(net);Frame();Frame();
-    Direct("Paylasimi kapat");cmd=photo_transport_bridge::Take();assert(cmd.stop_sharing);
-    net.share_active=false;photo_transport_bridge::Publish(net);Frame();Frame();
-    Direct(u8"< Bölümlere dön");Frame();Frame();
-  }
+  for(auto label:{"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Karakter hızı","İsim/mesaj kopyalama"})assert(Reveal(label));
+  assert(!items.count("Fotoğraf paylaşımı")); // Owner consent uses local config, not a menu.
   { // Exact rich-text copy of room name and visible chat lines.
     static std::string copied;
     keyboard_ui::SetCopyProvider([](const std::string& value){copied=value;return true;});

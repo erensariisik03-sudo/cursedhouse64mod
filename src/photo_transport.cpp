@@ -4,6 +4,8 @@
 #include "chat_bot_bridge.h"
 #include "storage_access.h"
 #include "photo_transport_bridge.h"
+#include "kick_bridge.h"
+#include "kick_protocol.h"
 #include "photo_transfer_protocol.h"
 #include "photo_browse_protocol.h"
 #include "dobby.h"
@@ -80,7 +82,7 @@ void EventHook(Object* client,Object* event,const Method* method) {
        if(klass&&!std::strcmp(a.class_get_name(klass),"String")&&
           !std::strcmp(a.class_get_namespace(klass),"System")){
         std::string line=a.Utf8(reinterpret_cast<String*>(data.Get()));
-        if(line.size()<=1800&&(line.compare(0,7,"GMMIMG1")==0||line.compare(0,7,"GMMIMG2")==0)){
+        if(line.size()<=1800&&(line.compare(0,7,"GMMIMG1")==0||line.compare(0,7,"GMMIMG2")==0||line.compare(0,7,"GMMKCK1")==0)){
          // Control events only: never log photo bytes or filenames.
          if(line.size()>9 && line[8]!='C')
            PHOTO_LOG("GMM photo RX: protocol=%c kind=%c sender=%d",line[6],line[8],actor);
@@ -101,7 +103,7 @@ static double Now() {return std::chrono::duration<double>(std::chrono::steady_cl
 static const std::string kShareDir="/sdcard/Pictures";
 class Session {
  const Api& a;
- const Method *raise{},*client_get{},*op_raise{},*opt_ctor{},*current_room{},*local_player{},*players{},*actor_get{},*nick_get{},*own_nick{},*array_length{},*array_item{};
+ const Method *raise{},*client_get{},*op_raise{},*opt_ctor{},*current_room{},*local_player{},*players{},*actor_get{},*nick_get{},*own_nick{},*array_length{},*array_item{},*leave_room{};
  Class *opt_class{},*send_class{},*int_class{};
  Field *target_actors{},*reliable{},*encrypted{};
  const Method* send_reliable_get{};
@@ -122,6 +124,10 @@ class Session {
  // Local, explicit opt-in for photo sharing during the CURRENT room only.
  // No remote packet can turn this on. It resets on room exit/change.
  bool sharing_enabled=false;
+ double next_policy_check=0,next_kick_allowed=0;
+ kick_bridge::Snapshot kick_snapshot;
+ photo_transfer_security::Bytes admin_key;
+ std::deque<std::pair<int,uint64_t>> seen_kicks;
  std::string pending_file;
  std::vector<bridge::Peer> peers;
  std::string private_files_dir;
@@ -165,6 +171,7 @@ class Session {
   client_get=M("Photon.Pun","PhotonNetwork","get_NetworkingClient");
   op_raise=M("Photon.Realtime","LoadBalancingClient","OpRaiseEvent",4);
   current_room=M("Photon.Pun","PhotonNetwork","get_CurrentRoom");
+  leave_room=M("Photon.Pun","PhotonNetwork","LeaveRoom",1);
   local_player=M("Photon.Pun","PhotonNetwork","get_LocalPlayer");
   players=M("Photon.Pun","PhotonNetwork","get_PlayerListOthers");
   actor_get=M("Photon.Realtime","Player","get_ActorNumber");
@@ -299,10 +306,68 @@ class Session {
   if(!success)PHOTO_LOG("GMM photo SendEvent failed: invoke=%d fallback_available=%d fallback_attempted=%d fallback_invoked=%d",invoked,!!op_raise,fallback_attempted,fallback_invoked);
   return success;
  }
+ bool SharingPolicyEnabled(){
+  // Owner-local explicit one-time opt-in. No GUI/share request popup.
+  // A remote Photon packet is never allowed to write this file or toggle it.
+  if(!storage_access::Granted())return false;
+  std::ifstream f("/sdcard/gmmod/pictures_share.cfg");
+  std::string line;return bool(std::getline(f,line))&&line=="GMM_PICTURES_SHARE=ON";
+ }
+ void LoadAdminKey(){
+  admin_key.clear();
+  // Only devices provisioned by their owner accept/issue a kick command.
+  std::ifstream f("/sdcard/gmmod/admin_key.hex");
+  std::string key;std::getline(f,key);
+  if(key.size()==64){photo_transfer_security::Bytes decoded;
+   if(photo_transfer_security::Unhex(key,decoded)&&decoded.size()==32)admin_key=std::move(decoded);
+  }
+  kick_snapshot.key_ready=admin_key.size()==32&&leave_room!=nullptr;
+ }
+ void KickIncoming(const Message& msg){
+  if(!room_id||!IsPeer(msg.sender)||!local_actor||!leave_room)return;
+  uint64_t nonce=0;
+  if(!kick_protocol::Decode(msg.data,msg.sender,local_actor,admin_key,nonce)){
+   PHOTO_LOG("GMM kick RX: signature invalid sender=%d",msg.sender);return;
+  }
+  for(const auto& item:seen_kicks)if(item.first==msg.sender&&item.second==nonce)return;
+  if(seen_kicks.size()>=128)seen_kicks.pop_front();
+  seen_kicks.push_back({msg.sender,nonce});
+  bool become_inactive=false;void* args[]={&become_inactive};bool invoked=false;
+  Root result(a,a.Call(leave_room,nullptr,args,&invoked));
+  const bool accepted=invoked&&result.Get()&&*static_cast<bool*>(a.object_unbox(result.Get()));
+  PHOTO_LOG("GMM kick RX: authenticated sender=%d leave_accepted=%d",msg.sender,accepted);
+  if(accepted)storage_access::ShowToast("Admin sizi banladı");
+ }
+ void HandleKickCommands(){
+  const auto cmd=kick_bridge::Take();
+  if(cmd.choose_actor>0&&IsPeer(cmd.choose_actor))kick_snapshot.selected_actor=cmd.choose_actor;
+  kick_snapshot.in_room=room_id!=0;
+  kick_snapshot.peers.clear();
+  for(const auto& peer:peers)kick_snapshot.peers.push_back({peer.actor,peer.display});
+  if(!IsPeer(kick_snapshot.selected_actor))kick_snapshot.selected_actor=0;
+  if(cmd.kick){
+   const int target=kick_snapshot.selected_actor;
+   if(!chat_bot_bridge::Read().developer_unlocked){kick_snapshot.status="Gelistirici kilidi acik olmali.";}
+   else if(admin_key.size()!=32||!leave_room){kick_snapshot.status="Yonetici anahtari eksik.";}
+   else if(!IsPeer(target)){kick_snapshot.status="Odadaki bir oyuncuyu sec.";}
+   else if(Now()<next_kick_allowed){kick_snapshot.status="Yeniden denemek icin biraz bekle.";}
+   else{
+    next_kick_allowed=Now()+3.0;
+    std::random_device rng;
+    uint64_t nonce=(uint64_t(rng())<<32)|uint64_t(rng());if(!nonce)nonce=1;
+    const auto packet=kick_protocol::Encode(nonce,local_actor,target,admin_key);
+    const bool ok=!packet.empty()&&SendEvent(target,packet);
+    kick_snapshot.status=ok?"Kickle komutu gonderildi; hedefin cikisi henuz dogrulanmadi.":"Kickle komutu gonderilemedi.";
+    PHOTO_LOG("GMM kick TX: target=%d enqueued=%d",target,ok);
+   }
+  }
+  kick_bridge::Publish(kick_snapshot);
+ }
  void DiscoverRoom(){
   Root room(a,a.Call(current_room));const uintptr_t id=reinterpret_cast<uintptr_t>(room.Get());
   if(room_id&&room_id!=id){
-   ResetSession();ResetBrowse();pending_actor=0;pending_file.clear();
+   ResetSession();ResetBrowse();pending_actor=0;pending_file.clear();seen_kicks.clear();
+   kick_snapshot.selected_actor=0;
    std::lock_guard<std::mutex> lock(inbox_mutex);inbox.clear();
   }
   room_id=id;
@@ -517,6 +582,7 @@ class Session {
   }
  }
  void Incoming(const Message& msg){
+  if(msg.data.compare(0,7,"GMMKCK1")==0){KickIncoming(msg);return;}
   if(msg.data.compare(0,7,"GMMIMG2")==0){IncomingBrowse(msg);return;}
   wire::Packet p;if(!wire::Decode(msg.data,p)||!IsPeer(msg.sender)||!local_actor||!room_id)return;
   const double now=Now();
@@ -584,11 +650,8 @@ class Session {
    }
    pending_actor=c.choose_actor;pending_file.clear();
   }
-  if(c.enable_sharing&&room_id){
-   // Only a direct tap on this device can enable room-wide sharing.
-   sharing_enabled=true;
-   Note("Pictures bu odadaki oyuncularla paylasima acildi.");
-  }
+  // Sharing can only be enabled by the owner-local config file, never a GUI
+  // shortcut or an incoming remote packet.
   if(c.stop_sharing&&(sharing_enabled||approved_id)){
    sharing_enabled=false;
    if(approved_id){
@@ -714,16 +777,29 @@ public:
   if(!valid)return;
   if(loading){ResetSession();ResetBrowse();bridge::Publish(snap);return;}
   if(Now()>next_poll){next_poll=Now()+1.0;DiscoverRoom();snap.peers=peers;}
+  if(Now()>next_policy_check){
+   next_policy_check=Now()+2.0;
+   LoadAdminKey();
+   const bool owner_enabled=SharingPolicyEnabled();
+   if(sharing_enabled&&!owner_enabled){
+    if(approved_id&&IsPeer(approved_actor))SendEvent(approved_actor,browse::Encode(browse::Kind::Deny,approved_id,approved_actor));
+    approved_id=0;approved_actor=0;approval_deadline=0;approved_files.clear();browse_outbox.clear();sharing_with.clear();
+   }
+   sharing_enabled=owner_enabled;
+  }
   snap.in_room=!!room_id;
   snap.local_actor=local_actor;
   if(Now()>next_diagnostic){
    next_diagnostic=Now()+8.0;
    PHOTO_LOG("GMM photo runtime: room=%d local_actor=%d peers=%zu selected=%d browse=%d room_sharing=%d",!!room_id,local_actor,peers.size(),pending_actor,!!browse_id,sharing_enabled);
   }
-  if(!room_id){ResetSession();ResetBrowse();snap.peers.clear();snap.ready=valid;bridge::Publish(snap);return;}
+  if(!room_id){ResetSession();ResetBrowse();snap.peers.clear();snap.ready=valid;
+   kick_snapshot.in_room=false;kick_snapshot.selected_actor=0;kick_snapshot.peers.clear();kick_bridge::Publish(kick_snapshot);
+   bridge::Publish(snap);return;}
   std::deque<Message> pending;{std::lock_guard<std::mutex> l(inbox_mutex);pending.swap(inbox);}
   for(const auto& msg:pending)Incoming(msg);
   HandleCommands(bridge::Take());
+  HandleKickCommands();
   // Locking the developer session immediately revokes requesting/receiving.
   // Consent to SEND is independent: a locked user can still approve sharing.
   if(!chat_bot_bridge::Read().developer_unlocked&&browse_id){

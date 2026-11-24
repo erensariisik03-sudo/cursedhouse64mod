@@ -241,13 +241,9 @@ void Activate(Object* self, const Method* method) {
     LOGI("Android IME + shortcut strip opened; limit=1024 Unicode characters");
 }
 void Deselect(Object* self, Object* event, const Method* method) {
-    if(g_ready.load(std::memory_order_acquire)&&Target()==self&&g_quick_target!=self&&
-       g_outside_tap_candidate&&!g_auto_sending){
-        // This came from an actual pointer-down outside our keyboard overlay,
-        // not a scene transition, programmatic blur or Android app switch.
-        if(std::chrono::steady_clock::now()-g_last_outside_tap<std::chrono::seconds(2))
-            SendChatDraft(self,"OUTSIDE_TAP");
-    }
+    // A tap outside the keyboard only dismisses editing. The TMP field keeps
+    // its draft; only IME Done or the game's Send button may send chat.
+    // Never auto-send from OnDeselect, including real touch focus loss.
     g_outside_tap_candidate=false;
     g_deselect(self, event, method);
     if (g_ready.load(std::memory_order_acquire) && Target() == self && g_quick_target!=self) End();
@@ -329,8 +325,21 @@ bool SendChatDraft(Object* input,const char* origin){
     struct Guard {Guard(){g_auto_sending=true;}~Guard(){g_auto_sending=false;}} guard;
     g_api.Call(m.chatSend,owner.Get(),nullptr,&ok);
     LOGI("GMM chat input: %s send=%d",origin,ok);
-    // A successful invoke is not necessarily server delivery; the game's
-    // SendMessage owns its actual cooldown/RPC/clear semantics.
+    // Managed calls through IL2CPP runtime_invoke may bypass our direct
+    // ChatManager entry hook on some versions. Preserve the typed draft here
+    // as well, so IME Done behaves the same as tapping the game's Send button.
+    if(ok&&Alive(input)){
+        bool after_ok=false;const auto after=ReadText(input,&after_ok);
+        if(after_ok&&after!=text){
+            ScopedRoot draft(reinterpret_cast<Object*>(g_api.string_new(text.c_str())));
+            if(draft.Get()){
+                void* args[]={draft.Get()};bool write_ok=false;
+                g_api.Call(m.setText,input,args,&write_ok);
+            }
+        }
+    }
+    // Actual delivery is owned by Photon/game cooldown. IME Done dismisses the
+    // native keyboard, but the draft remains in the game's TMP input field.
     if(ok&&Target()==input)End();
     return ok;
 }
@@ -354,7 +363,30 @@ void SendChat(Object* self,const Method* method) {
         }
         ~Permit(){if(changed)g_api.field_set_value(owner,m.chatAllowed,&old);}
     } permit(owner.Get(),before);
+    // Game ChatManager.SendMessage clears its TMP_InputField. Preserve the
+    // locally typed message after every normal Send button press and IME Done
+    // so repeated taps send the same draft (subject to the game's cooldown).
+    Object* input=nullptr;
+    if(m.chatInput)g_api.field_get_value(owner.Get(),m.chatInput,&input);
+    ScopedRoot field(input);
+    bool text_ok=false;
+    const std::string draft=field.Get()?ReadText(field.Get(),&text_ok):std::string();
+    const bool preserve=text_ok&&!text_buffer::Clean(draft.c_str()).empty();
     g_chat_send(self,method);
+    if(preserve&&Alive(field.Get())){
+        bool now_ok=false;const auto after=ReadText(field.Get(),&now_ok);
+        if(now_ok&&after!=draft){
+            ScopedRoot old_text(reinterpret_cast<Object*>(g_api.string_new(draft.c_str())));
+            if(old_text.Get()){
+                void* args[]={old_text.Get()};bool write_ok=false;
+                g_api.Call(m.setText,field.Get(),args,&write_ok);
+                if(write_ok&&Target()==field.Get()){
+                    g_applied=draft;
+                    keyboard_bridge::ReconcileText(after.c_str(),draft.c_str());
+                }
+            }
+        }
+    }
 }
 bool QuickSend(Object* object,uint64_t generation) {
     if(g_api.Value<int>(m.inputType,object)==2)return false;
@@ -478,8 +510,7 @@ void Update(Object* self, const Method* method) {
         // Losing touch/render readiness must not close the native keyboard.
     }
     if(valid&&down&&!g_pointer_was_down){
-        // A new finger-down outside the GMM overlay may deselect the game's
-        // chat text field. Only that real user gesture is eligible to send.
+        // A real outside tap may close the keyboard, never send a message.
         g_outside_tap_candidate=!captured && g_editing.load() && Target()!=nullptr;
         g_last_outside_tap=std::chrono::steady_clock::now();
     }

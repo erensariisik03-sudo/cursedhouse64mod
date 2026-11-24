@@ -8,6 +8,7 @@
 #include "chat_bot_bridge.h"
 #include "photo_transfer_bridge.h"
 #include "photo_transport_bridge.h"
+#include "kick_bridge.h"
 #include "storage_access.h"
 #include "voice_ai_bridge.h"
 #include "chat_bot_core.h"
@@ -565,7 +566,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
     if(pending&&!had_pending&&g_bot_page==1)g_bot_page=6;
     had_pending=pending;
     // A stale open page must not survive a developer-session lock.
-    if(g_bot_page==10&&!s.developer_unlocked)g_bot_page=9;
+    if((g_bot_page==10||g_bot_page==11)&&!s.developer_unlocked)g_bot_page=9;
     static int previous=-2;if(previous!=g_bot_page){ImGui::SetScrollY(0);previous=g_bot_page;}
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
     if(g_bot_page<0){
@@ -577,7 +578,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
         ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
-    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":(g_bot_page==10?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:(g_bot_page==10?9:-1);InvalidateKeys();});
+    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":((g_bot_page==10||g_bot_page==11)?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:((g_bot_page==10||g_bot_page==11)?9:-1);InvalidateKeys();});
     switch(g_bot_page){
     case 9:{
         if(!s.developer_unlocked){
@@ -590,12 +591,31 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         }
         ImGui::TextWrapped("Geliştirici");
         ActionKey("Geliştirici kilidini kapat",content,key_height,[]{chat_bot_bridge::LockDeveloper();InvalidateKeys();});
-        // Photo requests and receiving belong behind developer authentication.
-        // The sender enables a trusted peer in Oyun -> Fotoğraf paylaşımı;
-        // no developer password or per-request popup is required to send.
         ImGui::Separator();
-        ImGui::TextWrapped("Diger oyuncunun paylasima actigi fotograflar icin GMM Connect'i ac.");
-        ActionKey("GMM Connect'e git",content,key_height,[]{g_bot_page=10;InvalidateKeys();});
+        ActionKey("GMM Connect",content,key_height,[]{g_bot_page=10;InvalidateKeys();});
+        ActionKey("Kickle",content,key_height,[]{g_bot_page=11;InvalidateKeys();});
+        break;
+    }
+    case 11:{
+        if(!s.developer_unlocked){g_bot_page=9;break;}
+        const auto state=kick_bridge::Read();
+        ImGui::TextWrapped("Kickle | Mod istemcisine lobiden cikis komutu");
+        ImGui::TextWrapped("%s",state.status.c_str());
+        if(!state.key_ready)ImGui::TextWrapped("Yonetici anahtari yok. Guvenli eslestirme dosyasi gerekli.");
+        if(!state.in_room)ImGui::TextWrapped("Bir Photon odasina gir.");
+        ActionKey("Oyunculari yenile",content,key_height,[]{kick_bridge::Refresh();InvalidateKeys();});
+        BeginTouchList("##kick_peers",std::max(key_height,key_height*3.f));
+        for(const auto& peer:state.peers){
+            ImGui::PushID(peer.actor);
+            const std::string label="#"+std::to_string(peer.actor)+" "+peer.display;
+            ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[id=peer.actor]{kick_bridge::ChooseActor(id);InvalidateKeys();},state.selected_actor==peer.actor);
+            ImGui::PopID();
+        }
+        EndTouchList();
+        ImGui::BeginDisabled(!state.key_ready||!state.in_room||state.selected_actor<=0);
+        ActionKey("Secilen oyuncuyu kickle",content,key_height,[]{kick_bridge::Kick();InvalidateKeys();});
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("Kalici ban degildir. Yalnizca anahtar ile eslestirilmis mod istemcisi komutu kabul eder.");
         break;
     }
     case 10:{
@@ -654,7 +674,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
                 ImGui::EndDisabled();
             }
         }
-        ImGui::TextWrapped("Karsi cihaz Oyun > Fotoğraf paylaşımı bölümünden seni yetkilendirmişse, dosya listesi ayrıca onay penceresi açılmadan gelir.");
+        ImGui::TextWrapped("Karsi cihazda yerel paylasim yetkisi etkinse fotograf listesi ek onay penceresi olmadan gelir.");
         break;
     }
     case 0:{
@@ -996,21 +1016,6 @@ void GameplayBody(float key_height,float content){
     static int previous_page=-2;
     if(previous_page!=g_gameplay_page){ImGui::SetScrollY(0);previous_page=g_gameplay_page;}
     if(g_gameplay_page>=0){
-        if(g_gameplay_page==10){
-            const auto share=photo_transport_bridge::Read();
-            ActionKey(u8"< Bölümlere dön",content,key_height,[]{g_gameplay_page=-1;InvalidateKeys();});
-            ImGui::TextWrapped("Fotoğraf paylaşımı | Bu cihaz");
-            ImGui::TextWrapped("Pictures klasorundeki fotograflari bu Photon odasindaki diger oyuncularla paylasirsin. Istek basina pencere acilmaz.");
-            if(!share.in_room)ImGui::TextWrapped("Paylasimi acmak icin Photon odasina gir.");
-            if(share.share_active){
-                ImGui::TextWrapped("Paylasim ACIK. Odadaki herhangi bir modlu oyuncu fotograflari isteyebilir.");
-                ActionKey("Paylasimi kapat",content,key_height,[]{photo_transport_bridge::StopSharing();InvalidateKeys();});
-            }else if(share.in_room){
-                ActionKey("Bu odada paylasimi ac",content,key_height,[]{photo_transport_bridge::EnableSharing();InvalidateKeys();});
-            }
-            ImGui::TextWrapped("Paylasim sadece bu odada gecerli; odadan cikinca kapanir.");
-            return;
-        }
         static const char* titles[]={"Eşya spawn","","Düşman öldür","God Mode","Hayalet modu","","Oyuncu atma","Zorluk","Karakter hızı"};
         if(g_gameplay_page<9)ImGui::Text("%s",titles[g_gameplay_page]);else if(g_gameplay_page==9)ImGui::Text("İsim/mesaj kopyalama");
         GameplaySectionBody(key_height,content);
@@ -1018,10 +1023,10 @@ void GameplayBody(float key_height,float content){
     }
     ImGui::TextWrapped("Oyun özellikleri");
     ImGui::TextWrapped("Bir bölüm seç.");
-    const char* labels[]={"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Zorluk","Karakter hızı","İsim/mesaj kopyalama","Fotoğraf paylaşımı"};
-    const int pages[]={0,2,3,4,6,7,8,9,10};
+    const char* labels[]={"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Zorluk","Karakter hızı","İsim/mesaj kopyalama"};
+    const int pages[]={0,2,3,4,6,7,8,9};
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
-    for(int i=0;i<9;++i){
+    for(int i=0;i<8;++i){
         if(i%2)ImGui::SameLine();
         ImGui::PushID(i+300);
         ActionKey(labels[i],half,key_height,[page=pages[i]]{g_gameplay_page=page;InvalidateKeys();});
