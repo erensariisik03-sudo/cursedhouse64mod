@@ -75,6 +75,15 @@ int main(){
  {auto u=q;u.all_mode=true;u.name_filter=true;asr_text="Zeka merhaba";calls=0;auto ru=Run(Http,u);assert(!ru.reply.empty()&&calls==0&&ru.reply.find("merhaba")!=std::string::npos);}
  {auto u=q;u.general_filter=true;u.name_filter=false;asr_text="ahahahah";calls=0;auto ru=Run(Http,u);assert(ru.skipped&&calls==0&&ru.gate_reason==message_gate::Reason::Noise);}
  {auto u=q;u.general_filter=false;u.name_filter=false;asr_text="ahahahah";calls=0;auto ru=Run(Http,u);assert(!ru.reply.empty()&&calls==1);}
+ // Manual word selection must stop BEFORE HTTP; only user-approved words reach the model.
+ {Request manual=q;manual.manual_keywords=true;manual.general_filter=true;manual.name_filter=false;
+  asr_text="Bot kapı nerede?";calls=0;auto staged=Run(Http,manual);
+  assert(staged.await_selection&&staged.heard=="Bot kapı nerede?"&&calls==0);
+  manual.pcm.clear();manual.text="kapı nerede?";manual.all_mode=true;
+  auto answered=Run(Http,manual);
+  assert(!answered.await_selection&&calls==1&&!answered.reply.empty());
+  assert(requests.back().find("anahtar kelimelerden")!=std::string::npos);
+ }
  q.pcm.clear();q.text="Bot kapı nerede?";q.voice=false;calls=0;r=Run(Http,q);assert(calls==1&&r.audio.samples.empty()&&!r.reply.empty());
  q.voice=true;fail_tts=true;calls=0;r=Run(Http,q);assert(calls==1&&r.audio.samples.empty()&&!r.reply.empty());fail_tts=false;
  q.text="başka birine soruyorum";q.all_mode=true;q.name_filter=true;calls=0;r=Run(Http,q);assert(r.skipped&&calls==0);q.all_mode=false;q.name_filter=false;

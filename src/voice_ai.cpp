@@ -1,4 +1,5 @@
 #include "voice_ai.h"
+#include "chat_bot_bridge.h"
 #include "voice_ai_core.h"
 #include "chat_bot_http.h"
 #include "chat_send_gate.h"
@@ -8,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <thread>
+#include <sstream>
 #include <unordered_map>
 namespace voice_ai {namespace {
 using namespace il2cpp;using namespace voice_ai_core;
@@ -58,7 +60,8 @@ struct Runtime {
  const Api& a;std::thread::id unity=std::this_thread::get_id();bool initialized=false,valid=false,hooks=false,lease=false,network_play=false;unsigned revision=0;uint64_t epoch=1;uintptr_t room_id=0;double next_discovery=0,next_request=0,playing_until=0,text_deadline=0,text_next=0;
  voice_ai_bridge::Snapshot snap;voice_ai_bridge::Settings settings;voice_ai_bridge::Config cfg;
  Root room_root,manager,recorder,lease_owner,old_clip,clip,local_go,local_source;bool old_loop=false,old_detection=false;
- Worker worker;std::deque<Request> requests;std::deque<std::string> text_out;std::vector<chat_bot_core::Turn> history;
+ Worker worker;std::deque<Request> requests;std::deque<std::string> text_out;
+ Request awaiting_selection;bool selection_active=false;int active_actor=0;std::vector<chat_bot_core::Turn> history;
  std::unordered_map<std::string,double> engaged_voice,side_talk_voice;
  Class *manager_class{},*view_class{},*rec_class{},*source_class{};
  const Method *find{},*length{},*item{},*alive{},*go{},*active{},*current_room{},*manager_get{},*available{},*speaker_get{},*remote_get{},*owner_get{},*mine{},*actor_get{},*nick{},*rate_get{},*channels_get{},
@@ -74,7 +77,7 @@ struct Runtime {
  bool SetRef(const Method* m,Object* o,Object* v){void* args[]={v};bool ok=false;Internal guard;a.Call(m,o,args,&ok);return ok;}
  template<class T>bool Read(const Method* m,Object* o,T& v){bool ok=false;Root result(a,a.Call(m,o,nullptr,&ok));if(!ok||!result.Get())return false;v=*static_cast<T*>(a.object_unbox(result.Get()));return true;}
  template<class F>bool Each(Class* c,F f){if(!c)return false;Root type(a,a.type_get_object(a.class_get_type(c)));int inactive=1,sort=0;void* args[]={type.Get(),&inactive,&sort};bool ok=false;Root array(a,a.Call(find,nullptr,args,&ok));if(!ok||!array.Get())return false;int n=a.Value<int>(length,array.Get(),-1);if(n<0||n>128)return false;for(int i=0;i<n;++i){void* at[]={&i};Root o(a,a.Call(item,array.Get(),at,&ok));if(!ok)return false;if(Alive(o.Get()))f(o.Get());}return true;}
- bool Allowed(const std::string& name)const{return cfg.all||std::find(cfg.selected.begin(),cfg.selected.end(),name)!=cfg.selected.end();}
+ bool Allowed(const std::string&)const{return true;} // Sesli AI: ad filtresi yok, tek oyuncu akışı
  bool Resolve(){
   if(!a.field_get_value||!a.class_from_type||!a.field_get_type||!a.array_length||!a.array_object_header_size||!a.array_element_size||!a.class_get_element_class||!a.method_get_param||!a.class_value_size||!a.array_new||!a.object_new)return false;
   float_class=a.Find("System","Single");manager_class=a.Find("","VoiceChatManager");view_class=a.Find("Photon.Voice.PUN","PhotonVoiceView");rec_class=a.Find("Photon.Voice.Unity","Recorder");source_class=a.Find("UnityEngine","AudioSource");
@@ -106,7 +109,7 @@ struct Runtime {
  }
  void Reset(bool disable){
   worker.Cancel();capture=false;++capture_epoch;std::atomic_store(&streams,std::shared_ptr<const Streams>(std::make_shared<Streams>()));{std::lock_guard<std::mutex> l(segments_mutex);segments.Clear();}
-  StopAudio();++epoch;requests.clear();text_out.clear();history.clear();engaged_voice.clear();side_talk_voice.clear();next_request=Now()+.6;snap.heard.clear();snap.reply.clear();if(disable){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;voice_ai_bridge::texts.clear();}
+  StopAudio();++epoch;requests.clear();text_out.clear();selection_active=false;active_actor=0;awaiting_selection=Request{};snap.selection_text.clear();snap.selection_name.clear();snap.players.clear();history.clear();engaged_voice.clear();side_talk_voice.clear();next_request=Now()+.6;snap.heard.clear();snap.reply.clear();if(disable){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;voice_ai_bridge::texts.clear();}
  }
  bool NetworkAllowed(){
   if(!room_id||!room_properties||!hash_item||!voice_client||!voice_joined||!Active(manager.Get())||!a.Value<bool>(available,manager.Get(),false)||!Alive(recorder.Get()))return false;
@@ -118,16 +121,28 @@ struct Runtime {
  void Discover(){
   manager.Set(a.Call(manager_get));recorder.Set(Active(manager.Get())?Ref(manager.Get(),"recorder"):nullptr);snap.network_ready=NetworkAllowed();
   auto found=std::make_shared<Streams>();
+  auto candidates=std::make_shared<Streams>();
   if(settings.enabled&&settings.input!=1&&snap.network_ready){Each(view_class,[&](Object* view){
-   if(found->size()>=8||!Active(view))return;
+   if(candidates->size()>=24||!Active(view))return;
    Root pv(a,Ref(view,"photonView"));if(!Alive(pv.Get())||a.Value<bool>(mine,pv.Get(),true))return;
-   Root owner(a,a.Call(owner_get,pv.Get())),name(a,a.Call(nick,owner.Get()));int actor=a.Value<int>(actor_get,owner.Get(),0);std::string label=chat_bot_core::StripTags(a.Utf8(reinterpret_cast<String*>(name.Get())));if(actor<=0||label.empty()||!Allowed(label)||std::any_of(found->begin(),found->end(),[&](const auto& old){return old->actor==actor;}))return;
+   Root owner(a,a.Call(owner_get,pv.Get())),name(a,a.Call(nick,owner.Get()));int actor=a.Value<int>(actor_get,owner.Get(),0);std::string label=chat_bot_core::StripTags(a.Utf8(reinterpret_cast<String*>(name.Get())));if(actor<=0||label.empty()||!Allowed(label)||std::any_of(candidates->begin(),candidates->end(),[&](const auto& old){return old->actor==actor;}))return;
    Root speaker(a,a.Call(speaker_get,view)),link(a,speaker.Get()?a.Call(remote_get,speaker.Get()):nullptr);if(!Alive(speaker.Get())||!link.Get())return;
    auto* info_type=a.class_from_type(a.field_get_type(voice_info));uint32_t align=0;int bytes=a.class_value_size(info_type,&align);if(bytes<=0||bytes>256||align>alignof(std::max_align_t))return;
    alignas(std::max_align_t) std::array<unsigned char,256> info{};a.field_get_value(link.Get(),voice_info,info.data());int rate=0,channels=0;
    if(!Read(rate_get,reinterpret_cast<Object*>(info.data()),rate)||!Read(channels_get,reinterpret_cast<Object*>(info.data()),channels)||rate<8000||rate>48000||channels<1||channels>2)return;
-   found->push_back(std::make_shared<Stream>(a,link.Get(),actor,rate,channels,label));
+   candidates->push_back(std::make_shared<Stream>(a,link.Get(),actor,rate,channels,label));
   });}
+  snap.players.clear();
+  for(const auto& candidate:*candidates)snap.players.emplace_back(candidate->actor,candidate->name);
+  int target=settings.target_actor?settings.target_actor:active_actor;
+  auto pick=std::find_if(candidates->begin(),candidates->end(),[&](const auto& c){return c->actor==target;});
+  if(pick==candidates->end()&&!settings.target_actor&&!candidates->empty())pick=candidates->begin();
+  if(pick!=candidates->end()){
+   if(active_actor!=(*pick)->actor){std::lock_guard<std::mutex> l(segments_mutex);segments.Clear();}
+   found->push_back(*pick);active_actor=(*pick)->actor;
+  }
+  else {if(active_actor){std::lock_guard<std::mutex> l(segments_mutex);segments.Clear();}active_actor=0;}
+  snap.active_actor=active_actor;
   snap.streams=unsigned(found->size());std::atomic_store(&streams,std::shared_ptr<const Streams>(found));
  }
  bool AcquireMic(bool network,bool defer_transmit=false){
@@ -195,16 +210,16 @@ struct Runtime {
   std::string current=a.Utf8(reinterpret_cast<String*>(after.Get()));if(current==line){void* restore[]={old.Get()};a.Call(input_set,input.Get(),restore);return false;}return sent&&current.empty()&&reinterpret_cast<uintptr_t>(a.Call(current_room))==room_id;
  }
  void Queue(Request q){
-  if(!Allowed(q.name)||cfg.key.empty())return;
+  if(cfg.key.empty())return;
   q.epoch=epoch;q.room=room_id;q.key=cfg.key;q.system=cfg.system;q.own_name=cfg.own_name;
-  q.general_filter=cfg.message_filter;q.name_filter=cfg.strict;q.all_mode=cfg.all;
-  q.strict=cfg.all&&cfg.strict;q.voice=settings.output==1;q.tone=voice_ai_bridge::tone.load();q.history=history;
+  q.general_filter=cfg.message_filter;q.name_filter=false;q.all_mode=true;
+  q.manual_keywords=settings.manual_keywords;
+  q.strict=false;q.voice=settings.output==1;q.tone=voice_ai_bridge::tone.load();q.history=history;
   const double now=Now();
   const auto active=engaged_voice.find(q.name);q.in_conversation=active!=engaged_voice.end()&&now<active->second;
   const auto side=side_talk_voice.find(q.name);q.side_conversation=side!=side_talk_voice.end()&&now<side->second;
+  // Speech has one selected speaker; never reject speech because of a typed nickname.
   q.others.clear();
-  if(cfg.all){auto current=std::atomic_load(&streams);for(const auto& spec:*current)if(spec&&spec->name!=q.name&&std::find(q.others.begin(),q.others.end(),spec->name)==q.others.end())q.others.push_back(spec->name);}
-  else for(const auto& n:cfg.selected)if(n!=q.name&&std::find(q.others.begin(),q.others.end(),n)==q.others.end())q.others.push_back(n);
   if(!requests.empty()&&Merge(requests.back(),q))return;
   if(requests.size()>=3) requests.pop_front();
   requests.push_back(std::move(q));
@@ -217,35 +232,68 @@ public:
   double now=Now();if(!initialized){initialized=true;valid=Resolve();snap.ready=valid;}
   if(!valid){snap.status="Sesli AI: bu sürümün ses bağlantıları eksik.";voice_ai_bridge::Publish(snap);return;}
   voice_ai_bridge::Settings wanted;voice_ai_bridge::Config next_cfg;std::deque<voice_ai_bridge::Text> texts;std::deque<std::string> speaks;unsigned next_rev;bool cancel;
-  {std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);wanted=voice_ai_bridge::desired;next_cfg=voice_ai_bridge::config;next_rev=voice_ai_bridge::revision;cancel=voice_ai_bridge::cancel;voice_ai_bridge::cancel=false;texts.swap(voice_ai_bridge::texts);speaks.swap(voice_ai_bridge::speaks);}
+  bool selection_submit=false,selection_skip=false;std::vector<int> chosen;
+  {std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);wanted=voice_ai_bridge::desired;next_cfg=voice_ai_bridge::config;next_rev=voice_ai_bridge::revision;cancel=voice_ai_bridge::cancel;voice_ai_bridge::cancel=false;
+   selection_submit=voice_ai_bridge::selection_submit;selection_skip=voice_ai_bridge::selection_skip;chosen=std::move(voice_ai_bridge::selection_indices);
+   voice_ai_bridge::selection_submit=voice_ai_bridge::selection_skip=false;
+   texts.swap(voice_ai_bridge::texts);speaks.swap(voice_ai_bridge::speaks);}
   Root observed_room(a,paused?nullptr:a.Call(current_room));uintptr_t next_room=reinterpret_cast<uintptr_t>(observed_room.Get());
   if(next_room!=room_id){Reset(room_id!=0);room_root.Set(observed_room.Get());room_id=next_room;wanted.enabled=false;{std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;}next_discovery=0;}
   bool config_changed=next_cfg.key!=cfg.key||next_cfg.system!=cfg.system||next_cfg.own_name!=cfg.own_name||next_cfg.all!=cfg.all||next_cfg.strict!=cfg.strict||next_cfg.selected!=cfg.selected||next_cfg.message_filter!=cfg.message_filter;
   if(next_rev!=revision||config_changed||cancel){Reset(false);revision=next_rev;settings=wanted;cfg=std::move(next_cfg);texts.clear();speaks.clear();next_discovery=0;snap.status=settings.enabled?"Sesli AI hazır; yeni ses veya mesaj bekleniyor.":"Sesli AI kapalı.";}
-  if(settings.enabled&&(cfg.key.empty()||(!cfg.all&&cfg.selected.empty())||!room_id)){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;snap.status=cfg.key.empty()?"Önce AI bölümünden API anahtarı gir.":!room_id?"Bir odaya gir.":"AI > Kişiler bölümünden kişi seç veya Herkes'i aç.";}
+  if(settings.enabled&&(cfg.key.empty()||!room_id)){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;snap.status=cfg.key.empty()?"Önce AI bölümünden API anahtarı gir.":"Bir odaya gir.";}
   if(now>=next_discovery){next_discovery=now+1;Discover();}
   if(snap.speaking){
    bool invalid=now>=playing_until||!settings.enabled;
    if(network_play){int source=-1;invalid=invalid||!NetworkAllowed()||!Alive(lease_owner.Get())||!Read(get_source,lease_owner.Get(),source)||source!=1||a.Call(get_clip,lease_owner.Get())!=clip.Get();}
    if(invalid){StopAudio();next_request=now+.6;}
   }
-  capture=valid&&settings.enabled&&settings.input!=1&&!snap.speaking&&now>=next_request&&room_id;
+  if(selection_active&&(selection_submit||selection_skip)){
+   if(selection_submit){
+    const auto& spoken=awaiting_selection.text;
+    std::vector<std::string> words;std::istringstream split(spoken);std::string word;
+    while(split>>word&&words.size()<120)words.push_back(word);
+    std::string selected;
+    for(size_t i=0;i<words.size();++i)if(std::find(chosen.begin(),chosen.end(),int(i))!=chosen.end()){
+     if(!selected.empty())selected+=' ';
+     selected+=words[i];
+    }
+    if(!selected.empty()){
+     awaiting_selection.text=chat_bot_core::PrefixScalars(selected,600);
+     awaiting_selection.manual_keywords=true;
+     awaiting_selection.pcm.clear();awaiting_selection.history=history;
+     Queue(std::move(awaiting_selection));
+     snap.status="Seçilen kelimeler AI kuyruğuna alındı.";
+    }
+   }
+   selection_active=false;awaiting_selection=Request{};snap.selection_text.clear();snap.selection_name.clear();
+  }
+  capture=valid&&settings.enabled&&settings.input!=1&&!snap.speaking&&!selection_active&&!worker.Busy()&&requests.empty()&&now>=next_request&&room_id;
   {std::lock_guard<std::mutex> l(segments_mutex);segments.Flush(now);Utterance utterance;while(segments.Take(utterance)){Request q;q.actor=utterance.actor;q.name=utterance.name;q.pcm=std::move(utterance.samples);Queue(std::move(q));}}
   if(settings.enabled&&settings.input!=0)for(auto& t:texts)if(t.room==room_id&&t.name!=cfg.own_name){Request q;q.name=std::move(t.name);q.text=std::move(t.text);q.gate_checked=true;q.instant=t.instant;q.instant_reply=std::move(t.instant_reply);Queue(std::move(q));}
   if(settings.enabled&&room_id)for(auto& t:speaks){Request q;q.speak=true;q.voice=true;q.text=chat_bot_core::PrefixScalars(t,300);q.epoch=epoch;q.room=room_id;q.name=cfg.own_name;q.tone=voice_ai_bridge::tone.load();while(requests.size()>=3)requests.pop_back();requests.push_front(std::move(q));}
   Result result;if(worker.Poll(result)&&result.epoch==epoch&&result.room==room_id&&settings.enabled){
    __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice result actor=%d http=%d skipped=%d audio_samples=%zu",result.actor,result.code,result.skipped,result.audio.samples.size());
    snap.heard=chat_bot_core::PrefixScalars(result.heard,120);snap.reply=chat_bot_core::PrefixScalars(result.reply,160);snap.status=result.status;
+   if(result.await_selection){
+    if(!selection_active){awaiting_selection=Request{};awaiting_selection.actor=result.actor;awaiting_selection.name=result.name;
+     awaiting_selection.text=result.heard;awaiting_selection.epoch=epoch;awaiting_selection.room=room_id;
+     selection_active=true;snap.selection_text=chat_bot_core::PrefixScalars(result.heard,600);snap.selection_name=result.name;}
+   }
    if(!result.heard.empty()&&chat_bot_core::MentionsBot(result.heard,cfg.own_name))engaged_voice[result.name]=now+45.0;
    if(result.gate_reason==message_gate::Reason::AddressedToOther)side_talk_voice[result.name]=now+20.0;
    if(!result.reply.empty()){
+    // Tüm AI yanıtları (ses başarılı olsa bile) sohbete de yazılır.
+    if(!result.speak){for(auto& part:chat_bot_core::SplitChunks(result.reply,200,8))text_out.push_back(part);text_deadline=now+45;text_next=now;}
     if(!result.speak){history.push_back({false,result.name+": "+result.heard});history.push_back({true,result.reply});chat_bot_core::TrimHistory(history,12);}
-    if(result.audio.samples.empty()||!Play(result.audio,now)){if(!result.speak)for(auto& part:chat_bot_core::SplitChunks(result.reply,200,8))text_out.push_back(part);text_deadline=now+30;text_next=now;}
+    if(result.audio.samples.empty()||!Play(result.audio,now)){
+     if(result.speak)snap.status="Ses üretilemedi.";
+    }
    }next_request=now+2;
   }
   if(!text_out.empty()&&now>text_deadline)text_out.clear();
   if(settings.enabled&&!text_out.empty()&&now>=text_next){text_next=now+1.2;if(SendText(text_out.front()))text_out.pop_front();}
-  if(settings.enabled&&!worker.Busy()&&!snap.speaking&&text_out.empty()&&!requests.empty()&&now>=next_request){Request q=std::move(requests.front());requests.pop_front();if(q.epoch==epoch){q.history=history;worker.Start(&chat_bot_http::Post,std::move(q));snap.status="Sesli AI işliyor...";}}
+  if(settings.enabled&&!selection_active&&!worker.Busy()&&!snap.speaking&&text_out.empty()&&!requests.empty()&&now>=next_request){Request q=std::move(requests.front());requests.pop_front();if(q.epoch==epoch){q.history=history;worker.Start(&chat_bot_http::Post,std::move(q));snap.status="Sesli AI işliyor...";}}
   snap.settings=settings;snap.busy=worker.Busy();if(!settings.enabled&&!snap.speaking&&snap.status.empty())snap.status="Sesli AI kapalı.";voice_ai_bridge::Publish(snap);
  }
 };Runtime* runtime=nullptr;

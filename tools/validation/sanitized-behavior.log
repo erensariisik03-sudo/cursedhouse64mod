@@ -1,5 +1,0 @@
-AI repair: no-original local Granny/Grandpa/Mom binding, unique scene DaysManager, accepted sound callback return/GC/dedupe, stationary/attack timeout recovery with pause/hit guards, own player speed noncompounding/base restoration/ownership: PASS
-Clone extensions: first-obstruction door RPC/cooldown/lock guards, Grandpa stripped fields, native lost-sight patrol, actual noise dedupe/investigation/sight priority, client chat-only vote/prank/draft/cooldown/tie/context: PASS
-AI visibility: own-target native local/RPC lifecycle, request preservation, rate limit, retries, model/ownership/context guards; native hidden-victim release for all three enemies and category pause: PASS
-Progression: own God interaction item/consumption scope, exception/fresh-hand restoration, prerequisite/ownership/scene guards, difficulty context/enum checks, retained combat helpers and Mom route restoration: PASS
-Enemy behavior: clone-local camera/AI remapping, scene-only bindings, independent target lists, animation enable/speed, hierarchy rejection, delayed God attack release preserving chase, other-player/host/death guards: PASS

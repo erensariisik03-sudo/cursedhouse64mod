@@ -521,7 +521,7 @@ public:
 };
 
 // ---- Kalıcı ayar (API anahtarı vb.): "ad=değer" satırları; \n ve \\ kaçışlı ------------------
-struct Config { std::string key, custom; int mode = 0; bool all = false; bool strict = true; int words = kMinWords; bool message_filter = true; };
+struct Config { std::string key, custom; int mode = 0; bool all = false; bool strict = true; int words = kMinWords; bool message_filter = true; bool cool = true; };
 inline std::string EscapeLine(const std::string& v) {
     std::string o; for (char c : v) { if (c == '\\') o += "\\\\"; else if (c == '\n') o += "\\n"; else if (c == '\r') {} else o += c; } return o;
 }
@@ -531,7 +531,7 @@ inline std::string UnescapeLine(const std::string& v) {
     } return o;
 }
 inline std::string SerializeConfig(const Config& c) {
-    return "key=" + EscapeLine(c.key) + "\nmode=" + std::to_string(c.mode) + "\nall=" + (c.all ? "1" : "0") + "\nnamefilter2=" + (c.strict ? "1" : "0") + "\nwords=" + std::to_string(c.words) + "\nmessagefilter=" + (c.message_filter ? "1" : "0") + "\ncustom=" + EscapeLine(c.custom) + "\n";
+    return "key=" + EscapeLine(c.key) + "\nmode=" + std::to_string(c.mode) + "\nall=" + (c.all ? "1" : "0") + "\nnamefilter2=" + (c.strict ? "1" : "0") + "\nwords=" + std::to_string(c.words) + "\nmessagefilter=" + (c.message_filter ? "1" : "0") + "\ncool=" + (c.cool ? "1" : "0") + "\ncustom=" + EscapeLine(c.custom) + "\n";
 }
 inline Config ParseConfig(const std::string& text) {
     Config c; size_t pos = 0;
@@ -545,6 +545,7 @@ inline Config ParseConfig(const std::string& text) {
         else if (name == "all") c.all = value == "1";
         else if (name == "namefilter2") c.strict = value != "0";
         else if (name == "messagefilter") c.message_filter = value != "0";
+        else if (name == "cool") c.cool = value != "0";
         else if (name == "words") c.words = ClampWords(std::atoi(value.c_str()));
         else if (name == "custom") c.custom = value;
     }

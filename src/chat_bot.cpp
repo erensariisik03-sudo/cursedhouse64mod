@@ -51,7 +51,7 @@ class Controller {
     Class *chat_message_class{}, *chat_manager_class{}, *player_class{};
     const Method *find{}, *length{}, *item{}, *alive{}, *instance_id{}, *active{}, *get_transform{}, *sibling{},
         *text_get{}, *input_text{}, *input_set{}, *input_focused{}, *send{}, *queue{}, *room{}, *players{},
-        *nick{}, *own_nick{};
+        *nick{}, *own_nick{}, *room_name_get{};
     Field *message_field{}, *input_field{}, *allowed_field{};
     chat_bot_engine::Engine engine;
     chat_bot_bridge::Snapshot snap;
@@ -64,7 +64,9 @@ class Controller {
     double now_ = 0;
     std::deque<Pending> pending;
     std::deque<std::string> outbox, recent_sent; // gönderilecek parçalar; kendi yolladıklarımız (yankı koruması)
-    bool enabled = false, baseline = false, voice_routed=false;
+    bool enabled = false, baseline = false, voice_routed=false, cool = true;
+    std::string delegate_name;std::deque<std::pair<std::string,std::string>> delegate_outbox;
+    double delegate_since = 0;
     Edit editing = Edit::None;
     android_text_input::Session text_input{api};bool native_input=false;
     std::string issue, own_name, request_sender, reminder_name;
@@ -100,12 +102,13 @@ class Controller {
     uint64_t status_revision=0;
     std::string status_model;
     void ClearStatus(){++status_revision;status_lines.clear();status_room=0;}
-    void QueueStatus(chat_bot_fx::Event event,const std::string& detail={}) {
+    void QueueStatus(chat_bot_fx::Event event,const std::string& detail={},int explicit_active=-1) {
         ++status_revision;
+        if(!cool){ClearStatus();return;}
         if(!chat_send_gate::status_alias_ready.load(std::memory_order_acquire)){
             ClearStatus();Status(u8"AI | System sohbet etiketi hazır değil; terminal gösterimi atlandı.");return;
         }
-        const auto lines=chat_bot_fx::Lines(event,detail,enabled);
+        const auto lines=chat_bot_fx::Lines(event,detail,explicit_active>=0 ? (explicit_active==1) : (enabled||voice_ai_bridge::Read().settings.enabled));
         status_lines.assign(lines.begin(),lines.end()); // latest event replaces unfinished animation
         status_next=now_;status_deadline=now_+chat_bot_fx::kTimeout;status_room=active_room;
     }
@@ -188,12 +191,12 @@ class Controller {
         if (!in) { all = true; return; } // ilk kurulum: herkese cevap (kişi seçme gerekmez)
         std::stringstream ss; ss << in.rdbuf();
         const auto c = chat_bot_core::ParseConfig(ss.str());
-        key = c.key; custom = c.custom; mode = c.mode; all = c.all; strict = c.strict; words = c.words;message_filter=c.message_filter;
+        key = c.key; custom = c.custom; mode = c.mode; all = c.all; strict = c.strict; words = c.words;message_filter=c.message_filter;cool=c.cool;
         if (!key.empty()) Status(u8"AI | Kayıtlı anahtar yüklendi.");
     }
     void SaveConfig() {
         const std::string path = ConfigPath(); if (path.empty()) { BOT_LOG("chat_bot: config path unavailable"); return; }
-        chat_bot_core::Config c; c.key = key; c.custom = custom; c.mode = mode; c.all = all; c.strict = strict; c.words = words;c.message_filter=message_filter;
+        chat_bot_core::Config c; c.key = key; c.custom = custom; c.mode = mode; c.all = all; c.strict = strict; c.words = words;c.message_filter=message_filter;c.cool=cool;
         const std::string data = chat_bot_core::SerializeConfig(c);
         std::ofstream out(path, std::ios::binary | std::ios::trunc); // uygulamanın özel dizini; anahtar loglanmaz
         if (out) { out << data; out.close(); chmod(path.c_str(), 0600); }
@@ -232,6 +235,7 @@ class Controller {
         send = api.FindMethod(chat_manager_class, "SendMessage", 0);
         queue = method("Photon.Pun", "PhotonNetwork", "get_IsMessageQueueRunning");
         room = method("Photon.Pun", "PhotonNetwork", "get_CurrentRoom");
+        room_name_get = method("Photon.Realtime", "RoomInfo", "get_Name");
         players = method("Photon.Pun", "PhotonNetwork", "get_PlayerListOthers"); // yerel oyuncu hariç
         player_class = api.Find("Photon.Realtime", "Player");
         own_nick = method("Photon.Pun", "PhotonNetwork", "get_NickName"); // isteğe bağlı: kendi adımız
@@ -414,16 +418,53 @@ class Controller {
         gap_until = now + kChunkGap;
         return true;
     }
+    // A temporary UI nickname alias: it does NOT change the authenticated Photon actor.
+    // Never bypass normal chat cooldown and never overwrite a user's draft.
+    bool TryDelegate(double now) {
+        if(delegate_outbox.empty()||now-delegate_since>20.0){delegate_outbox.clear();return false;}
+        if(!chat_send_gate::status_alias_ready.load()||!active_room)return false;
+        const auto& next=delegate_outbox.front();
+        if(std::find(snap.players.begin(),snap.players.end(),next.first)==snap.players.end()){delegate_outbox.clear();return false;}
+        Root owner(api,ChatOwner());if(!owner.Get())return false;
+        bool allowed=false;api.field_get_value(owner.Get(),allowed_field,&allowed);
+        if(!chat_send_gate::Available(allowed))return false;
+        Object* field=nullptr;api.field_get_value(owner.Get(),input_field,&field);
+        Root input(api,field);if(!input.Get()||!IsAlive(input.Get()))return false;
+        bool ok=false;auto* focus=api.Call(input_focused,input.Get(),nullptr,&ok);
+        if(!ok||!focus||*static_cast<bool*>(api.object_unbox(focus)))return false;
+        if(!ReadString(input_text,input.Get(),ok).empty()||!ok)return false;
+        Root alias(api,reinterpret_cast<Object*>(api.string_new(next.first.c_str())));
+        Root text(api,reinterpret_cast<Object*>(api.string_new(next.second.c_str())));
+        if(!alias.Get()||!text.Get())return false;
+        void* args[]={text.Get()};api.Call(input_set,input.Get(),args,&ok);if(!ok)return false;
+        {chat_send_gate::StatusAlias guard(alias.handle);api.Call(send,owner.Get(),nullptr,&ok);}
+        bool read_ok=false;auto after=ReadString(input_text,input.Get(),read_ok);
+        if(!ok||!read_ok||after==next.second){
+            if(read_ok&&after==next.second){Root empty(api,reinterpret_cast<Object*>(api.string_new("")));void* reset[]={empty.Get()};if(empty.Get())api.Call(input_set,input.Get(),reset);}
+            return false;
+        }
+        recent_sent.push_back(chat_bot_core::StripTags(next.second));while(recent_sent.size()>12)recent_sent.pop_front();
+        snap.last_out=chat_bot_core::PrefixScalars(next.second,60);
+        delegate_outbox.pop_front();gap_until=now+1.2;
+        Status(u8"AI | Seçilen adla mesaj gönderildi (gerçek ağ kimliği değişmez).");
+        return true;
+    }
     void BeginEdit(Edit e) {
         editing = e;
         const std::string initial = e == Edit::Persona ? custom : e == Edit::Speech ? voice_ai_bridge::SpeechText() : std::string();
         native_input = text_input.Open(initial, e == Edit::Key); // Android's own keyboard
         if (!native_input) keyboard_bridge::OpenNative(initial.c_str(), e == Edit::Key); // fallback: ImGui keyboard
-        Status(e == Edit::Key ? u8"AI | API anahtarını yaz, Enter'a bas." : e == Edit::Speech ? u8"AI | Seslendirilecek mesajı yaz, Enter'a bas." : u8"AI | Kişiliği yaz, Enter'a bas.");
+        Status(e == Edit::Key ? u8"AI | API anahtarını yaz, Enter'a bas." : e == Edit::Speech ? u8"AI | Seslendirilecek mesajı yaz, Enter'a bas." : e == Edit::Delegate ? u8"AI | Seçili oyuncu için mesaj yaz, Enter'a bas." : u8"AI | Kişiliği yaz, Enter'a bas.");
     }
     void FinishEdit(const std::string& raw) {
         const std::string value = chat_bot_core::Trim(chat_bot_core::PrefixScalars(raw, 1024));
         if (editing == Edit::Key) { key = value; SaveConfig(); Status(key.empty() ? u8"AI | Anahtar silindi." : u8"AI | Anahtar kaydedildi (cihazda kalıcı)."); }
+        else if(editing == Edit::Delegate) {
+            if(!value.empty()&&!delegate_name.empty()&&std::find(snap.players.begin(),snap.players.end(),delegate_name)!=snap.players.end()){
+                delegate_outbox.emplace_back(delegate_name,chat_bot_core::PrefixScalars(value,200));delegate_since=now_;
+                Status(u8"AI | Mesaj gönderim için sıraya alındı.");
+            }else Status(u8"AI | Oyuncu veya mesaj seçilmedi.");
+        }
         else if (editing == Edit::Speech) { voice_ai_bridge::SaveSpeech(chat_bot_core::PrefixScalars(value, 300)); Status(value.empty() ? u8"AI | Mesaj silindi." : u8"AI | Mesaj kaydedildi; okutmak için 'Mesajı seslendir' düğmesine bas."); }
         else { custom = value; mode = value.empty() ? 0 : chat_bot_core::kPersonaCount; SaveConfig(); InvalidateReplies(); history.clear(); QueueStatus(chat_bot_fx::Event::Profile,chat_bot_core::PersonaName(mode));Status(u8"AI | Özel kişilik kaydedildi, hafıza sıfırlandı."); }
         editing = Edit::None;
@@ -447,6 +488,8 @@ class Controller {
     void Commands() {
         const auto c = chat_bot_bridge::Take();
         if (!c.Any()) return;
+        if (c.toggle_cool){cool=!cool;SaveConfig();if(!cool)ClearStatus();Status(cool?u8"AI | Cool Modu açık.":u8"AI | Cool Modu kapalı; terminal satırları durduruldu.");}
+        if(c.select_delegate){delegate_name=c.delegate_name;delegate_outbox.clear();}
         if (c.select) {
             const auto it = std::find(selected.begin(), selected.end(), c.name);
             if (it == selected.end()) selected.push_back(c.name); else selected.erase(it);
@@ -457,18 +500,20 @@ class Controller {
         if (c.toggle_strict) { strict = !strict; SaveConfig(); InvalidateReplies(); reminder.Reset(); Status(strict ? u8"AI | Yalnız adımla yazılanlara cevap verilecek." : u8"AI | Tüm mesajlara cevap verilecek."); }
         if (c.set_words) { words = chat_bot_core::ClampWords(c.words); SaveConfig(); }
         if (c.set_mode) { const int previous=mode;mode = c.mode; if (mode == chat_bot_core::kPersonaCount && custom.empty()) mode = 0; SaveConfig(); InvalidateReplies(); history.clear(); Status(std::string(u8"AI | Kişilik: ") + chat_bot_core::PersonaName(mode) + u8"."); if(mode!=previous)QueueStatus(chat_bot_fx::Event::Profile,chat_bot_core::PersonaName(mode)); }
-        if (c.toggle) {
-            if (enabled) { enabled = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Bot kapalı."); QueueStatus(chat_bot_fx::Event::Stop); }
+        if (c.toggle || c.set_enabled) {
+            if(c.set_enabled && enabled==c.enable){}
+            else if (enabled) { enabled = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Bot kapalı."); QueueStatus(chat_bot_fx::Event::Stop); }
             else if (key.empty()) Status(u8"AI | Önce API anahtarını gir.");
             else if (!all && selected.empty()) Status(u8"AI | Önce kişi seç ya da \"Herkes\"i aç.");
             else { enabled = true; baseline = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Bot açık; yeni mesajlar bekleniyor."); status_model=engine.Model();QueueStatus(chat_bot_fx::Event::Start,status_model); }
         }
+        if(c.voice_fx)QueueStatus(c.voice_fx_on?chat_bot_fx::Event::Start:chat_bot_fx::Event::Stop,engine.Model(),c.voice_fx_on?1:0);
         if (c.reset_memory) { InvalidateReplies(); history.clear(); Status(u8"AI | Hafıza sıfırlandı."); }
         if (c.refresh) next_players = 0;
         if (c.edit != Edit::None) BeginEdit(c.edit);
     }
     void Publish() {
-        snap.enabled = enabled; snap.selected = selected; snap.all = all; snap.strict = strict; snap.message_filter=message_filter; snap.words = words; snap.mode = mode; snap.has_key = !key.empty(); snap.busy = engine.Busy();
+        snap.enabled = enabled;snap.cool=cool;snap.delegate_name=delegate_name; snap.selected = selected; snap.all = all; snap.strict = strict; snap.message_filter=message_filter; snap.words = words; snap.mode = mode; snap.has_key = !key.empty(); snap.busy = engine.Busy();
         snap.model = engine.Model(); snap.persona = chat_bot_core::PrefixScalars(custom, 80); snap.chat_ready = true;
         chat_bot_bridge::Publish(snap);
     }
@@ -490,12 +535,15 @@ public:
         Commands(); PollEdit();
         voice_ai_bridge::Configure({key,System(),own_name,all,strict,selected,message_filter});
         const bool route_voice=voice_ai_bridge::RoutesText();
+        if(enabled&&voice_ai_bridge::Read().settings.enabled){enabled=false;InvalidateReplies();ClearStatus();Status(u8"AI | Sesli AI açıldı; Metin AI kapatıldı.");}
         if(route_voice!=voice_routed){InvalidateReplies();baseline=false;voice_routed=route_voice;}
 
         Root current_room(api, api.Call(room));
+        if(current_room.Get()&&room_name_get){bool room_ok=false;const auto value=ReadString(room_name_get,current_room.Get(),room_ok);if(room_ok)snap.room_name=value;}
+        else snap.room_name.clear();
         if(!current_room.Get()){
             ClearStatus();
-            snap.players.clear();reminder.Reset();active_room=0;
+            snap.players.clear();snap.room_name.clear();delegate_name.clear();delegate_outbox.clear();reminder.Reset();active_room=0;
             if(enabled){enabled=false;InvalidateReplies();Status(u8"AI | Odadan çıkıldı; bot kapatıldı.");}
             else DropOutbox();
             Publish();return;
@@ -504,11 +552,12 @@ public:
         // saved value is never dereferenced or sent across threads.
         const auto room_id=reinterpret_cast<uintptr_t>(current_room.Get());
         if(active_room&&active_room!=room_id){
-            ClearStatus();
+            ClearStatus();delegate_outbox.clear();delegate_name.clear();
             InvalidateReplies();reminder.Reset();baseline=false;seen.clear();
             engaged.clear();talking.clear();last_accept.clear();last_smalltalk.clear();last_warning.clear();next_warning=0;history.clear();
         }
         active_room=room_id;
+        if(!delegate_name.empty()&&std::find(snap.players.begin(),snap.players.end(),delegate_name)==snap.players.end()&&now>=next_players){delegate_name.clear();delegate_outbox.clear();}
         if (now >= next_players) { next_players = now + 1.0; Players(); }
         reminder.Update(now,enabled&&all,strict,active_room,own_name,!snap.players.empty());
         if(outbox_reminder&&(!enabled||!all||!strict||reminder_name!=own_name||reminder_room!=active_room||snap.players.empty()))DropOutbox();
@@ -559,6 +608,7 @@ public:
                 }
             }
         }
+        if(status_lines.empty()&&outbox.empty()&&now>=gap_until)TryDelegate(now);
         PumpStatus(now); // also runs after the bot has been switched OFF
         Publish();
     }

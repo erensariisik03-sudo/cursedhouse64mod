@@ -89,6 +89,7 @@ Object* Invoke(const Method* m,void* self,void** args,Object** error){
  if(name=="GetInstanceID"||name=="GetSiblingIndex")return fake->I(o->number);
  if(name=="get_transform")return o;
  if(name=="get_CurrentRoom")return fake->current_room;
+ if(name=="get_Name")return fake->S("Deneme Odasi");
  if(name=="get_PlayerListOthers"){auto* list=fake->O(fake->arrays);list->items=fake->others;return list;}
  if(name=="get_NickName")return o?o:fake->S(fake->own);
  if(name=="get_isFocused")return fake->B(fake->focused);
@@ -279,5 +280,28 @@ int main(){
   // Game build without TouchScreenKeyboard: falls back to the ImGui keyboard path.
   h.f.native_missing=true;h.f.opens=0;chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);h.Step();
   assert(h.f.opens==0&&voice_ai_bridge::SpeechText()=="TEST_KEY"&&!h.f.panel);}
+ // Cool mode mutes theatrics but does not block ordinary game chat AI control.
+ {Harness h;
+  chat_bot_bridge::ToggleStrict();h.Step(); // no timed name reminders in Cool-mode test
+  chat_bot_bridge::ToggleCool();h.Step();assert(!chat_bot_bridge::Read().cool);
+  const auto before=h.f.sent.size();chat_bot_bridge::SetMode(1);
+  for(int i=0;i<20;++i){h.Step();}
+  assert(h.f.sent.size()==before);
+  chat_bot_bridge::VoiceFx(true);for(int i=0;i<20;++i){h.Step();}
+  assert(h.f.sent.size()==before);
+  chat_bot_bridge::ToggleCool();h.Step();assert(chat_bot_bridge::Read().cool);
+  chat_bot_bridge::VoiceFx(true);for(int i=0;i<24;++i)h.Step();
+  assert(h.f.sent.size()>before);
+  for(size_t i=before;i<h.f.sent_names.size();++i)assert(h.f.sent_names[i]=="System");
+ }
+ // Delegate text uses the chosen visible alias, not a change to Photon actor ID.
+ {Harness h;
+  assert(chat_bot_bridge::Read().room_name=="Deneme Odasi");
+  chat_bot_bridge::SelectDelegate("Ali");h.Step();assert(chat_bot_bridge::Read().delegate_name=="Ali");
+  h.f.kb_status=1;h.f.kb_text="Merhaba oda";
+  chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Delegate);h.Step();
+  for(int i=0;i<8&&h.f.sent.empty();++i)h.Step();
+  assert(h.f.sent.size()==1&&h.f.sent.back()=="Merhaba oda"&&h.f.sent_names.back()=="Ali");
+ }
  std::cout<<"Bot controller: zero HTTP for small talk, silent name-prefixed/chunk SKIP, timed strict-only reminders, draft/focus/cooldown/room/name guards and stale-result rejection; local profanity warnings with slang bypass and repeat bounds: PASS\n";
 }

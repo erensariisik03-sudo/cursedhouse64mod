@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <sstream>
 
 namespace {
 char g_text[text_buffer::kCapacity] = "";
@@ -511,52 +512,132 @@ int g_hub_tab=0; // 0 = AI, 1 = Kıyafet, 2 = Oyun
 // Oyun panelinde -1 bölüm listesini, 0..3 alt sayfaları gösterir.
 int g_gameplay_page=-1;
 int g_bot_page=-1;
+// 0: Metin AI, 1: Sesli AI, 2: Kişilik, 3: API, 4: Temsil, 5: Geçmiş, 6: Kelimeler, 7: Konuşmacı
 void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
     static int previous=-2;if(previous!=g_bot_page){ImGui::SetScrollY(0);previous=g_bot_page;}
-    const auto s=chat_bot_bridge::Read();const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
-    if(g_bot_page>=0){
-        ActionKey(u8"← AI bölümleri",content,key_height,[]{g_bot_page=-1;InvalidateKeys();});
-        if(g_bot_page==0){
-            ActionKey(s.all?"Herkes AÇIK":"Herkes kapalı",content,key_height,[]{chat_bot_bridge::ToggleAll();InvalidateKeys();},s.all);
-            ActionKey("Listeyi yenile",content,key_height,[]{chat_bot_bridge::Refresh();InvalidateKeys();});
-            float list_height=std::max(key_height,std::min(key_height*4,max_height-ImGui::GetCursorPosY()-key_height-2*ImGui::GetStyle().WindowPadding.y));
-            ImGui::BeginChild("##bot_players",ImVec2(0,list_height),false);
-            if(s.players.empty())ImGui::TextWrapped("Odada oyuncu listesi bekleniyor.");
-            for(const auto& name:s.players){ImGui::PushID(name.c_str());ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{chat_bot_bridge::Select(name);InvalidateKeys();},std::find(s.selected.begin(),s.selected.end(),name)!=s.selected.end());ImGui::PopID();}ImGui::EndChild();
-        }else if(g_bot_page==1){
-            for(int mode=0;mode<chat_bot_core::kPersonaCount;++mode){ActionKey(chat_bot_core::PersonaName(mode),content,key_height,[mode]{chat_bot_bridge::SetMode(mode);InvalidateKeys();},s.mode==mode);}
-            ActionKey("Özel kişilik yaz",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Persona);InvalidateKeys();});
-            if(!s.persona.empty())ActionKey("Özel kişiliği kullan",content,key_height,[]{chat_bot_bridge::SetMode(chat_bot_core::kPersonaCount);InvalidateKeys();},s.mode==chat_bot_core::kPersonaCount);
-        }else if(g_bot_page==2){
-            ActionKey(s.message_filter?"Mesaj filtresi: AÇIK":"Mesaj filtresi: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleFilter();InvalidateKeys();},s.message_filter);
-            ActionKey(s.strict?"Adla çağırma: AÇIK":"Adla çağırma: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleStrict();InvalidateKeys();},s.strict);
-            int words=s.words;ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##bot_len",&words,chat_bot_core::kMinWords,chat_bot_core::kMaxWords,"Yanıt: %d kelime"))chat_bot_bridge::SetWords(words);
-            ActionKey("Hafızayı sıfırla",content,key_height,[]{chat_bot_bridge::ResetMemory();InvalidateKeys();});
-        }else if(g_bot_page==3){
-            const auto v=voice_ai_bridge::Read();ImGui::TextWrapped("%s",v.status.c_str());
-            ImGui::BeginDisabled(!v.ready||!s.has_key);ActionKey(v.settings.enabled?"Sesli AI AÇIK - kapat":"Sesli AI KAPALI - aç",content,key_height,[]{voice_ai_bridge::Toggle();InvalidateKeys();},v.settings.enabled);ImGui::EndDisabled();
-            ActionKey("Konuşmayı durdur",content,key_height,[]{voice_ai_bridge::Stop();InvalidateKeys();});
-            ActionKey("Ses → Ses",half,key_height,[]{voice_ai_bridge::Mode(0,1);InvalidateKeys();},v.settings.input==0&&v.settings.output==1);ImGui::SameLine();
-            ActionKey("Metin → Ses",half,key_height,[]{voice_ai_bridge::Mode(1,1);InvalidateKeys();},v.settings.input==1&&v.settings.output==1);
-            ActionKey("Ses → Metin",half,key_height,[]{voice_ai_bridge::Mode(0,0);InvalidateKeys();},v.settings.input==0&&v.settings.output==0);ImGui::SameLine();
-            ActionKey("Ses+Metin → Ses",half,key_height,[]{voice_ai_bridge::Mode(2,1);InvalidateKeys();},v.settings.input==2&&v.settings.output==1);
-            ActionKey(v.settings.destination?"Ses: yalnız bu cihaz":"Ses: oda / yerel",content,key_height,[local=!v.settings.destination]{voice_ai_bridge::Destination(local);InvalidateKeys();},v.settings.destination);
-            {int tone=voice_ai_bridge::tone.load();ImGui::TextWrapped("Ses tonu: sol = kalın robot (şimdiki), sağ = bebek sesi");ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##voice_tone",&tone,0,100,"Ses tonu: %d%%"))voice_ai_bridge::SetTone(tone);}
-            ActionKey("Kendi mesajımı yaz",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);InvalidateKeys();});
-            {const auto saved=voice_ai_bridge::SpeechText();if(!saved.empty()){ImGui::TextWrapped("Mesajın: %s",chat_bot_core::PrefixScalars(saved,120).c_str());ImGui::BeginDisabled(!v.settings.enabled);ActionKey("Mesajı seslendir",content,key_height,[saved]{voice_ai_bridge::Speak(saved);InvalidateKeys();});ImGui::EndDisabled();if(!v.settings.enabled)ImGui::TextWrapped("Seslendirmek için Sesli AI açık olmalı.");}}
-            ImGui::TextWrapped("Açınca seçili kişilerin sesi Gemini'ye gönderilir. Oda sesi kapalıysa yanıtı bu cihaz okur.");
-            ImGui::TextWrapped("AI konuşurken mikrofon yayına verilmez.");
-        }else{
-            ImGui::TextWrapped("Son gelen: %s",s.last_in.c_str());ImGui::TextWrapped("Son cevap: %s",s.last_out.c_str());
-            const auto v=voice_ai_bridge::Read();ImGui::TextWrapped("Duyulan: %s",v.heard.c_str());ImGui::TextWrapped("Sesli AI yanıtı: %s",v.reply.c_str());
-        }return;
+    const auto s=chat_bot_bridge::Read();const auto v=voice_ai_bridge::Read();
+    const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
+    if(g_bot_page<0){
+        const float menu_height=std::max(19.f,key_height*.70f);
+        ActionKey(s.cool?"Cool Modu: AÇIK":"Cool Modu: KAPALI",content,menu_height,[]{chat_bot_bridge::ToggleCool();InvalidateKeys();},s.cool);
+        const char* labels[]={"API Anahtarı","Metin AI","Sesli AI","Kişilik","Oyuncu mesajı","Geçmiş"};
+        const int pages[]={3,0,1,2,4,5};
+        for(int i=0;i<6;++i){if(i%2)ImGui::SameLine();ImGui::PushID(i+500);
+            ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
+        ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
-    ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,64).c_str());
-    ImGui::BeginDisabled(!s.chat_ready);ActionKey(s.enabled?"Bot AÇIK - kapat":"Bot KAPALI - aç",half,key_height,[]{chat_bot_bridge::Toggle();InvalidateKeys();},s.enabled);ImGui::EndDisabled();ImGui::SameLine();
-    ActionKey("API anahtarı gir",half,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Key);InvalidateKeys();});
-    const char* labels[]={"Kişiler","Kişilik","Yanıt ayarları","Sesli AI","Geçmiş"};
-    for(int i=0;i<5;++i){if(i%2)ImGui::SameLine();ActionKey(labels[i],half,key_height,[i]{g_bot_page=i;InvalidateKeys();});}
+    ActionKey((g_bot_page==6||g_bot_page==7)?u8"← Sesli AI":u8"← Genel AI menüsü",content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7)?1:-1;InvalidateKeys();});
+    switch(g_bot_page){
+    case 0:{
+        ImGui::TextWrapped("METİN AI - diğer AI türü açıksa otomatik kapatılır.");
+        ImGui::BeginDisabled(!s.chat_ready);
+        ActionKey(s.enabled?"Metin AI: AÇIK - kapat":"Metin AI: KAPALI - aç",content,key_height,[enabled=!s.enabled]{
+            if(enabled){voice_ai_bridge::Enable(false);chat_bot_bridge::VoiceFx(false);}
+            chat_bot_bridge::Enable(enabled);InvalidateKeys();},s.enabled);
+        ImGui::EndDisabled();
+        ActionKey("Kişileri yenile",content,key_height,[]{chat_bot_bridge::Refresh();InvalidateKeys();});
+        ActionKey(s.all?"Herkes: AÇIK":"Herkes: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleAll();InvalidateKeys();},s.all);
+        float list_height=std::max(key_height,std::min(key_height*3,max_height-ImGui::GetCursorPosY()-key_height*3));
+        ImGui::BeginChild("##bot_players",ImVec2(0,list_height),false);
+        if(s.players.empty())ImGui::TextWrapped("Oda oyuncuları bekleniyor.");
+        for(const auto& name:s.players){ImGui::PushID(name.c_str());ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{chat_bot_bridge::Select(name);InvalidateKeys();},std::find(s.selected.begin(),s.selected.end(),name)!=s.selected.end());ImGui::PopID();}
+        ImGui::EndChild();
+        ActionKey(s.message_filter?"Mesaj filtresi: AÇIK":"Mesaj filtresi: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleFilter();InvalidateKeys();},s.message_filter);
+        ActionKey(s.strict?"Adla çağırma: AÇIK":"Adla çağırma: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleStrict();InvalidateKeys();},s.strict);
+        int words=s.words;ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##bot_len",&words,chat_bot_core::kMinWords,chat_bot_core::kMaxWords,"Yanıt: %d kelime"))chat_bot_bridge::SetWords(words);
+        ActionKey("Sohbet hafızasını sıfırla",content,key_height,[]{chat_bot_bridge::ResetMemory();InvalidateKeys();});break;
+    }
+    case 1:{
+        ImGui::TextWrapped("SESLİ AI | Aynı anda yalnızca bir konuşmacı dinlenir.");
+        ImGui::TextWrapped("%s",v.status.c_str());
+        ImGui::BeginDisabled(!v.ready||!s.has_key);
+        ActionKey(v.settings.enabled?"Sesli AI: AÇIK - kapat":"Sesli AI: KAPALI - aç",content,key_height,[enabled=!v.settings.enabled]{
+            if(enabled)chat_bot_bridge::Enable(false);
+            voice_ai_bridge::Enable(enabled);chat_bot_bridge::VoiceFx(enabled);InvalidateKeys();},v.settings.enabled);
+        ImGui::EndDisabled();
+        if(!v.selection_text.empty())ActionKey("Konuşma kelimelerini seç",content,key_height,[]{g_bot_page=6;InvalidateKeys();},true);
+        ActionKey("Konuşmacı seç",content,key_height,[]{g_bot_page=7;InvalidateKeys();});
+        ActionKey("Konuşmayı durdur",content,key_height,[]{voice_ai_bridge::Stop();InvalidateKeys();});
+        ActionKey(v.settings.manual_keywords?"Manuel kelime seçimi: AÇIK":"Manuel kelime seçimi: KAPALI",content,key_height,[enabled=!v.settings.manual_keywords]{voice_ai_bridge::ManualKeywords(enabled);InvalidateKeys();},v.settings.manual_keywords);
+        ActionKey(v.settings.destination?"Ses yalnızca bu cihazda":"Ses odaya gönderilir",content,key_height,[local=!v.settings.destination]{voice_ai_bridge::Destination(local);InvalidateKeys();},v.settings.destination);
+        {int tone=voice_ai_bridge::tone.load();ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##voice_tone",&tone,0,100,"Ses tonu: %d%%"))voice_ai_bridge::SetTone(tone);}
+        ActionKey("Kendi mesajımı yaz",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);InvalidateKeys();});
+        const auto saved=voice_ai_bridge::SpeechText();if(!saved.empty()){
+            ImGui::TextWrapped("Metin: %s",chat_bot_core::PrefixScalars(saved,110).c_str());
+            ImGui::BeginDisabled(!v.settings.enabled);ActionKey("Mesajı seslendir",content,key_height,[saved]{voice_ai_bridge::Speak(saved);InvalidateKeys();});ImGui::EndDisabled();
+        }
+        ImGui::TextWrapped("Sesli AI yanıtı aynı zamanda sohbete yazılır. İsim filtresi Sesli AI için kapalıdır.");break;
+    }
+    case 2:{
+        ImGui::TextWrapped("ORTAK KİŞİLİK | Sesli AI ve Metin AI aynı ayarı kullanır.");
+        for(int mode=0;mode<chat_bot_core::kPersonaCount;++mode)ActionKey(chat_bot_core::PersonaName(mode),content,key_height,[mode]{chat_bot_bridge::SetMode(mode);InvalidateKeys();},s.mode==mode);
+        ActionKey("Özel kişilik yaz",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Persona);InvalidateKeys();});
+        if(!s.persona.empty())ActionKey("Özel kişiliği kullan",content,key_height,[]{chat_bot_bridge::SetMode(chat_bot_core::kPersonaCount);InvalidateKeys();},s.mode==chat_bot_core::kPersonaCount);break;
+    }
+    case 3:
+        ImGui::TextWrapped("API Anahtarı | %s",s.has_key?"Tanımlı":"Henüz tanımlı değil");
+        ActionKey("API anahtarı gir / değiştir",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Key);InvalidateKeys();});break;
+    case 4:{
+        ImGui::TextWrapped("Oyuncu adını seçip mesaj yaz. Sohbet görünür adı seçili oyuncu adı olabilir, fakat Photon aktör kimliğin kendi hesabın olarak kalır.");
+        if(s.players.empty())ImGui::TextWrapped("Önce odaya gir; oyuncu listesi bekleniyor.");
+        if(ImGui::BeginChild("##delegate_players",ImVec2(0,key_height*3),false)){
+            for(const auto& name:s.players){ImGui::PushID(name.c_str());ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{chat_bot_bridge::SelectDelegate(name);InvalidateKeys();},s.delegate_name==name);ImGui::PopID();}
+        }ImGui::EndChild();
+        ImGui::TextWrapped("Seçilen: %s",s.delegate_name.empty()?"Yok":s.delegate_name.c_str());
+        ImGui::BeginDisabled(s.delegate_name.empty());
+        ActionKey("Mesaj yaz ve gönder",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Delegate);InvalidateKeys();});
+        ImGui::EndDisabled();break;
+    }
+    case 7:{
+        ImGui::TextWrapped("SEDA | Bir anda bir oyuncu dinlenir.");
+        ActionKey("Otomatik tek konuşmacı",content,key_height,[]{voice_ai_bridge::TargetActor(0);InvalidateKeys();},v.settings.target_actor==0);
+        if(v.players.empty())ImGui::TextWrapped("Henüz sesli sohbete katılan oyuncu yok.");
+        if(ImGui::BeginChild("##pick_voice_players",ImVec2(0,std::max(key_height*2,max_height-ImGui::GetCursorPosY()-key_height*1.5f)),false)){
+            for(const auto& player:v.players){ImGui::PushID(player.first);
+                std::string label=player.second+(v.active_actor==player.first?" (dinleniyor)":"");
+                ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[actor=player.first]{voice_ai_bridge::TargetActor(actor);InvalidateKeys();},v.settings.target_actor==player.first);
+                ImGui::PopID();}
+        }ImGui::EndChild();break;
+    }
+    case 6:{
+        ImGui::TextWrapped("SEDA | Kelime seçimi (sadece seçilenler AI'ye gider)");
+        if(!v.selection_text.empty()){
+            static std::string seen;static std::vector<bool> chosen;
+            std::vector<std::string> tokens;std::istringstream split(v.selection_text);std::string word;
+            while(split>>word&&tokens.size()<120)tokens.push_back(word);
+            if(seen!=v.selection_name+"/"+v.selection_text){seen=v.selection_name+"/"+v.selection_text;chosen.assign(tokens.size(),false);}
+            ImGui::TextWrapped("%s konuştu - anahtar kelimeleri seç:",v.selection_name.c_str());
+            const float list_height=std::max(60.f,std::min(key_height*3,max_height-ImGui::GetCursorPosY()-key_height*4));
+            if(ImGui::BeginChild("##selection_words",ImVec2(0,list_height),false)){
+                auto* list=ImGui::GetCurrentWindow();
+                if(g_list_touch.window!=list->ID)g_list_touch={};
+                g_list_touch.window=list->ID;g_list_touch.visible=true;
+                g_list_touch.min=list->InnerClipRect.Min;g_list_touch.max=list->InnerClipRect.Max;
+                g_list_touch.threshold=std::max(6.f,key_height*.22f);
+                if(g_list_touch.delta!=0){ImGui::SetScrollY(std::clamp(ImGui::GetScrollY()+g_list_touch.delta,0.f,ImGui::GetScrollMaxY()));g_list_touch.delta=0;}
+                g_list_touch.recording=true;
+                for(size_t i=0;i<tokens.size();++i){ImGui::PushID(int(i));
+                if(i%2)ImGui::SameLine();
+                ActionKey(tokens[i].c_str(),half,key_height,[i]{if(i<chosen.size())chosen[i]=!chosen[i];InvalidateKeys();},i<chosen.size()&&chosen[i]);
+                ImGui::PopID();}
+                g_list_touch.recording=false;
+            }ImGui::EndChild();
+            ActionKey("Hepsini seç",half,key_height,[count=tokens.size()]{chosen.assign(count,true);InvalidateKeys();});ImGui::SameLine();
+            ActionKey("Seçimi sil",half,key_height,[count=tokens.size()]{chosen.assign(count,false);InvalidateKeys();});
+            ActionKey("Seçilenleri AI'ye gönder",content,key_height,[]{std::vector<int> indices;for(size_t i=0;i<chosen.size();++i)if(chosen[i])indices.push_back(int(i));if(!indices.empty())voice_ai_bridge::SubmitSelected(std::move(indices));InvalidateKeys();});
+            ActionKey("Bu konuşmayı atla",content,key_height,[]{voice_ai_bridge::SkipSelected();InvalidateKeys();});
+        }
+        else ImGui::TextWrapped("Henüz işlenecek konuşma yok.");
+        break;
+    }
+    default:
+        ImGui::TextWrapped("Son mesaj: %s",s.last_in.c_str());
+        ImGui::TextWrapped("Son AI cevabı: %s",s.last_out.c_str());
+        ImGui::TextWrapped("Son konuşma: %s",v.heard.c_str());
+        ImGui::TextWrapped("Sesli AI cevabı: %s",v.reply.c_str());break;
+    }
 }
+
 void GameplaySectionBody(float key_height,float content){
     const auto s=gameplay_bridge::Read();
     const auto back=[]{g_gameplay_page=-1;InvalidateKeys();};
@@ -720,6 +801,11 @@ void GameplaySectionBody(float key_height,float content){
         static std::string note;
         const auto& vote=s.vote;
         ImGui::TextWrapped("Bir oyuncuya dokun: ismi panoya kopyalanır.");
+        const auto room_name=chat_bot_bridge::Read().room_name;
+        if(!room_name.empty()){
+            ActionKey("Oda adını kopyala",content,key_height,[room_name]{const bool ok=g_copy&&g_copy(room_name);note=ok?"Oda kopyalandı: "+room_name:"Oda adı kopyalanamadı.";InvalidateKeys();});
+            ImGui::TextWrapped("Oda: %s",room_name.c_str());
+        }
         if(!note.empty())ImGui::TextWrapped("%s",note.c_str());
         if(vote.players.empty())ImGui::TextWrapped("Odadaki oyuncu listesi bekleniyor.");
         if(ImGui::BeginChild("##copy_players",ImVec2(0,key_height*4),false)){

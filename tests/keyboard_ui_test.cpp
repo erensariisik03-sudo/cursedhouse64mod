@@ -178,15 +178,21 @@ int main() {
   Click("##hub_btn");Frame();Frame();
   assert(items.count("AI")&&items.count("Kıyafet")&&!items.count("Reklam"));
   Direct("Kıyafet");Frame();Frame();assert(items.count("Çık-gir: herkese uygula"));
-  Direct("AI");Frame();Frame();assert(items.count("API anahtarı gir")&&!items.count("Çık-gir: herkese uygula"));
-  // AI controls are focused subpages rather than one tall block.
+  Direct("AI");Frame();Frame();assert(items.count("API Anahtarı")&&!items.count("Çık-gir: herkese uygula"));
+  // New AI hub: Cool Mode and independent Text/Voice panels.
   {chat_bot_bridge::Snapshot bot;bot.chat_ready=bot.has_key=true;bot.players={"Ali","Ayşe"};chat_bot_bridge::Publish(bot);
-   voice_ai_bridge::Snapshot voice;voice.ready=true;voice_ai_bridge::Publish(voice);Frame();Frame();
-   assert(items.count("Kişiler")&&items.count("Kişilik")&&items.count("Yanıt ayarları")&&items.count("Sesli AI")&&!items.count("Mesaj filtresi: AÇIK"));
-   Direct("Kişiler");Frame();Frame();Direct("Ali");auto bot_command=chat_bot_bridge::Take();assert(bot_command.select&&bot_command.name=="Ali");Frame();Frame();Direct(u8"← AI bölümleri");Frame();Frame();
-   Direct("Sesli AI");Frame();Frame();assert(items.count("Ses → Ses")&&items.count("Metin → Ses")&&items.count("Ses → Metin"));Direct("Metin → Ses");Frame();Frame();assert(voice_ai_bridge::desired.input==1&&voice_ai_bridge::desired.output==1);
-   Direct("Sesli AI KAPALI - aç");Frame();Frame();assert(voice_ai_bridge::desired.enabled);Direct("Konuşmayı durdur");Frame();Frame();assert(voice_ai_bridge::cancel);
-   Direct(u8"← AI bölümleri");Frame();Frame();
+   voice_ai_bridge::Snapshot voice;voice.ready=true;voice.players={{2,"Ali"},{3,"Ayşe"}};voice_ai_bridge::Publish(voice);Frame();Frame();
+   assert(items.count("Cool Modu: AÇIK")&&items.count("Metin AI")&&items.count("Sesli AI")&&items.count("Oyuncu mesajı"));
+   Direct("Cool Modu: AÇIK");auto cool=chat_bot_bridge::Take();assert(cool.toggle_cool);Frame();Frame();
+   Direct("Metin AI");Frame();Frame();assert(items.count("Mesaj filtresi: AÇIK"));
+   Direct("Ali");auto bot_command=chat_bot_bridge::Take();assert(bot_command.select&&bot_command.name=="Ali");
+   Frame();Frame();Direct(u8"← Genel AI menüsü");Frame();Frame();
+   Direct("Sesli AI");Frame();Frame();assert(items.count("Manuel kelime seçimi: KAPALI")&&items.count("Konuşmayı durdur"));
+   Direct("Manuel kelime seçimi: KAPALI");Frame();Frame();assert(voice_ai_bridge::desired.manual_keywords);
+   Direct("Sesli AI: KAPALI - aç");Frame();Frame();assert(voice_ai_bridge::desired.enabled);
+   auto switching=chat_bot_bridge::Take();assert(switching.set_enabled&&!switching.enable&&switching.voice_fx&&switching.voice_fx_on);
+   Direct("Konuşmayı durdur");Frame();Frame();assert(voice_ai_bridge::cancel);
+   Direct(u8"← Genel AI menüsü");Frame();Frame();
    {std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired={};voice_ai_bridge::cancel=false;voice_ai_bridge::texts.clear();}
   }
   // Oyun paneli: bölüm listesi -> tek bölüm -> geriyle tam liste.

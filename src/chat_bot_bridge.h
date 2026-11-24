@@ -6,19 +6,19 @@
 #include <utility>
 #include <vector>
 namespace chat_bot_bridge {
-enum class Edit { None, Key, Persona, Speech };
+enum class Edit { None, Key, Persona, Speech, Delegate };
 struct Snapshot {
-    bool chat_ready = false, enabled = false, has_key = false, busy = false;
+    bool chat_ready = false, enabled = false, has_key = false, busy = false, cool = true;
     std::vector<std::string> players;
     std::vector<std::string> selected; bool all = false, strict = true, message_filter = true; int mode = 0, words = 45;
-    std::string model, status = u8"AI | Bekleniyor.", last_in, last_out, persona;
+    std::string model, status = u8"AI | Bekleniyor.", last_in, last_out, persona, room_name, delegate_name;
 };
 struct Command {
-    bool toggle = false, reset_memory = false, refresh = false;
-    bool select = false; std::string name;
+    bool toggle = false, set_enabled = false, enable = false, toggle_cool = false, voice_fx = false, voice_fx_on = false, reset_memory = false, refresh = false;
+    bool select = false, select_delegate = false; std::string name, delegate_name;
     bool set_mode = false; int mode = 0; bool toggle_all = false, toggle_strict = false, toggle_filter = false; bool set_words = false; int words = 45;
     Edit edit = Edit::None;
-    bool Any() const { return toggle || reset_memory || refresh || select || set_mode || toggle_all || toggle_strict || toggle_filter || set_words || edit != Edit::None; }
+    bool Any() const { return toggle || set_enabled || toggle_cool || voice_fx || select_delegate || reset_memory || refresh || select || set_mode || toggle_all || toggle_strict || toggle_filter || set_words || edit != Edit::None; }
 };
 inline std::mutex mutex;
 inline Snapshot state;
@@ -26,6 +26,10 @@ inline Command command;
 inline Snapshot Read() { std::lock_guard<std::mutex> l(mutex); return state; }
 inline void Publish(Snapshot s) { std::lock_guard<std::mutex> l(mutex); state = std::move(s); }
 inline void Toggle() { std::lock_guard<std::mutex> l(mutex); command.toggle = !command.toggle; }
+inline void Enable(bool enabled) { std::lock_guard<std::mutex> l(mutex); command.set_enabled=true;command.enable=enabled;command.toggle=false; }
+inline void ToggleCool() { std::lock_guard<std::mutex> l(mutex); command.toggle_cool=!command.toggle_cool; }
+inline void VoiceFx(bool active) { std::lock_guard<std::mutex> l(mutex); command.voice_fx=true;command.voice_fx_on=active; }
+inline void SelectDelegate(std::string name) { std::lock_guard<std::mutex> l(mutex);command.select_delegate=true;command.delegate_name=std::move(name); }
 inline void Select(const std::string& n) { std::lock_guard<std::mutex> l(mutex); command.select = true; command.name = n; }
 inline void SetMode(int m) { std::lock_guard<std::mutex> l(mutex); command.set_mode = true; command.mode = m; }
 inline void ToggleAll() { std::lock_guard<std::mutex> l(mutex); command.toggle_all = !command.toggle_all; }

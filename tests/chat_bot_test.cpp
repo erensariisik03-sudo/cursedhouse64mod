@@ -22,6 +22,13 @@ bool Wait(chat_bot_engine::Engine& e, chat_bot_engine::Result& r) {
 }
 }
 int main() {
+ {chat_bot_core::Config settings;settings.cool=false;settings.all=true;
+  auto saved=chat_bot_core::SerializeConfig(settings);
+  auto loaded=chat_bot_core::ParseConfig(saved);
+  assert(!loaded.cool&&loaded.all);
+  assert(chat_bot_core::ParseConfig("key=abc\n").cool); // old configs remain compatible
+ }
+
     // Etiket temizleme
     assert(StripTags("<color=#ff0000>Ali</color>: <size=20>merhaba") == "Ali: merhaba");
     assert(StripTags("a < b") == "a < b");
