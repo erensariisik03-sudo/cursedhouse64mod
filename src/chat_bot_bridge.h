@@ -6,28 +6,26 @@
 #include <utility>
 #include <vector>
 namespace chat_bot_bridge {
-enum class Edit { None, Key, Persona, Speech, Delegate, DeveloperUnlock };
+enum class Edit { None, Key, Persona, Speech, Delegate, PhotoCreate, PhotoUnlock };
 struct Snapshot {
     bool chat_ready = false, enabled = false, has_key = false, busy = false, cool = true;
-    bool developer_unlocked = false; int developer_attempts_left = 5;
     std::vector<std::string> players;
     std::vector<std::string> delegate_players; // Photon nicknames, unchanged including rich tags and Unicode
     std::vector<std::string> selected; bool all = false, strict = true, message_filter = true; int mode = 0, words = 45;
     std::string model, status = u8"AI | Bekleniyor.", last_in, last_out, persona, room_name, delegate_name;
 };
 struct Command {
-    bool toggle = false, set_enabled = false, enable = false, toggle_cool = false, voice_fx = false, voice_fx_on = false, reset_memory = false, refresh = false, lock_developer = false;
+    bool toggle = false, set_enabled = false, enable = false, toggle_cool = false, voice_fx = false, voice_fx_on = false, reset_memory = false, refresh = false;
     bool select = false, select_delegate = false; std::string name, delegate_name;
     bool set_mode = false; int mode = 0; bool toggle_all = false, toggle_strict = false, toggle_filter = false; bool set_words = false; int words = 45;
     Edit edit = Edit::None;
-    bool Any() const { return lock_developer || toggle || set_enabled || toggle_cool || voice_fx || select_delegate || reset_memory || refresh || select || set_mode || toggle_all || toggle_strict || toggle_filter || set_words || edit != Edit::None; }
+    bool Any() const { return toggle || set_enabled || toggle_cool || voice_fx || select_delegate || reset_memory || refresh || select || set_mode || toggle_all || toggle_strict || toggle_filter || set_words || edit != Edit::None; }
 };
 inline std::mutex mutex;
 inline Snapshot state;
 inline Command command;
 inline Snapshot Read() { std::lock_guard<std::mutex> l(mutex); return state; }
 inline void Publish(Snapshot s) { std::lock_guard<std::mutex> l(mutex); state = std::move(s); }
-inline void LockDeveloper() { std::lock_guard<std::mutex> l(mutex); command.lock_developer=true; }
 inline void Toggle() { std::lock_guard<std::mutex> l(mutex); command.toggle = !command.toggle; }
 inline void Enable(bool enabled) { std::lock_guard<std::mutex> l(mutex); command.set_enabled=true;command.enable=enabled;command.toggle=false; }
 inline void ToggleCool() { std::lock_guard<std::mutex> l(mutex); command.toggle_cool=!command.toggle_cool; }
