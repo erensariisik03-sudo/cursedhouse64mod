@@ -37,6 +37,14 @@ inline void CancelBrowse(){std::lock_guard<std::mutex> l(mutex);pending.cancel_b
 inline void AllowBrowse(){std::lock_guard<std::mutex> l(mutex);pending.allow_browse=true;}
 inline void DenyBrowse(){std::lock_guard<std::mutex> l(mutex);pending.deny_browse=true;}
 inline void ChooseRemoteFile(std::string name){std::lock_guard<std::mutex> l(mutex);pending.choose_remote_file=std::move(name);}
+// One explicit tap requests exactly one previously-approved remote image.
+// Put the selection and fetch in the SAME command batch. Otherwise the
+// separate UI snapshot/update ticks can leave the old fetch button disabled.
+inline void FetchRemoteFile(std::string name){
+    std::lock_guard<std::mutex> l(mutex);
+    pending.choose_remote_file=std::move(name);
+    pending.fetch=true;
+}
 inline void Fetch(){std::lock_guard<std::mutex> l(mutex);pending.fetch=true;}
 inline void Refresh(){std::lock_guard<std::mutex> l(mutex);pending.refresh=true;}
 inline void ChooseActor(int actor){std::lock_guard<std::mutex> l(mutex);pending.choose_actor=actor;}

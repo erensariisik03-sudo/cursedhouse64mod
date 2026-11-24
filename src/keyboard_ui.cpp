@@ -631,15 +631,21 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             if(!net.fetching)ActionKey("Fotograf listesi istegini iptal et",content,key_height,[]{photo_transport_bridge::CancelBrowse();InvalidateKeys();});
             ImGui::TextWrapped(net.listing_ready?"Oyuncunun izin verdigi fotograflar:":"Karsi oyuncunun onayi / listesi bekleniyor...");
             if(net.listing_ready){
+                ImGui::TextWrapped("Fotografi indirmek icin dosyanin 'Al:' satirina dokun.");
                 BeginTouchList("##gmm_remote_photo_files",std::max(key_height,key_height*3.f));
                 for(const auto& name:net.remote_files){
                     ImGui::PushID(name.c_str());
-                    ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{photo_transport_bridge::ChooseRemoteFile(name);InvalidateKeys();},net.selected_remote_file==name);
+                    // A file row is itself an explicit download button. A single
+                    // atomic command avoids waiting for an asynchronous snapshot
+                    // before the old secondary button can become enabled.
+                    const std::string label="Al: "+name;
+                    ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{photo_transport_bridge::FetchRemoteFile(name);InvalidateKeys();},net.selected_remote_file==name);
                     ImGui::PopID();
                 }
                 if(net.remote_files.empty())ImGui::TextWrapped("Paylasilan klasorde JPG/PNG yok.");
                 EndTouchList();
-                ImGui::BeginDisabled(net.selected_remote_file.empty()||net.fetching);
+                if(!net.selected_remote_file.empty())ImGui::TextWrapped("Secilen dosya: %s",net.selected_remote_file.c_str());
+                ImGui::BeginDisabled(net.fetching);
                 ActionKey("Secilen fotografi al",content,key_height,[]{photo_transport_bridge::Fetch();InvalidateKeys();});
                 ImGui::EndDisabled();
             }

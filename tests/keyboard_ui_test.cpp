@@ -227,7 +227,8 @@ int main() {
     net.browsing=true;photo_transport_bridge::Publish(net);Frame();Frame();
     Direct("Fotograf listesi istegini iptal et");action=photo_transport_bridge::Take();assert(action.cancel_browse);
     net.listing_ready=true;net.remote_files={"photo.png"};photo_transport_bridge::Publish(net);Frame();Frame();
-    Direct("photo.png");action=photo_transport_bridge::Take();assert(action.choose_remote_file=="photo.png");
+    Direct("Al: photo.png");action=photo_transport_bridge::Take();
+    assert(action.choose_remote_file=="photo.png"&&action.fetch);
     net.selected_remote_file="photo.png";photo_transport_bridge::Publish(net);Frame();Frame();
     Direct("Secilen fotografi al");action=photo_transport_bridge::Take();assert(action.fetch);
     // Closing developer authentication must automatically hide the receiver screen.

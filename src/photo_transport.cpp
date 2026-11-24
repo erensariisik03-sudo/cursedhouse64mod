@@ -406,9 +406,12 @@ class Session {
     break;
    case browse::Kind::Deny:
     if(browse_id==p.id&&browse_actor==msg.sender){
+      const bool was_fetching=browse_fetching;
       browse_id=0;browse_actor=0;browse_granted=browse_fetching=false;
       snap.browsing=snap.listing_ready=snap.fetching=false;
-      snap.remote_files.clear();selected_remote_file.clear();Note("Oyuncu paylasim istegini reddetti veya oturum iptal edildi.");
+      snap.remote_files.clear();selected_remote_file.clear();
+      Note(was_fetching?"Karsi cihaz secilen fotografi acamadi ya da paylasim suresi doldu.":
+                       "Oyuncu paylasim istegini reddetti veya oturum iptal edildi.");
     }
     // Requester can revoke a pending or previously approved share session.
     if(share_request_id==p.id&&share_request_actor==msg.sender){
@@ -430,17 +433,33 @@ class Session {
       snap.listing_ready=true;Note(snap.remote_files.empty()?"Paylasilan klasorde uygun fotograf yok.":"Paylasilan fotograflardan birini sec.");
     }
     break;
-   case browse::Kind::Fetch:
-    if(approved_id==p.id&&approved_actor==msg.sender&&now<approval_deadline&&!outgoing_id&&
-       std::find(approved_files.begin(),approved_files.end(),p.name)!=approved_files.end()&&LoadChosen(p.name,tx_data)){
-      outgoing_id=approved_id;outgoing_peer=approved_actor;
-      if(SendEvent(outgoing_peer,wire::EncodeOffer(outgoing_id,outgoing_peer,tx_data))){
-       outgoing_deadline=now+45;tx_accepted=false;tx_index=0;snap.sending=true;
-       snap.progress=0;snap.total=tx_data.size();Note("Onaylanan fotograf gonderiliyor...");
-      }else{ResetSession();Note("Photon fotograf teklifi gonderilemedi.");}
-      approved_id=0;approved_actor=0;approved_files.clear();approval_deadline=0;
+   case browse::Kind::Fetch: {
+    // Browsing approval is one-session and limited to its approved file set.
+    // A stale/unreadable file previously failed silently, leaving the
+    // requester's UI stuck at "fetching" for up to two minutes.
+    const bool same_session=approved_id==p.id&&approved_actor==msg.sender;
+    const bool allowed=same_session&&now<approval_deadline&&!outgoing_id&&
+       std::find(approved_files.begin(),approved_files.end(),p.name)!=approved_files.end();
+    PHOTO_LOG("GMM photo owner: fetch received approved=%d allowed=%d sender=%d",same_session,allowed,msg.sender);
+    if(!allowed){
+      if(same_session)SendEvent(msg.sender,browse::Encode(browse::Kind::Deny,p.id,msg.sender));
+      break;
     }
+    if(!LoadChosen(p.name,tx_data)){
+      PHOTO_LOG("GMM photo owner: fetch denied because approved image is not readable");
+      SendEvent(msg.sender,browse::Encode(browse::Kind::Deny,p.id,msg.sender));
+      approved_id=0;approved_actor=0;approved_files.clear();approval_deadline=0;
+      Note("Secilen fotograf acilamadi. Dosyayi GMMShare klasorunde kontrol et.");
+      break;
+    }
+    outgoing_id=approved_id;outgoing_peer=approved_actor;
+    if(SendEvent(outgoing_peer,wire::EncodeOffer(outgoing_id,outgoing_peer,tx_data))){
+      outgoing_deadline=now+45;tx_accepted=false;tx_index=0;snap.sending=true;
+      snap.progress=0;snap.total=tx_data.size();Note("Onaylanan fotograf gonderiliyor...");
+    }else{ResetSession();Note("Photon fotograf teklifi gonderilemedi.");}
+    approved_id=0;approved_actor=0;approved_files.clear();approval_deadline=0;
     break;
+   }
    default:break;
   }
  }
@@ -548,13 +567,19 @@ class Session {
    }
   }
   if(!c.choose_remote_file.empty()){
-   if(browse_granted&&snap.listing_ready&&std::find(snap.remote_files.begin(),snap.remote_files.end(),c.choose_remote_file)!=snap.remote_files.end())
+   const bool listed=std::find(snap.remote_files.begin(),snap.remote_files.end(),c.choose_remote_file)!=snap.remote_files.end();
+   PHOTO_LOG("GMM photo UI: remote choose grant=%d list_ready=%d listed=%d fetching=%d",browse_granted,snap.listing_ready,listed,browse_fetching);
+   if(browse_granted&&snap.listing_ready&&listed&&!browse_fetching){
     selected_remote_file=c.choose_remote_file;
+    Note("Fotograf secildi. Indirme istegi hazir.");
+   }else Note("Fotograf secilemedi: paylasim sona erdi veya dosya listede yok.");
   }
   if(c.fetch){
+   PHOTO_LOG("GMM photo UI: fetch pressed dev=%d request=%d grant=%d list=%d selected=%d busy=%d peer=%d",
+             chat_bot_bridge::Read().developer_unlocked,!!browse_id,browse_granted,snap.listing_ready,!selected_remote_file.empty(),browse_fetching,IsPeer(browse_actor));
    if(!chat_bot_bridge::Read().developer_unlocked)Note("Gelistirici sifresi olmadan fotograf alinamaz.");
-   else if(!browse_id||!browse_granted||!snap.listing_ready||selected_remote_file.empty()||browse_fetching)
-    Note("Once oyuncudan liste izni al ve fotograflardan birini sec.");
+   else if(!browse_id||!browse_granted||!snap.listing_ready||selected_remote_file.empty()||browse_fetching||!IsPeer(browse_actor))
+    Note("Fotograf alinamadi: paylasim iznini ve dosya secimini kontrol et.");
    else if(SendEvent(browse_actor,browse::Encode(browse::Kind::Fetch,browse_id,browse_actor,selected_remote_file))){
     browse_fetching=true;snap.fetching=true;snap.browsing=true;browse_deadline=now+120;
     Note("Secilen fotograf karsi cihazdan istendi...");
