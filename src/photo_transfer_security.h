@@ -86,8 +86,9 @@ struct Offer {uint64_t id=0;int sender=0,recipient=0;size_t total=0;size_t chunk
 class Reassembler {
     Offer offer_{};std::vector<Bytes> parts_;std::vector<bool> arrived_;size_t have_=0,bytes_=0;bool active_=false;
 public:
-    bool Begin(const Offer& info,int local_actor,const Gate& gate){Cancel();if(!gate.Receiving()||local_actor<=0||info.recipient!=local_actor||!info.id||info.sender<=0||info.recipient<=0||info.total<8||info.total>kMaxImageBytes||info.chunks!=(info.total+kChunkBytes-1)/kChunkBytes||info.chunks>kMaxChunks)return false;
+    bool BeginTrusted(const Offer& info,int local_actor,bool receiver_approved){Cancel();if(!receiver_approved||local_actor<=0||info.recipient!=local_actor||!info.id||info.sender<=0||info.recipient<=0||info.total<8||info.total>kMaxImageBytes||info.chunks!=(info.total+kChunkBytes-1)/kChunkBytes||info.chunks>kMaxChunks)return false;
         offer_=info;parts_.resize(info.chunks);arrived_.assign(info.chunks,false);active_=true;return true;}
+    bool Begin(const Offer& info,int local_actor,const Gate& gate){return BeginTrusted(info,local_actor,gate.Receiving());}
     bool Push(uint64_t id,int attested_sender,size_t index,const Bytes& part){if(!active_||id!=offer_.id||attested_sender!=offer_.sender||index>=offer_.chunks||part.empty()||part.size()>kChunkBytes)return false;
         const size_t expected=index+1==offer_.chunks?offer_.total-index*kChunkBytes:kChunkBytes;
         if(part.size()!=expected||arrived_[index])return false;

@@ -11,6 +11,7 @@
 #include "keyboard_bridge.h"
 #include "photo_transfer_security.h"
 #include "photo_transfer_bridge.h"
+#include "photo_transport_bridge.h"
 #include "text_buffer.h"
 #include <android/log.h>
 #include <algorithm>
@@ -71,7 +72,7 @@ class Controller {
     double delegate_since = 0;
     Edit editing = Edit::None;
     photo_transfer_security::Gate photo_gate;
-    std::string photo_status=u8"Fotoğraf transferi ön hazırlığı; Photon aktarım kanalı henüz bağlı değil.";
+    std::string photo_status=u8"Alıcı şifresini açıp dosya alma modunu etkinleştir.";
     android_text_input::Session text_input{api};bool native_input=false;
     std::string issue, own_name, request_sender, reminder_name;
     chat_bot_core::NameReminder reminder;
@@ -536,7 +537,7 @@ class Controller {
         }
         if(photo_command.lock){photo_gate.Lock();photo_status=u8"Fotoğraf alma kilitlendi.";}
         if(photo_command.toggle_receive){
-            if(photo_gate.SetReceiving(!photo_gate.Receiving()))photo_status=photo_gate.Receiving()?u8"Yerel alma izni AÇIK. Ağ kanalı eklenene kadar transfer yapılmaz.":u8"Yerel alma izni kapalı.";
+            if(photo_gate.SetReceiving(!photo_gate.Receiving()))photo_status=photo_gate.Receiving()?u8"Fotoğraf alma modu AÇIK; gelen teklifler ayrıca onaylanacak.":u8"Fotoğraf alma modu kapalı.";
             else photo_status=u8"Alma modundan önce alıcı şifresini doğrula.";
         }
         if(c.voice_fx)QueueStatus(c.voice_fx_on?chat_bot_fx::Event::Start:chat_bot_fx::Event::Stop,engine.Model(),c.voice_fx_on?1:0);
@@ -548,7 +549,7 @@ class Controller {
         snap.enabled = enabled;snap.cool=cool;snap.delegate_name=delegate_name; snap.selected = selected; snap.all = all; snap.strict = strict; snap.message_filter=message_filter; snap.words = words; snap.mode = mode; snap.has_key = !key.empty(); snap.busy = engine.Busy();
         snap.model = engine.Model(); snap.persona = chat_bot_core::PrefixScalars(custom, 80); snap.chat_ready = true;
         photo_transfer_bridge::Snapshot p;
-        p.configured=photo_gate.Configured();p.unlocked=photo_gate.Unlocked();p.receiving=photo_gate.Receiving();p.attempts_left=photo_gate.AttemptsRemaining();p.status=photo_status;
+        p.configured=photo_gate.Configured();p.unlocked=photo_gate.Unlocked();p.receiving=photo_gate.Receiving();p.transport_ready=photo_transport_bridge::Read().ready;p.attempts_left=photo_gate.AttemptsRemaining();p.status=photo_status;
         photo_transfer_bridge::Publish(std::move(p));
         chat_bot_bridge::Publish(snap);
     }

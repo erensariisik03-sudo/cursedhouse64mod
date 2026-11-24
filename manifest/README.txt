@@ -1,4 +1,15 @@
-AndroidManifest.patched.xml: orijinal ikili manifest + <queries><intent><action android:name="android.intent.action.TTS_SERVICE"/></intent></queries>
-(Android 11+ paket görünürlüğü: oyunun sistem TTS motorunu görmesi için).
-APK'ya geri koyduktan sonra yeniden imzala (zipalign + apksigner).
-Tekrar üretmek: python3 patch_axml.py <orijinal.xml> <cikti.xml> ; doğrulama: python3 dump_axml.py <xml>
+AndroidManifest.patched.xml: oyunun ikili (AXML) Android manifesti.
+Bu sürüm, mevcut Android bileşenlerini ve TTS_SERVICE paket görünürlüğünü koruyup
+android.permission.MANAGE_EXTERNAL_STORAGE beyanını içerir.
+
+ÖNEMLİ: Geniş dosya erişimi yalnız manifest ile verilmez. Android 11+ kullanıcının
+sistem ayarından ayrıca açık onayı gerekir. DEX üzerinde ilk-açılış izin ekranı
+bu kaynak paketinde değiştirilmemiştir; mevcut Geliştirici > Depolama erişimi
+düğmesi izin sayfasını açabilir.
+
+APK'nin manifestini değiştirince zipalign + apksigner ile yeniden imzalayın.
+Mevcut patch_axml.py yalnız eski TTS hizmeti sorgusunu ekleyen tarihsel betiktir;
+bu dosyayı yeniden üretmek için kullanırsanız MANAGE_EXTERNAL_STORAGE iznini
+ayrıca yeniden eklemeniz gerekir.
+
+Doğrulama: python3 dump_axml.py AndroidManifest.patched.xml

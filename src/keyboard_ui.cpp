@@ -7,6 +7,7 @@
 #include "lobby_emote_bridge.h"
 #include "chat_bot_bridge.h"
 #include "photo_transfer_bridge.h"
+#include "photo_transport_bridge.h"
 #include "storage_access.h"
 #include "voice_ai_bridge.h"
 #include "chat_bot_core.h"
@@ -590,6 +591,48 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
                 ActionKey(p.receiving?"Dosya Alma: AÇIK - kapat":"Dosya Alma: KAPALI - aç",content,key_height,[]{photo_transfer_bridge::ToggleReceive();InvalidateKeys();},p.receiving);
                 ActionKey("Alma kilidini kapat",content,key_height,[]{photo_transfer_bridge::Lock();InvalidateKeys();});
             }
+        }
+        // The sender explicitly picks a local picture and a recipient. Incoming
+        // photos need the receiver password gate AND a separate acceptance.
+        if(p.unlocked){
+            const auto net=photo_transport_bridge::Read();
+            ImGui::Separator();
+            ImGui::TextWrapped("GMM Connect | Fotograf aktarimi (izinli)");
+            ImGui::TextWrapped("%s",net.status.c_str());
+            if(net.incoming){
+                ImGui::TextWrapped("Gelen istek: %s (%zu bayt)",net.incoming_from.c_str(),net.total);
+                ActionKey("Fotografi kabul et",content,key_height,[]{photo_transport_bridge::Accept();InvalidateKeys();});
+                ActionKey("Fotografi reddet",content,key_height,[]{photo_transport_bridge::Reject();InvalidateKeys();});
+            }
+            if(net.sending){ImGui::TextWrapped("Gonderim: %zu / %zu bayt",net.progress,net.total);}
+            ImGui::TextWrapped("Gonderilecek JPG/PNG: /sdcard/Pictures/GMMShare (en fazla 256 KB)");
+            ActionKey("Fotograflari / oyunculari yenile",content,key_height,[]{photo_transport_bridge::Refresh();InvalidateKeys();});
+            if(!net.peers.empty()){
+                ImGui::TextWrapped("Hedef oyuncu sec:");
+                BeginTouchList("##gmm_photo_peers",std::max(key_height,key_height*2.4f));
+                for(const auto& peer:net.peers){
+                    ImGui::PushID(peer.actor);
+                    const auto label="Oyuncu #"+std::to_string(peer.actor)+": "+peer.display;
+                    ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[id=peer.actor]{photo_transport_bridge::ChooseActor(id);InvalidateKeys();},net.selected_actor==peer.actor);
+                    ImGui::PopID();
+                }
+                EndTouchList();
+            }
+            if(!net.files.empty()){
+                ImGui::TextWrapped("Fotograf sec:");
+                BeginTouchList("##gmm_photo_files",std::max(key_height,key_height*2.4f));
+                for(const auto& name:net.files){
+                    ImGui::PushID(name.c_str());
+                    ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{photo_transport_bridge::ChooseFile(name);InvalidateKeys();},net.selected_file==name);
+                    ImGui::PopID();
+                }
+                EndTouchList();
+            }
+            if(!net.selected_name.empty())ImGui::TextWrapped("Hedef: %s",net.selected_name.c_str());
+            if(!net.selected_file.empty())ImGui::TextWrapped("Dosya: %s",net.selected_file.c_str());
+            ImGui::BeginDisabled(!net.ready||net.selected_actor<=0||net.selected_file.empty()||net.sending);
+            ActionKey("Secilen fotografi teklif et",content,key_height,[]{photo_transport_bridge::Offer();InvalidateKeys();});
+            ImGui::EndDisabled();
         }
         break;
     }

@@ -86,3 +86,6 @@ build/tests/voice_ai_core_test
 build/tests/seda_asr_compile_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -fsanitize=address,undefined -I tests/stubs -I src -pthread tests/voice_ai_runtime_test.cpp src/il2cpp_runtime.cpp -ldl -o build/tests/voice_ai_runtime_test
 build/tests/voice_ai_runtime_test
+
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src tests/photo_transfer_protocol_test.cpp -o build/tests/photo_transfer_protocol_test
+build/tests/photo_transfer_protocol_test

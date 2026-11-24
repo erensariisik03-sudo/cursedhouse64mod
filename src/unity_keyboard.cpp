@@ -15,6 +15,7 @@
 #include "chat_bot_http.h"
 #include "seda_assets.h"
 #include "storage_access.h"
+#include "photo_transport.h"
 #include "chat_shortcut.h"
 #include "chat_send_gate.h"
 #include "native_shortcuts.h"
@@ -431,6 +432,7 @@ void Update(Object* self, const Method* method) {
     // This does not globally filter arbitrary gameplay InputAction listeners.
     if (!captured) g_update(self, method);
     if(!g_editing.load()){chat_bot::Pump(g_api);auto_join::Pump(g_api);}
+    photo_transport::Pump(g_api,loading);
 }
 EGLBoolean SwapBuffers(EGLDisplay display, EGLSurface surface) {
     if (eglGetCurrentContext() != EGL_NO_CONTEXT && eglGetCurrentSurface(EGL_DRAW) == surface) {
@@ -534,6 +536,7 @@ void InstallFromUnityFrame() {
     if (ready) auto_join::Install(g_api); // dolu odaya otomatik katılma (JoinRoom adını ve 'Game full' hatasını izler)
     if (ready) ad_block::Install(g_api); // banner/geçiş reklamı engeli (ödüllü reklamlara dokunmaz)
     if (ready) gameplay::Install(g_api);
+    if (ready) photo_transport::Install(g_api);
     g_ready.store(ready, std::memory_order_release);
     LOGI("v19 Integration %s; native keyboard active; shortcut strip uses GLES and Unity touch input", ready ? "ready" : "disabled");
 }
