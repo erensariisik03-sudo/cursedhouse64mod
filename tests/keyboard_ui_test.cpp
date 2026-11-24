@@ -1,4 +1,5 @@
 #include "chat_bot_bridge.h"
+#include "photo_transport_bridge.h"
 #include "voice_ai_bridge.h"
 #include "keyboard_ui.h"
 #include "keyboard_catalog.h"
@@ -208,6 +209,35 @@ int main() {
    Direct(u8"< Genel AI menüsü");Frame();Frame();
    {std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired={};voice_ai_bridge::cancel=false;voice_ai_bridge::texts.clear();}
   }
+  { // Photo requests work from the public GMM Connect page, no developer unlock.
+    photo_transport_bridge::Snapshot net;net.ready=true;net.in_room=true;net.local_actor=7;
+    net.peers.push_back({42,"Test player"});photo_transport_bridge::Publish(net);
+    Frame();Frame();Direct("GMM Connect");Frame();Frame();
+    assert(items.count("#42 Test player"));
+    Direct("#42 Test player");auto action=photo_transport_bridge::Take();assert(action.choose_actor==42);
+    net.selected_actor=42;net.selected_name="Test player";photo_transport_bridge::Publish(net);Frame();Frame();
+    Direct("Hedef oyuncudan fotograflari iste");action=photo_transport_bridge::Take();assert(action.request_browse);
+    net.browsing=true;photo_transport_bridge::Publish(net);Frame();Frame();
+    Direct("Fotograf listesi istegini iptal et");action=photo_transport_bridge::Take();assert(action.cancel_browse);
+    net.listing_ready=true;net.remote_files={"photo.png"};photo_transport_bridge::Publish(net);Frame();Frame();
+    Direct("photo.png");action=photo_transport_bridge::Take();assert(action.choose_remote_file=="photo.png");
+    net.selected_remote_file="photo.png";photo_transport_bridge::Publish(net);Frame();Frame();
+    Direct("Secilen fotografi al");action=photo_transport_bridge::Take();assert(action.fetch);
+    photo_transport_bridge::Publish({});Frame();Frame();Direct(u8"< Genel AI menüsü");Frame();Frame();
+  }
+  { // Regression: developer page must not pretend to browse the remote gallery.
+    auto bot=chat_bot_bridge::Read();
+    bot.developer_unlocked=true;
+    chat_bot_bridge::Publish(bot);
+    Frame();Frame();Direct("Geliştirici");Frame();Frame();
+    assert(Reveal("GMM Connect'e git"));
+    assert(!items.count("Secilen fotografi teklif et"));
+    Direct("GMM Connect'e git");Frame();Frame();
+    assert(Reveal("Hedef oyuncudan fotograflari iste"));
+    Direct(u8"< Genel AI menüsü");Frame();Frame();
+    bot.developer_unlocked=false;
+    chat_bot_bridge::Publish(bot);
+  }
   // Oyun paneli: bölüm listesi -> tek bölüm -> geriyle tam liste.
   Direct("Oyun");Frame();Frame();
   for(auto label:{"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Karakter hızı"})assert(items.count(label));
@@ -317,6 +347,19 @@ int main() {
     assert(items.count("Vazgeç")&&!items.count("Otomatik bağlan (oda boşalınca)"));
     Direct("Vazgeç");assert(auto_join_bridge::Take().cancel);
     auto_join_bridge::Publish({});Frame();Frame();assert(!items.count("Vazgeç"));
+  }
+  { // Incoming photo permission is actionable even with developer menu locked.
+    photo_transport_bridge::Snapshot invite;
+    invite.ready=true;invite.share_request=true;invite.share_request_from="Test player";
+    photo_transport_bridge::Publish(invite);Frame();Frame();
+    assert(items.count("Kabul et")&&items.count("Reddet"));
+    {const auto hit=items.at("Kabul et").GetCenter();assert(keyboard_ui::TouchDown(hit.x,hit.y));keyboard_ui::TouchUp();}
+    assert(photo_transport_bridge::Take().allow_browse);
+    photo_transport_bridge::Publish({});Frame();Frame();
+    invite.share_request=true;photo_transport_bridge::Publish(invite);Frame();Frame();
+    {const auto hit=items.at("Reddet").GetCenter();assert(keyboard_ui::TouchDown(hit.x,hit.y));keyboard_ui::TouchUp();}
+    assert(photo_transport_bridge::Take().deny_browse);
+    photo_transport_bridge::Publish({});Frame();Frame();
   }
   // Hybrid mode renders only shortcuts; device text stays authoritative and
   // buttons queue operations, never the stale copy displayed by a previous frame.

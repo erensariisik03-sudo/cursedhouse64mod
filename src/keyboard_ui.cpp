@@ -569,71 +569,78 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
     if(g_bot_page<0){
         const float menu_height=std::max(19.f,key_height*.70f);
         ActionKey(s.cool?"Cool Modu: AÇIK":"Cool Modu: KAPALI",content,menu_height,[]{chat_bot_bridge::ToggleCool();InvalidateKeys();},s.cool);
-        const char* labels[]={"API Anahtarı","Metin AI","Sesli AI","Kişilik","Oyuncu mesajı","Geçmiş","Geliştirici"};
-        const int pages[]={3,0,1,2,4,5,9};
-        for(int i=0;i<7;++i){if(i%2)ImGui::SameLine();ImGui::PushID(i+500);
+        const char* labels[]={"API Anahtarı","Metin AI","Sesli AI","Kişilik","Oyuncu mesajı","Geçmiş","Geliştirici","GMM Connect"};
+        const int pages[]={3,0,1,2,4,5,9,10};
+        for(int i=0;i<8;++i){if(i%2)ImGui::SameLine();ImGui::PushID(i+500);
             ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
         ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
     ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":u8"< Genel AI menüsü",content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:-1;InvalidateKeys();});
     switch(g_bot_page){
     case 9:{
-        const auto p=photo_transfer_bridge::Read();
-        ImGui::TextWrapped("Geliştirici - dosya aktarımı");
-        ActionKey(storage_access::Granted()?"Depolama erişimi: AÇIK":"Depolama erişimi: KAPALI",content,key_height,[]{storage_access::OpenSettings();InvalidateKeys();},storage_access::Granted());
-        if(!p.configured){
-            ActionKey("Alıcı şifresi oluştur",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::PhotoCreate);InvalidateKeys();});
-        }else{
-            ImGui::TextWrapped("Şifre: kayıtlı | Kalan deneme: %d",p.attempts_left);
-            if(!p.unlocked){ImGui::BeginDisabled(p.attempts_left<=0);
-                ActionKey("Şifreyi gir / kilidi aç",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::PhotoUnlock);InvalidateKeys();});ImGui::EndDisabled();}
-            else{
-                ActionKey(p.receiving?"Dosya Alma: AÇIK - kapat":"Dosya Alma: KAPALI - aç",content,key_height,[]{photo_transfer_bridge::ToggleReceive();InvalidateKeys();},p.receiving);
-                ActionKey("Alma kilidini kapat",content,key_height,[]{photo_transfer_bridge::Lock();InvalidateKeys();});
-            }
-        }
-        // The sender explicitly picks a local picture and a recipient. Incoming
-        // photos need the receiver password gate AND a separate acceptance.
-        if(p.unlocked){
-            const auto net=photo_transport_bridge::Read();
-            ImGui::Separator();
-            ImGui::TextWrapped("GMM Connect | Fotograf aktarimi (izinli)");
-            ImGui::TextWrapped("%s",net.status.c_str());
-            if(net.incoming){
-                ImGui::TextWrapped("Gelen istek: %s (%zu bayt)",net.incoming_from.c_str(),net.total);
-                ActionKey("Fotografi kabul et",content,key_height,[]{photo_transport_bridge::Accept();InvalidateKeys();});
-                ActionKey("Fotografi reddet",content,key_height,[]{photo_transport_bridge::Reject();InvalidateKeys();});
-            }
-            if(net.sending){ImGui::TextWrapped("Gonderim: %zu / %zu bayt",net.progress,net.total);}
-            ImGui::TextWrapped("Gonderilecek JPG/PNG: /sdcard/Pictures/GMMShare (en fazla 256 KB)");
-            ActionKey("Fotograflari / oyunculari yenile",content,key_height,[]{photo_transport_bridge::Refresh();InvalidateKeys();});
-            if(!net.peers.empty()){
-                ImGui::TextWrapped("Hedef oyuncu sec:");
-                BeginTouchList("##gmm_photo_peers",std::max(key_height,key_height*2.4f));
-                for(const auto& peer:net.peers){
-                    ImGui::PushID(peer.actor);
-                    const auto label="Oyuncu #"+std::to_string(peer.actor)+": "+peer.display;
-                    ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[id=peer.actor]{photo_transport_bridge::ChooseActor(id);InvalidateKeys();},net.selected_actor==peer.actor);
-                    ImGui::PopID();
-                }
-                EndTouchList();
-            }
-            if(!net.files.empty()){
-                ImGui::TextWrapped("Fotograf sec:");
-                BeginTouchList("##gmm_photo_files",std::max(key_height,key_height*2.4f));
-                for(const auto& name:net.files){
-                    ImGui::PushID(name.c_str());
-                    ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{photo_transport_bridge::ChooseFile(name);InvalidateKeys();},net.selected_file==name);
-                    ImGui::PopID();
-                }
-                EndTouchList();
-            }
-            if(!net.selected_name.empty())ImGui::TextWrapped("Hedef: %s",net.selected_name.c_str());
-            if(!net.selected_file.empty())ImGui::TextWrapped("Dosya: %s",net.selected_file.c_str());
-            ImGui::BeginDisabled(!net.ready||net.selected_actor<=0||net.selected_file.empty()||net.sending);
-            ActionKey("Secilen fotografi teklif et",content,key_height,[]{photo_transport_bridge::Offer();InvalidateKeys();});
+        if(!s.developer_unlocked){
+            ImGui::TextWrapped("Geliştirici erişimi kilitli.");
+            ImGui::TextWrapped("Kalan deneme: %d", s.developer_attempts_left);
+            ImGui::BeginDisabled(s.developer_attempts_left<=0);
+            ActionKey("Şifreyi gir",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::DeveloperUnlock);InvalidateKeys();});
             ImGui::EndDisabled();
+            break;
         }
+        ImGui::TextWrapped("Geliştirici");
+        ActionKey("Geliştirici kilidini kapat",content,key_height,[]{chat_bot_bridge::LockDeveloper();InvalidateKeys();});
+        // Keep old local sending controls out of the developer screen.
+        // They looked like a remote browser, but enumerated this device only.
+        ImGui::Separator();
+        ImGui::TextWrapped("Diger oyuncunun paylasima actigi fotograflar icin GMM Connect'i ac.");
+        ActionKey("GMM Connect'e git",content,key_height,[]{g_bot_page=10;InvalidateKeys();});
+        break;
+    }
+    case 10:{
+        const auto net=photo_transport_bridge::Read();
+        ImGui::TextWrapped("GMM Connect | Karsi cihazdan fotograf iste");
+        ImGui::TextWrapped("%s",net.status.c_str());
+        ImGui::TextWrapped("Tani: hook=%d | oda=%d | aktor=%d | oyuncu=%d | secilen=%d | istek=%d",
+            net.ready,net.in_room,net.local_actor,(int)net.peers.size(),net.selected_actor,net.browsing);
+        if(!net.ready)ImGui::TextWrapped("Photon dosya kanali acilamadi. 'adb logcat -d -s multiplayermod:I' ile GMM photo resolve kayitlarini kontrol et.");
+        else if(!net.in_room)ImGui::TextWrapped("Photon kanali hazir ama henuz oda yok. Ayni odaya girip tekrar dene.");
+        else if(net.peers.empty())ImGui::TextWrapped("Oda var, fakat Photon PlayerListOthers bos. Iki cihaz ayni Photon odasinda mi?");
+        ActionKey("Oyuncu listesini yenile",content,key_height,[]{photo_transport_bridge::Refresh();InvalidateKeys();});
+        if(net.peers.empty())ImGui::TextWrapped("Ayni odada baska oyuncu bulunamadi. Oyunculari yenile ve baglanti durumunu kontrol et.");
+        else {
+            ImGui::TextWrapped("Hedef oyuncu sec (listeden birine dokun):");
+            BeginTouchList("##gmm_photo_peers_public",std::max(key_height,key_height*2.5f));
+            for(const auto& peer:net.peers){
+                ImGui::PushID(peer.actor);
+                const std::string label="#"+std::to_string(peer.actor)+" "+peer.display;
+                ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[id=peer.actor]{photo_transport_bridge::ChooseActor(id);InvalidateKeys();},net.selected_actor==peer.actor);
+                ImGui::PopID();
+            }
+            EndTouchList();
+        }
+        if(net.selected_actor>0)ImGui::TextWrapped("Secilen hedef: %s",net.selected_name.c_str());
+        else ImGui::TextWrapped("Once yukaridaki bir oyuncunun SATIRINA dokun. Baslik tiklanabilir degil.");
+        if(net.browsing)ImGui::TextWrapped("Onceki liste istegi devam ediyor. Istege yanit veya zaman asimi bekleniyor.");
+        ImGui::BeginDisabled(!net.ready||!net.in_room||net.selected_actor<=0||net.browsing);
+        ActionKey("Hedef oyuncudan fotograflari iste",content,key_height,[]{photo_transport_bridge::RequestBrowse();InvalidateKeys();});
+        ImGui::EndDisabled();
+        if(net.browsing){
+            if(!net.fetching)ActionKey("Fotograf listesi istegini iptal et",content,key_height,[]{photo_transport_bridge::CancelBrowse();InvalidateKeys();});
+            ImGui::TextWrapped(net.listing_ready?"Oyuncunun izin verdigi fotograflar:":"Karsi oyuncunun onayi / listesi bekleniyor...");
+            if(net.listing_ready){
+                BeginTouchList("##gmm_remote_photo_files",std::max(key_height,key_height*3.f));
+                for(const auto& name:net.remote_files){
+                    ImGui::PushID(name.c_str());
+                    ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{photo_transport_bridge::ChooseRemoteFile(name);InvalidateKeys();},net.selected_remote_file==name);
+                    ImGui::PopID();
+                }
+                if(net.remote_files.empty())ImGui::TextWrapped("Paylasilan klasorde JPG/PNG yok.");
+                EndTouchList();
+                ImGui::BeginDisabled(net.selected_remote_file.empty()||net.fetching);
+                ActionKey("Secilen fotografi al",content,key_height,[]{photo_transport_bridge::Fetch();InvalidateKeys();});
+                ImGui::EndDisabled();
+            }
+        }
+        ImGui::TextWrapped("Karsi cihaz kabul etmeden dosya adi gelmez. Yalnizca karsi cihazdaki Pictures/GMMShare gosterilir.");
         break;
     }
     case 0:{
@@ -1023,6 +1030,25 @@ void DrawAutoJoin(const ImGuiIO& io){
     ImGui::End();
 }
 // Yuvarlak, yarı saydam menü düğmesi + AI, Kıyafet ve bölümlemeli Oyun paneli.
+void DrawSharePrompt(const ImGuiIO& io,float scale,float key_height){
+    const auto share=photo_transport_bridge::Read();
+    if(share.share_request){
+        const float boxw=std::min(io.DisplaySize.x*.90f,420.f*scale);
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*.5f,io.DisplaySize.y*.5f),ImGuiCond_Always,ImVec2(.5f,.5f));
+        ImGui::SetNextWindowSize(ImVec2(boxw,0),ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(.95f);
+        if(ImGui::Begin("##gmm_photo_share_request",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoMove)){
+            ImGui::TextWrapped("GMM Connect | Paylasim istegi");
+            ImGui::TextWrapped("%s fotograf listenizi gormek istiyor.",share.share_request_from.c_str());
+            ImGui::TextWrapped("Sadece Pictures/GMMShare klasorundeki JPG/PNG fotograflar paylasilir. Bu cihazdan tek dosya isteyebilir.");
+            const float actionw=(ImGui::GetContentRegionAvail().x-ImGui::GetStyle().ItemSpacing.x)/2.f;
+            ImGui::PushID("share_approve");ActionKey("Kabul et",actionw,key_height,[]{photo_transport_bridge::AllowBrowse();InvalidateKeys();});ImGui::PopID();ImGui::SameLine();
+            ImGui::PushID("share_deny");ActionKey("Reddet",actionw,key_height,[]{photo_transport_bridge::DenyBrowse();InvalidateKeys();});ImGui::PopID();
+            RecordWindow();
+        }
+        ImGui::End();
+    }
+}
 void DrawHub(const ImGuiIO& io){
     const float scale=std::clamp(std::min(io.DisplaySize.x,io.DisplaySize.y)/500.0f,.7f,1.6f);
     const float key_height=43*scale,width=std::min(io.DisplaySize.x*.50f,324*scale);
@@ -1061,7 +1087,7 @@ void DrawHub(const ImGuiIO& io){
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(3);
-    if(!g_hub_open)return;
+    if(!g_hub_open){DrawSharePrompt(io,scale,key_height);return;}
     const float panel_y=std::min(pos.y+d+6*scale,io.DisplaySize.y*.5f);
     const float max_height=std::max(80.0f*scale,io.DisplaySize.y-panel_y-4*scale);
     const float panel_x=std::clamp(pos.x,0.0f,std::max(0.0f,io.DisplaySize.x-width));
@@ -1097,6 +1123,7 @@ void DrawHub(const ImGuiIO& io){
         RecordWindow();
     }
     ImGui::End();
+    DrawSharePrompt(io,scale,key_height);
 }
 void DrawShowButton(const ImGuiIO& io) {
     const float margin=ImGui::GetStyle().WindowPadding.x;
