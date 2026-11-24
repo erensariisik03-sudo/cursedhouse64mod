@@ -564,18 +564,20 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
     const bool pending=!v.selection_text.empty()&&v.settings.manual_keywords;
     if(pending&&!had_pending&&g_bot_page==1)g_bot_page=6;
     had_pending=pending;
+    // A stale open page must not survive a developer-session lock.
+    if(g_bot_page==10&&!s.developer_unlocked)g_bot_page=9;
     static int previous=-2;if(previous!=g_bot_page){ImGui::SetScrollY(0);previous=g_bot_page;}
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
     if(g_bot_page<0){
         const float menu_height=std::max(19.f,key_height*.70f);
         ActionKey(s.cool?"Cool Modu: AÇIK":"Cool Modu: KAPALI",content,menu_height,[]{chat_bot_bridge::ToggleCool();InvalidateKeys();},s.cool);
-        const char* labels[]={"API Anahtarı","Metin AI","Sesli AI","Kişilik","Oyuncu mesajı","Geçmiş","Geliştirici","GMM Connect"};
-        const int pages[]={3,0,1,2,4,5,9,10};
-        for(int i=0;i<8;++i){if(i%2)ImGui::SameLine();ImGui::PushID(i+500);
+        const char* labels[]={"API Anahtarı","Metin AI","Sesli AI","Kişilik","Oyuncu mesajı","Geçmiş","Geliştirici"};
+        const int pages[]={3,0,1,2,4,5,9};
+        for(int i=0;i<7;++i){if(i%2)ImGui::SameLine();ImGui::PushID(i+500);
             ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
         ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
-    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":u8"< Genel AI menüsü",content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:-1;InvalidateKeys();});
+    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":(g_bot_page==10?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:(g_bot_page==10?9:-1);InvalidateKeys();});
     switch(g_bot_page){
     case 9:{
         if(!s.developer_unlocked){
@@ -588,14 +590,16 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         }
         ImGui::TextWrapped("Geliştirici");
         ActionKey("Geliştirici kilidini kapat",content,key_height,[]{chat_bot_bridge::LockDeveloper();InvalidateKeys();});
-        // Keep old local sending controls out of the developer screen.
-        // They looked like a remote browser, but enumerated this device only.
+        // Photo requests and receiving belong behind developer authentication.
+        // The remote sender can still accept a single explicit share request
+        // from the top-level consent popup without entering the password.
         ImGui::Separator();
         ImGui::TextWrapped("Diger oyuncunun paylasima actigi fotograflar icin GMM Connect'i ac.");
         ActionKey("GMM Connect'e git",content,key_height,[]{g_bot_page=10;InvalidateKeys();});
         break;
     }
     case 10:{
+        if(!s.developer_unlocked){g_bot_page=9;break;}
         const auto net=photo_transport_bridge::Read();
         ImGui::TextWrapped("GMM Connect | Karsi cihazdan fotograf iste");
         ImGui::TextWrapped("%s",net.status.c_str());
@@ -608,7 +612,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         if(net.peers.empty())ImGui::TextWrapped("Ayni odada baska oyuncu bulunamadi. Oyunculari yenile ve baglanti durumunu kontrol et.");
         else {
             ImGui::TextWrapped("Hedef oyuncu sec (listeden birine dokun):");
-            BeginTouchList("##gmm_photo_peers_public",std::max(key_height,key_height*2.5f));
+            BeginTouchList("##gmm_photo_peers_developer",std::max(key_height,key_height*2.5f));
             for(const auto& peer:net.peers){
                 ImGui::PushID(peer.actor);
                 const std::string label="#"+std::to_string(peer.actor)+" "+peer.display;

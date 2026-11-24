@@ -1,6 +1,7 @@
 #include "photo_transport.h"
 #ifdef __ANDROID__
 #include "photo_transfer_bridge.h"
+#include "chat_bot_bridge.h"
 #include "storage_access.h"
 #include "photo_transport_bridge.h"
 #include "photo_transfer_protocol.h"
@@ -100,7 +101,7 @@ static double Now() {return std::chrono::duration<double>(std::chrono::steady_cl
 static const std::string kShareDir="/sdcard/Pictures/GMMShare";
 class Session {
  const Api& a;
- const Method *raise{},*current_room{},*local_player{},*players{},*actor_get{},*nick_get{},*array_length{},*array_item{};
+ const Method *raise{},*client_get{},*op_raise{},*current_room{},*local_player{},*players{},*actor_get{},*nick_get{},*array_length{},*array_item{};
  Class *opt_class{},*send_class{},*int_class{};
  Field *target_actors{},*reliable{},*encrypted{};
  const Method* send_reliable_get{};
@@ -151,6 +152,10 @@ class Session {
    PHOTO_LOG("GMM photo resolve: missing required IL2CPP native API");return false;
   }
   raise=M("Photon.Pun","PhotonNetwork","RaiseEvent",4);
+  // Some game builds wrap/override PUN's static RaiseEvent. The documented
+  // Realtime client has the same explicit four-argument operation.
+  client_get=M("Photon.Pun","PhotonNetwork","get_NetworkingClient");
+  op_raise=M("Photon.Realtime","LoadBalancingClient","OpRaiseEvent",4);
   current_room=M("Photon.Pun","PhotonNetwork","get_CurrentRoom");
   local_player=M("Photon.Pun","PhotonNetwork","get_LocalPlayer");
   players=M("Photon.Pun","PhotonNetwork","get_PlayerListOthers");
@@ -192,6 +197,32 @@ class Session {
   if(!installed)PHOTO_LOG("GMM photo resolve: Photon OnEvent hook installation failed");
   return installed;
  }
+ // Distinguish metadata resolution from an exception thrown inside Photon.
+ // Never log managed exception messages, photo data, or file names.
+ bool InvokeSend(const Method* method,Object* self,void** args,const char* path,bool& invoked){
+  invoked=false;
+  if(!method)return false;
+  Object* exception=nullptr;
+  Root result(a,a.runtime_invoke(method,self,args,&exception));
+  if(exception){
+   auto* klass=a.object_get_class(exception);
+   const char* ns=klass?a.class_get_namespace(klass):"?";
+   const char* name=klass?a.class_get_name(klass):"?";
+   PHOTO_LOG("GMM photo TX exception via=%s class=%s.%s",path,ns?ns:"?",name?name:"?");
+   return false;
+  }
+  invoked=true;
+  if(!result.Get()){
+   PHOTO_LOG("GMM photo TX empty result via=%s",path);return false;
+  }
+  auto* klass=a.object_get_class(result.Get());
+  const char* ns=klass?a.class_get_namespace(klass):nullptr;
+  const char* name=klass?a.class_get_name(klass):nullptr;
+  if(!ns||!name||std::strcmp(ns,"System")||std::strcmp(name,"Boolean")){
+   PHOTO_LOG("GMM photo TX unexpected result via=%s",path);return false;
+  }
+  return *static_cast<bool*>(a.object_unbox(result.Get()));
+ }
  bool SendEvent(int recipient,const std::string& text){
   if(!valid||!IsPeer(recipient)||text.empty()||text.size()>1800){
    PHOTO_LOG("GMM photo send blocked: ready=%d peer=%d target=%d payload_length=%zu",valid,IsPeer(recipient),recipient,text.size());return false;
@@ -207,8 +238,7 @@ class Session {
   Root settings(a,a.object_new(send_class));if(!settings.Get())return false;
   uint32_t align=0;const int n=a.class_value_size(send_class,&align);
   if(n<=0||n>int(max_send_size))return false;
-  // Use Photon SDK's SendReliable value and set Encrypt=true. Photon encryption
-  // is client<->server, NOT end-to-end encryption between the two phones.
+  // SendReliable plus Photon client-server encryption; not end-to-end crypto.
   if(reliable){a.field_static_get_value(reliable,a.object_unbox(settings.Get()));}
   else {Root predefined(a,a.Call(send_reliable_get));if(!predefined.Get())return false;std::memcpy(a.object_unbox(settings.Get()),a.object_unbox(predefined.Get()),n);}
   bool encrypt=true;
@@ -219,11 +249,22 @@ class Session {
   if(!payload.Get())return false;
   const uint8_t event=wire::kEventCode;
   void* args[]={const_cast<uint8_t*>(&event),payload.Get(),option.Get(),a.object_unbox(settings.Get())};
-  bool ok=false;Root sent(a,a.Call(raise,nullptr,args,&ok));
-  const bool success=ok&&sent.Get()&&*static_cast<bool*>(a.object_unbox(sent.Get()));
+  bool invoked=false;
+  bool success=InvokeSend(raise,nullptr,args,"PhotonNetwork.RaiseEvent",invoked);
+  // A failed enqueue or managed exception is safe to retry on the SDK client.
+  // Do not retry after success, otherwise the receiving player gets duplicates.
+  if(!success&&client_get&&op_raise){
+   bool client_ok=false;
+   Root client(a,a.Call(client_get,nullptr,nullptr,&client_ok));
+   if(client_ok&&client.Get()){
+    bool fallback_invoked=false;
+    success=InvokeSend(op_raise,client.Get(),args,"LoadBalancingClient.OpRaiseEvent",fallback_invoked);
+    if(success)PHOTO_LOG("GMM photo TX recovered with Realtime client path");
+   }else PHOTO_LOG("GMM photo TX Realtime client not available");
+  }
   if(text.size()>9 && text[8]!='C')
-    PHOTO_LOG("GMM photo TX: protocol=%c kind=%c target=%d ok=%d",text[6],text[8],recipient,success);
-  if(!success)PHOTO_LOG("GMM photo SendEvent failed: invoke=%d response=%d",ok,!!sent.Get());
+   PHOTO_LOG("GMM photo TX: protocol=%c kind=%c target=%d ok=%d",text[6],text[8],recipient,success);
+  if(!success)PHOTO_LOG("GMM photo SendEvent failed: invoke=%d fallback=%d",invoked,!!op_raise);
   return success;
  }
  void DiscoverRoom(){
@@ -387,7 +428,7 @@ class Session {
   switch(p.kind){
    case wire::Kind::Offer: {
     if(p.recipient!=local_actor||incoming_offer.id||rx.Active())return;
-    const bool requested=browse_id==p.id&&browse_actor==msg.sender&&browse_fetching;
+    const bool requested=chat_bot_bridge::Read().developer_unlocked&&browse_id==p.id&&browse_actor==msg.sender&&browse_fetching;
     if(!requested&&!photo_transfer_bridge::Read().receiving)return;
     if(requested){
       Offer approved{p.id,msg.sender,p.recipient,p.total,(p.total+kChunkBytes-1)/kChunkBytes,p.digest};
@@ -408,13 +449,13 @@ class Session {
     tx_accepted=true;outgoing_deadline=now+90;Note("Karşı cihaz onayladı. Gönderiliyor...");break;
    }
    case wire::Kind::Chunk: {
-    if(!rx.Active()||(!browse_fetching&&!photo_transfer_bridge::Read().receiving)){rx.Cancel();return;}
+    if(!chat_bot_bridge::Read().developer_unlocked||!rx.Active()||(!browse_fetching&&!photo_transfer_bridge::Read().receiving)){rx.Cancel();return;}
     if(rx.Push(p.id,msg.sender,p.index,p.bytes))snap.progress+=p.bytes.size();
     break;
    }
    case wire::Kind::Done: {
     if(!rx.Active()||msg.sender!=requested_sender||p.id!=incoming_offer.id)return;
-    Bytes photo;const bool valid=rx.Finish(photo)&&SaveReceived(photo,p.id);
+    Bytes photo;const bool valid=chat_bot_bridge::Read().developer_unlocked&&rx.Finish(photo)&&SaveReceived(photo,p.id);
     Note(valid?"Fotoğraf alındı: "+last_saved_path:"Fotoğraf doğrulanamadı veya kaydedilemedi");
     incoming_offer={};requested_sender=0;incoming_deadline=0;
     snap.incoming=false;snap.incoming_from.clear();
@@ -468,6 +509,8 @@ class Session {
    Note("Fotoğraf listesi isteği iptal edildi. Yeniden deneyebilirsin.");
   }
   if(c.request_browse){
+   if(!chat_bot_bridge::Read().developer_unlocked){Note("Gelistirici sifresi olmadan dosya listesi istenemez.");}
+   else {
    PHOTO_LOG("GMM photo UI: browse requested room=%d local=%d selected=%d peer=%d active_request=%d",!!room_id,local_actor,pending_actor,IsPeer(pending_actor),!!browse_id);
    if(!IsPeer(pending_actor))Note("Once ayni odadan hedef oyuncu sec.");
    else if(browse_id||outgoing_id||rx.Active())Note("Once onceki istegin bitmesini bekle.");
@@ -479,13 +522,15 @@ class Session {
      Note("Fotograf listesi icin diger oyuncunun onayi bekleniyor...");
     }else Note("Photon istek gonderilemedi. Ag baglantisini kontrol et.");
    }
+   }
   }
   if(!c.choose_remote_file.empty()){
    if(browse_granted&&snap.listing_ready&&std::find(snap.remote_files.begin(),snap.remote_files.end(),c.choose_remote_file)!=snap.remote_files.end())
     selected_remote_file=c.choose_remote_file;
   }
   if(c.fetch){
-   if(!browse_id||!browse_granted||!snap.listing_ready||selected_remote_file.empty()||browse_fetching)
+   if(!chat_bot_bridge::Read().developer_unlocked)Note("Gelistirici sifresi olmadan fotograf alinamaz.");
+   else if(!browse_id||!browse_granted||!snap.listing_ready||selected_remote_file.empty()||browse_fetching)
     Note("Once oyuncudan liste izni al ve fotograflardan birini sec.");
    else if(SendEvent(browse_actor,browse::Encode(browse::Kind::Fetch,browse_id,browse_actor,selected_remote_file))){
     browse_fetching=true;snap.fetching=true;snap.browsing=true;browse_deadline=now+120;
@@ -561,6 +606,16 @@ public:
   std::deque<Message> pending;{std::lock_guard<std::mutex> l(inbox_mutex);pending.swap(inbox);}
   for(const auto& msg:pending)Incoming(msg);
   HandleCommands(bridge::Take());
+  // Locking the developer session immediately revokes requesting/receiving.
+  // Consent to SEND is independent: a locked user can still approve sharing.
+  if(!chat_bot_bridge::Read().developer_unlocked&&browse_id){
+   if(IsPeer(browse_actor))SendEvent(browse_actor,browse::Encode(browse::Kind::Deny,browse_id,browse_actor));
+   browse_id=0;browse_actor=0;browse_deadline=0;
+   browse_granted=browse_fetching=false;snap.browsing=snap.fetching=snap.listing_ready=false;
+   snap.remote_files.clear();selected_remote_file.clear();
+   rx.Cancel();incoming_offer={};requested_sender=0;snap.incoming=false;
+   Note("Gelistirici kilidi kapandi; fotograf alma iptal edildi.");
+  }
   if(!browse_fetching&&!photo_transfer_bridge::Read().receiving&&rx.Active()){rx.Cancel();incoming_offer={};requested_sender=0;snap.incoming=false;Note("Alma modu kapatıldı; transfer durduruldu.");}
   TransferStep();
   snap.selected_actor=pending_actor;snap.selected_file=pending_file;snap.selected_remote_file=selected_remote_file;

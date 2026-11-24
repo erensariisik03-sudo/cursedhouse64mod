@@ -209,10 +209,17 @@ int main() {
    Direct(u8"< Genel AI menüsü");Frame();Frame();
    {std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired={};voice_ai_bridge::cancel=false;voice_ai_bridge::texts.clear();}
   }
-  { // Photo requests work from the public GMM Connect page, no developer unlock.
+  { // GMM Connect is exclusively in the unlocked developer menu.
     photo_transport_bridge::Snapshot net;net.ready=true;net.in_room=true;net.local_actor=7;
     net.peers.push_back({42,"Test player"});photo_transport_bridge::Publish(net);
-    Frame();Frame();Direct("GMM Connect");Frame();Frame();
+    auto bot=chat_bot_bridge::Read();bot.developer_unlocked=false;chat_bot_bridge::Publish(bot);
+    Frame();Frame();assert(!items.count("GMM Connect"));
+    Direct("Geliştirici");Frame();Frame();
+    assert(items.count("Şifreyi gir")&&!items.count("GMM Connect'e git"));
+    bot.developer_unlocked=true;chat_bot_bridge::Publish(bot);Frame();Frame();
+    assert(Reveal("GMM Connect'e git"));
+    assert(!items.count("Secilen fotografi teklif et"));
+    Direct("GMM Connect'e git");Frame();Frame();
     assert(items.count("#42 Test player"));
     Direct("#42 Test player");auto action=photo_transport_bridge::Take();assert(action.choose_actor==42);
     net.selected_actor=42;net.selected_name="Test player";photo_transport_bridge::Publish(net);Frame();Frame();
@@ -223,20 +230,12 @@ int main() {
     Direct("photo.png");action=photo_transport_bridge::Take();assert(action.choose_remote_file=="photo.png");
     net.selected_remote_file="photo.png";photo_transport_bridge::Publish(net);Frame();Frame();
     Direct("Secilen fotografi al");action=photo_transport_bridge::Take();assert(action.fetch);
-    photo_transport_bridge::Publish({});Frame();Frame();Direct(u8"< Genel AI menüsü");Frame();Frame();
-  }
-  { // Regression: developer page must not pretend to browse the remote gallery.
-    auto bot=chat_bot_bridge::Read();
-    bot.developer_unlocked=true;
-    chat_bot_bridge::Publish(bot);
-    Frame();Frame();Direct("Geliştirici");Frame();Frame();
-    assert(Reveal("GMM Connect'e git"));
-    assert(!items.count("Secilen fotografi teklif et"));
-    Direct("GMM Connect'e git");Frame();Frame();
-    assert(Reveal("Hedef oyuncudan fotograflari iste"));
+    // Closing developer authentication must automatically hide the receiver screen.
+    bot.developer_unlocked=false;chat_bot_bridge::Publish(bot);
+    photo_transport_bridge::Publish({});Frame();Frame();
+    assert(items.count("Şifreyi gir")&&!items.count("Hedef oyuncudan fotograflari iste"));
     Direct(u8"< Genel AI menüsü");Frame();Frame();
-    bot.developer_unlocked=false;
-    chat_bot_bridge::Publish(bot);
+    assert(!items.count("GMM Connect"));
   }
   // Oyun paneli: bölüm listesi -> tek bölüm -> geriyle tam liste.
   Direct("Oyun");Frame();Frame();
