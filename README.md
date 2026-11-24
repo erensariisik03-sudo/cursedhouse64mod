@@ -232,3 +232,8 @@ sınırı/hata toparlama, üç düşman türünde hedef kurtarma, kategori durdu
 silah/benzin/düşme regresyonları, kapı engeli/kilit/bekleme kontrolleri, ses araştırması ve client şaka oylaması kapsanır. PowerShell testleri sahte ADB kullanır.
 Bunlar gerçek Android/host cihazındaki sonucu doğrulamaz. Ayrıntılı derleme
 kimliği, sonuçlar ve sınırlar `BUILD-INFO.txt` içindedir.
+
+
+## Fotoğraf aktarımı — hazırlık sürümü
+
+Geliştirici menüsüne şifreli alıcı kilidi ve fotoğraf parçaları bütünlük test çekirdeği eklendi. **İki cihaz arasında gerçek aktarım henüz bağlanmadı.** Ayrıntılar için `FOTO_TRANSFER_PROTOTIP_NOTLARI.md`.

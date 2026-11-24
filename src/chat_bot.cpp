@@ -9,6 +9,8 @@
 #include "chat_bot_engine.h"
 #include "chat_bot_http.h"
 #include "keyboard_bridge.h"
+#include "photo_transfer_security.h"
+#include "photo_transfer_bridge.h"
 #include "text_buffer.h"
 #include <android/log.h>
 #include <algorithm>
@@ -68,6 +70,8 @@ class Controller {
     std::string delegate_name;std::deque<std::pair<std::string,std::string>> delegate_outbox;
     double delegate_since = 0;
     Edit editing = Edit::None;
+    photo_transfer_security::Gate photo_gate;
+    std::string photo_status=u8"Fotoğraf transferi ön hazırlığı; Photon aktarım kanalı henüz bağlı değil.";
     android_text_input::Session text_input{api};bool native_input=false;
     std::string issue, own_name, request_sender, reminder_name;
     chat_bot_core::NameReminder reminder;
@@ -185,6 +189,9 @@ class Controller {
         }
         return {};
     }
+    std::string PhotoGatePath() { const auto config=ConfigPath();if(config.empty())return {};const auto sep=config.rfind('/');return config.substr(0,sep+1)+"gmm_photo_gate.v1"; }
+    void LoadPhotoGate(){const auto path=PhotoGatePath();if(path.empty())return;std::ifstream f(path,std::ios::binary);if(!f)return;std::string encoded;std::getline(f,encoded);if(photo_gate.Load(encoded))photo_status=u8"Alıcı şifresi kayıtlı. Açmak için gir.";}
+    void SavePhotoGate(){const auto path=PhotoGatePath();if(path.empty())return;std::ofstream out(path,std::ios::binary|std::ios::trunc);if(!out)return;out<<photo_gate.Save();out.close();chmod(path.c_str(),0600);}
     void LoadConfig() {
         const std::string path = ConfigPath(); if (path.empty()) return;
         std::ifstream in(path, std::ios::binary);
@@ -461,13 +468,23 @@ class Controller {
     void BeginEdit(Edit e) {
         editing = e;
         const std::string initial = e == Edit::Persona ? custom : e == Edit::Speech ? voice_ai_bridge::SpeechText() : std::string();
-        native_input = text_input.Open(initial, e == Edit::Key); // Android's own keyboard
-        if (!native_input) keyboard_bridge::OpenNative(initial.c_str(), e == Edit::Key); // fallback: ImGui keyboard
-        Status(e == Edit::Key ? u8"AI | API anahtarını yaz, Enter'a bas." : e == Edit::Speech ? u8"AI | Seslendirilecek mesajı yaz, Enter'a bas." : e == Edit::Delegate ? u8"AI | Seçili oyuncu için mesaj yaz, Enter'a bas." : u8"AI | Kişiliği yaz, Enter'a bas.");
+        const bool secret=e==Edit::Key||e==Edit::PhotoCreate||e==Edit::PhotoUnlock;
+        native_input = text_input.Open(initial,secret); // Android's own keyboard
+        if (!native_input) keyboard_bridge::OpenNative(initial.c_str(),secret); // fallback: ImGui keyboard
+        Status(e==Edit::PhotoCreate ? u8"GMM | Alıcı için en az 8 karakterlik şifre oluştur." : e==Edit::PhotoUnlock ? u8"GMM | Alıcı şifreni gir." : e == Edit::Key ? u8"AI | API anahtarını yaz, Enter'a bas." : e == Edit::Speech ? u8"AI | Seslendirilecek mesajı yaz, Enter'a bas." : e == Edit::Delegate ? u8"AI | Seçili oyuncu için mesaj yaz, Enter'a bas." : u8"AI | Kişiliği yaz, Enter'a bas.");
     }
     void FinishEdit(const std::string& raw) {
         const std::string value = chat_bot_core::Trim(chat_bot_core::PrefixScalars(raw, 1024));
-        if (editing == Edit::Key) { key = value; SaveConfig(); Status(key.empty() ? u8"AI | Anahtar silindi." : u8"AI | Anahtar kaydedildi (cihazda kalıcı)."); }
+        if (editing == Edit::PhotoCreate) {
+            if(photo_gate.Configured()){photo_status=u8"Şifre zaten kayıtlı; değişiklik için ayrı doğrulama gerekir.";}
+            else if(photo_gate.Create(value)){SavePhotoGate();photo_status=u8"Alıcı şifresi oluşturuldu; almak için şifreyi tekrar gir.";}
+            else photo_status=u8"Şifre en az 8, en çok 128 karakter olmalı.";
+        }
+        else if (editing == Edit::PhotoUnlock) {
+            if(photo_gate.Unlock(value))photo_status=u8"Şifre doğrulandı; alma modu ayrıca açılmalı.";
+            else photo_status=u8"Şifre yanlış veya deneme hakkı bitti.";
+        }
+        else if (editing == Edit::Key) { key = value; SaveConfig(); Status(key.empty() ? u8"AI | Anahtar silindi." : u8"AI | Anahtar kaydedildi (cihazda kalıcı)."); }
         else if(editing == Edit::Delegate) {
             if(!value.empty()&&!delegate_name.empty()&&std::find(snap.delegate_players.begin(),snap.delegate_players.end(),delegate_name)!=snap.delegate_players.end()){
                 delegate_outbox.emplace_back(delegate_name,chat_bot_core::PrefixScalars(value,200));delegate_since=now_;
@@ -496,7 +513,8 @@ class Controller {
     }
     void Commands() {
         const auto c = chat_bot_bridge::Take();
-        if (!c.Any()) return;
+        const auto photo_command=photo_transfer_bridge::Take();
+        if (!c.Any()&&!photo_command.lock&&!photo_command.toggle_receive) return;
         if (c.toggle_cool){cool=!cool;SaveConfig();if(!cool)ClearStatus();Status(cool?u8"AI | Cool Modu açık.":u8"AI | Cool Modu kapalı; terminal satırları durduruldu.");}
         if(c.select_delegate){delegate_name=c.delegate_name;delegate_outbox.clear();}
         if (c.select) {
@@ -516,6 +534,11 @@ class Controller {
             else if (!all && selected.empty()) Status(u8"AI | Önce kişi seç ya da \"Herkes\"i aç.");
             else { enabled = true; baseline = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Bot açık; yeni mesajlar bekleniyor."); status_model=engine.Model();QueueStatus(chat_bot_fx::Event::Start,status_model); }
         }
+        if(photo_command.lock){photo_gate.Lock();photo_status=u8"Fotoğraf alma kilitlendi.";}
+        if(photo_command.toggle_receive){
+            if(photo_gate.SetReceiving(!photo_gate.Receiving()))photo_status=photo_gate.Receiving()?u8"Yerel alma izni AÇIK. Ağ kanalı eklenene kadar transfer yapılmaz.":u8"Yerel alma izni kapalı.";
+            else photo_status=u8"Alma modundan önce alıcı şifresini doğrula.";
+        }
         if(c.voice_fx)QueueStatus(c.voice_fx_on?chat_bot_fx::Event::Start:chat_bot_fx::Event::Stop,engine.Model(),c.voice_fx_on?1:0);
         if (c.reset_memory) { InvalidateReplies(); history.clear(); Status(u8"AI | Hafıza sıfırlandı."); }
         if (c.refresh) next_players = 0;
@@ -524,6 +547,9 @@ class Controller {
     void Publish() {
         snap.enabled = enabled;snap.cool=cool;snap.delegate_name=delegate_name; snap.selected = selected; snap.all = all; snap.strict = strict; snap.message_filter=message_filter; snap.words = words; snap.mode = mode; snap.has_key = !key.empty(); snap.busy = engine.Busy();
         snap.model = engine.Model(); snap.persona = chat_bot_core::PrefixScalars(custom, 80); snap.chat_ready = true;
+        photo_transfer_bridge::Snapshot p;
+        p.configured=photo_gate.Configured();p.unlocked=photo_gate.Unlocked();p.receiving=photo_gate.Receiving();p.attempts_left=photo_gate.AttemptsRemaining();p.status=photo_status;
+        photo_transfer_bridge::Publish(std::move(p));
         chat_bot_bridge::Publish(snap);
     }
 public:
@@ -535,7 +561,7 @@ public:
         next = now + 0.25; now_ = now;
         if (!initialized) {
             initialized = true;
-            LoadConfig();
+            LoadConfig();LoadPhotoGate();
             if (!Resolve()) { disabled = true; snap.chat_ready = false; snap.status = u8"AI | Oyun sınıfı bulunamadı: " + issue; chat_bot_bridge::Publish(snap); return; }
         }
         bool ok = false;

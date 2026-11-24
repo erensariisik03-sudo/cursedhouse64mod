@@ -76,6 +76,8 @@ build/tests/navmesh_api_test
     tests/room_vote_test.cpp -o build/tests/room_vote_test
 build/tests/room_vote_test
 
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src tests/photo_transfer_security_test.cpp -o build/tests/photo_transfer_security_test
+build/tests/photo_transfer_security_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src tests/message_gate_test.cpp -o build/tests/message_gate_test
 build/tests/message_gate_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src -pthread tests/voice_ai_core_test.cpp -o build/tests/voice_ai_core_test

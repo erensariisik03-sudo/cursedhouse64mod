@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 namespace chat_bot_bridge {
-enum class Edit { None, Key, Persona, Speech, Delegate };
+enum class Edit { None, Key, Persona, Speech, Delegate, PhotoCreate, PhotoUnlock };
 struct Snapshot {
     bool chat_ready = false, enabled = false, has_key = false, busy = false, cool = true;
     std::vector<std::string> players;

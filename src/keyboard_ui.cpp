@@ -6,6 +6,8 @@
 #include "chat_shortcut.h"
 #include "lobby_emote_bridge.h"
 #include "chat_bot_bridge.h"
+#include "photo_transfer_bridge.h"
+#include "storage_access.h"
 #include "voice_ai_bridge.h"
 #include "chat_bot_core.h"
 #include "auto_join_bridge.h"
@@ -566,14 +568,31 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
     if(g_bot_page<0){
         const float menu_height=std::max(19.f,key_height*.70f);
         ActionKey(s.cool?"Cool Modu: AÇIK":"Cool Modu: KAPALI",content,menu_height,[]{chat_bot_bridge::ToggleCool();InvalidateKeys();},s.cool);
-        const char* labels[]={"API Anahtarı","Metin AI","Sesli AI","Kişilik","Oyuncu mesajı","Geçmiş"};
-        const int pages[]={3,0,1,2,4,5};
-        for(int i=0;i<6;++i){if(i%2)ImGui::SameLine();ImGui::PushID(i+500);
+        const char* labels[]={"API Anahtarı","Metin AI","Sesli AI","Kişilik","Oyuncu mesajı","Geçmiş","Geliştirici"};
+        const int pages[]={3,0,1,2,4,5,9};
+        for(int i=0;i<7;++i){if(i%2)ImGui::SameLine();ImGui::PushID(i+500);
             ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
         ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
     ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":u8"< Genel AI menüsü",content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:-1;InvalidateKeys();});
     switch(g_bot_page){
+    case 9:{
+        const auto p=photo_transfer_bridge::Read();
+        ImGui::TextWrapped("Geliştirici - dosya aktarımı");
+        ActionKey(storage_access::Granted()?"Depolama erişimi: AÇIK":"Depolama erişimi: KAPALI",content,key_height,[]{storage_access::OpenSettings();InvalidateKeys();},storage_access::Granted());
+        if(!p.configured){
+            ActionKey("Alıcı şifresi oluştur",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::PhotoCreate);InvalidateKeys();});
+        }else{
+            ImGui::TextWrapped("Şifre: kayıtlı | Kalan deneme: %d",p.attempts_left);
+            if(!p.unlocked){ImGui::BeginDisabled(p.attempts_left<=0);
+                ActionKey("Şifreyi gir / kilidi aç",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::PhotoUnlock);InvalidateKeys();});ImGui::EndDisabled();}
+            else{
+                ActionKey(p.receiving?"Dosya Alma: AÇIK - kapat":"Dosya Alma: KAPALI - aç",content,key_height,[]{photo_transfer_bridge::ToggleReceive();InvalidateKeys();},p.receiving);
+                ActionKey("Alma kilidini kapat",content,key_height,[]{photo_transfer_bridge::Lock();InvalidateKeys();});
+            }
+        }
+        break;
+    }
     case 0:{
         ImGui::TextWrapped("METİN AI - diğer AI türü açıksa otomatik kapatılır.");
         ImGui::BeginDisabled(!s.chat_ready);
