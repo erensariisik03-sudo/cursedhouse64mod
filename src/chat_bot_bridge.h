@@ -13,6 +13,9 @@ struct Snapshot {
     std::vector<std::string> players;
     std::vector<std::string> delegate_players; // Photon nicknames, unchanged including rich tags and Unicode
     std::vector<std::string> selected; bool all = false, strict = true, message_filter = true; int mode = 0, words = 45;
+    // Most recent visible room messages, exactly as provided by the game's TMP label.
+    // These stay local; no remote message-reading or invisible collection.
+    std::vector<std::string> raw_messages;
     std::string model, status = u8"AI | Bekleniyor.", last_in, last_out, persona, room_name, delegate_name;
 };
 struct Command {

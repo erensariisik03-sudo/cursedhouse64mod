@@ -303,14 +303,13 @@ class Controller {
     // Append only chat messages actually visible to this client, never remote
     // private content. Log independently of AI being enabled. Preserve TMP tags.
     void LogVisibleChat(uintptr_t current_id){
-        if(current_id!=logged_room){logged_room=current_id;logged_ids.clear();}
+        if(current_id!=logged_room){logged_room=current_id;logged_ids.clear();snap.raw_messages.clear();}
         if(now_<next_chat_log)return;
         next_chat_log=now_+0.8;
-        if(!storage_access::Granted())return;
         Root array(api,Array(chat_message_class,1));
         const int n=array.Get()?Count(array.Get()):-1;
         if(n<0||n>400)return;
-        struct Line {int order;std::string text;};
+        struct Line {int order;std::string raw,flat;};
         std::vector<Line> fresh;
         for(int i=0;i<n;i++){
             Root o(api,At(array.Get(),i));if(!o.Get()||!IsAlive(o.Get()))continue;
@@ -324,13 +323,22 @@ class Controller {
             if(!ok||raw.empty())continue;
             logged_ids.insert(id);
             if(raw.size()>4096)raw.resize(4096);
-            for(char& c:raw)if(c=='\r'||c=='\n')c=' ';
+            std::string flat=raw;
+            for(char& c:flat)if(c=='\r'||c=='\n')c=' ';
             int order=i;
             Root tr(api,(get_transform&&sibling)?api.Call(get_transform,o.Get(),nullptr,&ok):nullptr);
             if(tr.Get()){auto* idx=api.Call(sibling,tr.Get(),nullptr,&ok);if(ok&&idx)order=*static_cast<int*>(api.object_unbox(idx));}
-            fresh.push_back({order,std::move(raw)});
+            fresh.push_back({order,std::move(raw),std::move(flat)});
         }
         if(fresh.empty())return;
+        std::sort(fresh.begin(),fresh.end(),[](const Line& l,const Line& r){return l.order<r.order;});
+        // Keep a bounded, exact UTF-8 copy for one-tap local clipboard access.
+        // This still works without broad storage permission; disk logging does not.
+        for(const auto& line:fresh){
+            snap.raw_messages.push_back(line.raw);
+            if(snap.raw_messages.size()>30)snap.raw_messages.erase(snap.raw_messages.begin());
+        }
+        if(!storage_access::Granted())return;
         if(mkdir("/sdcard/gmmod",0700)!=0&&errno!=EEXIST)return;
         struct stat st{};if(lstat("/sdcard/gmmod",&st)!=0||!S_ISDIR(st.st_mode))return;
         std::time_t when=std::time(nullptr);std::tm tm{};localtime_r(&when,&tm);
@@ -339,10 +347,9 @@ class Controller {
         std::strftime(timebuf,sizeof(timebuf),"%Y-%m-%d %H:%M:%S",&tm);
         if(stat(file,&st)==0&&st.st_size>50*1024*1024)return;
         std::ofstream out(file,std::ios::app|std::ios::binary);if(!out)return;
-        std::sort(fresh.begin(),fresh.end(),[](const Line& l,const Line& r){return l.order<r.order;});
         std::string room_label=snap.room_name;
         for(char& c:room_label)if(c=='\r'||c=='\n')c=' ';
-        for(const auto& line:fresh)out<<"["<<timebuf<<"] [room="<<room_label<<"] "<<line.text<<"\n";
+        for(const auto& line:fresh)out<<"["<<timebuf<<"] [room="<<room_label<<"] "<<line.flat<<"\n";
     }
     // Mevcut tüm satırları gördük say: yalnız bundan sonra gelenlere cevap verilir.
     bool Scan(bool mark_only) {
@@ -625,7 +632,7 @@ public:
         if(current_room.Get()&&room_name_get){bool room_ok=false;const auto value=ReadString(room_name_get,current_room.Get(),room_ok);if(room_ok)snap.room_name=value;}
         else snap.room_name.clear();
         if(!current_room.Get()){
-            logged_room=0;logged_ids.clear();next_chat_log=0;
+            logged_room=0;logged_ids.clear();next_chat_log=0;snap.raw_messages.clear();
             ClearStatus();
             snap.players.clear();snap.delegate_players.clear();snap.room_name.clear();delegate_name.clear();delegate_outbox.clear();reminder.Reset();active_room=0;
             if(enabled){enabled=false;InvalidateReplies();Status(u8"AI | Odadan çıkıldı; bot kapatıldı.");}

@@ -174,8 +174,25 @@ int main(){
  std::string emoji;for(int i=0;i<1024;++i)emoji+=u8"😀";
  NativeType(emoji);Tick();assert(editor.text==emoji&&editor.cursor==2048&&editor.limit==0);
  NativeType(emoji+"x");Tick();assert(editor.text==emoji&&editor.cursor==2048);
- editor.text=std::string(1026,'x');Submit(Self(),nullptr);assert(submits==1&&editor.text.size()==1024);
+ editor.text=std::string(1026,'x');Submit(Self(),nullptr);
+ // IME Done on the real game chat input now uses ChatManager.SendMessage.
+ assert(submits==1&&editor.text.empty()&&chat_sends==1&&!visible&&!g_editing);
  editor.focused=false;Tick();assert(!g_editing&&!visible&&editor.limit==25&&!editor.hidden&&roots.empty());
+ // A programmatic blur must not send; an actual outside tap may send exactly once.
+ Reset();Activate(Self(),nullptr);editor.text="not submitted";Deselect(Self(),nullptr,nullptr);
+ assert(chat_sends==0&&roots.empty());
+ Reset();Activate(Self(),nullptr);editor.text="outside tap message";
+ g_outside_tap_candidate=true;g_last_outside_tap=std::chrono::steady_clock::now();
+ Deselect(Self(),nullptr,nullptr);
+ assert(chat_sends==1&&sent=="outside tap message"&&!visible&&roots.empty());
+ Reset();Activate(Self(),nullptr);editor.text="cooldown message";cooldown=true;
+ g_outside_tap_candidate=true;g_last_outside_tap=std::chrono::steady_clock::now();
+ Deselect(Self(),nullptr,nullptr);
+ assert(chat_sends==0&&roots.empty());
+ Reset();Activate(Self(),nullptr);editor.input_type=2;editor.text="password input";
+ g_outside_tap_candidate=true;g_last_outside_tap=std::chrono::steady_clock::now();
+ Deselect(Self(),nullptr,nullptr);
+ assert(chat_sends==0&&roots.empty());
  assert(!native_shortcuts::Read().active);
  // The native path remains available even if the GLES renderer/touch bridge is
  // temporarily unavailable; restore original field settings on every end path.

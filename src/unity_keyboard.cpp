@@ -54,6 +54,15 @@ std::string g_applied;
 uint64_t g_shortcuts_session=0;
 bool g_normalizing=false;
 Object* g_quick_target=nullptr;
+// Only one local UI send per tap / IME submit; never react to programmatic
+// focus loss while changing rooms or opening another screen.
+bool g_auto_sending=false;
+bool g_outside_tap_candidate=false;
+bool g_pointer_was_down=false;
+std::chrono::steady_clock::time_point g_last_outside_tap{};
+Object* ChatOwner(Object* input);
+bool SendChatDraft(Object* input,const char* origin);
+
 using Unary = void (*)(Object*, const Method*);
 using Event = void (*)(Object*, Object*, const Method*);
 Unary g_activate = nullptr, g_update = nullptr, g_disable = nullptr;
@@ -101,6 +110,7 @@ bool SetLimit(Object* object, int limit) {
     g_api.Call(m.setLimit, object, args, &ok); return ok;
 }
 void End() {
+    g_outside_tap_candidate=false;
     // Clear identity before any invocation that could call user code recursively.
     Object* object = Target(); const Handle handle = g_target;
     const bool original = g_original_hide, relaxed = g_limit_relaxed;
@@ -184,6 +194,9 @@ void Changed(Object* self,const Method* method) {
 }
 void Submit(Object* self,const Method* method) {
     if(Target()==self&&!Normalize(self)){if(Target()==self)End();return;}
+    // Only the game's chat field uses SendMessage. Other TMP inputs retain
+    // their original OnSubmit behavior (room name, password, AI, etc.).
+    if(Target()==self)SendChatDraft(self,"IME_DONE");
     g_submit_callback(self,method);
 }
 void PublishEditor(Object* object,bool limited=false) {
@@ -228,6 +241,14 @@ void Activate(Object* self, const Method* method) {
     LOGI("Android IME + shortcut strip opened; limit=1024 Unicode characters");
 }
 void Deselect(Object* self, Object* event, const Method* method) {
+    if(g_ready.load(std::memory_order_acquire)&&Target()==self&&g_quick_target!=self&&
+       g_outside_tap_candidate&&!g_auto_sending){
+        // This came from an actual pointer-down outside our keyboard overlay,
+        // not a scene transition, programmatic blur or Android app switch.
+        if(std::chrono::steady_clock::now()-g_last_outside_tap<std::chrono::seconds(2))
+            SendChatDraft(self,"OUTSIDE_TAP");
+    }
+    g_outside_tap_candidate=false;
     g_deselect(self, event, method);
     if (g_ready.load(std::memory_order_acquire) && Target() == self && g_quick_target!=self) End();
 }
@@ -293,6 +314,25 @@ Object* ChatOwner(Object* input) {
         chosen=candidate.Get();
     }
     return chosen;
+}
+// Invoke the same ChatManager.SendMessage method as the game's own button.
+// Never bypass its normal cooldown, and never send another TMP_InputField's text.
+bool SendChatDraft(Object* input,const char* origin){
+    if(g_auto_sending||!input||Target()!=input||!m.chatAllowed||!m.chatSend||
+       !g_api.field_get_value||g_api.Value<int>(m.inputType,input,2)==2)return false;
+    ScopedRoot owner(ChatOwner(input));
+    if(!owner.Get()||!Alive(owner.Get()))return false;
+    bool allowed=false;g_api.field_get_value(owner.Get(),m.chatAllowed,&allowed);
+    if(!allowed){LOGI("GMM chat input: %s ignored (game cooldown)",origin);return false;}
+    bool ok=false;const std::string text=ReadText(input,&ok);
+    if(!ok||text_buffer::Clean(text.c_str()).empty())return false;
+    struct Guard {Guard(){g_auto_sending=true;}~Guard(){g_auto_sending=false;}} guard;
+    g_api.Call(m.chatSend,owner.Get(),nullptr,&ok);
+    LOGI("GMM chat input: %s send=%d",origin,ok);
+    // A successful invoke is not necessarily server delivery; the game's
+    // SendMessage owns its actual cooldown/RPC/clear semantics.
+    if(ok&&Target()==input)End();
+    return ok;
 }
 String* ChatNick(const Method* method) {
     if(chat_send_gate::active_status_alias){
@@ -414,7 +454,7 @@ void Update(Object* self, const Method* method) {
     // Run on the first live Unity main-thread frame, never from JNI_OnLoad.
     // Android owns the permission screen; no hidden or automatic grant.
     std::call_once(g_storage_first_launch, [] {
-        storage_access::ShowToast("DiCaprio Mod");
+        // Welcome is drawn as one colored in-game toast. Avoid a second, white Android Toast.
         if (!storage_access::Granted()) {
             LOGI("GMM storage: requesting user confirmation in Android Settings");
             storage_access::OpenSettings();
@@ -437,6 +477,14 @@ void Update(Object* self, const Method* method) {
         keyboard_bridge::Pointer(0, 0, false);
         // Losing touch/render readiness must not close the native keyboard.
     }
+    if(valid&&down&&!g_pointer_was_down){
+        // A new finger-down outside the GMM overlay may deselect the game's
+        // chat text field. Only that real user gesture is eligible to send.
+        g_outside_tap_candidate=!captured && g_editing.load() && Target()!=nullptr;
+        g_last_outside_tap=std::chrono::steady_clock::now();
+    }
+    if(!valid||!down)g_pointer_was_down=false;
+    else g_pointer_was_down=true;
 
     // Pause scene discovery/mutations while Photon suspends its message queue
     // for a scene load. Release UI roots but retain the native desired strings.

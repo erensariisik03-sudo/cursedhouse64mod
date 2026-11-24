@@ -85,7 +85,7 @@ void EventHook(Object* client,Object* event,const Method* method) {
          if(line.size()>9 && line[8]!='C')
            PHOTO_LOG("GMM photo RX: protocol=%c kind=%c sender=%d",line[6],line[8],actor);
          std::lock_guard<std::mutex> lock(inbox_mutex);
-         if(inbox.size()<64)inbox.push_back({actor,std::move(line)});
+         if(inbox.size()<256)inbox.push_back({actor,std::move(line)});
          else PHOTO_LOG("GMM photo RX: incoming queue full; packet discarded");
         }
        }
@@ -361,44 +361,52 @@ class Session {
  bool SaveReceived(const Bytes& bytes,uint64_t id){
   last_saved_path.clear();
   if(!IsImage(bytes))return false;
-  std::string dest;
-  if(storage_access::Granted()) {
-   // User enabled Android's broad storage access. Only write a received and
-   // expressly accepted image; never enumerate or export other device files.
-   mkdir("/sdcard/Pictures",0755);
-   dest="/sdcard/Pictures/GMMReceived";
-  } else {
-   if(private_files_dir.empty()){
-    std::ifstream cmd("/proc/self/cmdline",std::ios::binary);std::string pkg;std::getline(cmd,pkg,'\0');
-    if(pkg.empty()||pkg.find('/')!=std::string::npos)return false;
-    const std::string base="/data/user/0/"+pkg+"/files";
-    struct stat st{};if(stat(base.c_str(),&st)!=0||!S_ISDIR(st.st_mode))return false;
-    private_files_dir=base;
-   }
-   dest=private_files_dir+"/GMMReceived";
-  }
-  if(mkdir(dest.c_str(),0700)!=0&&errno!=EEXIST)return false;
-  struct stat dir_stat{};
-  if(lstat(dest.c_str(),&dir_stat)!=0||!S_ISDIR(dir_stat.st_mode))return false;
   const bool png=bytes.size()>=8&&bytes[0]==137&&bytes[1]==80;
-  // Use a unique filename per received photo; multiple photos share one consent ID.
-  std::string path;int fd=-1;
-  for(unsigned serial=0;serial<10000;serial++){
-   path=dest+"/received_"+std::to_string(id)+"_"+std::to_string(serial)+(png?".png":".jpg");
-   fd=open(path.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
-   if(fd>=0)break;
-   if(errno!=EEXIST)return false;
+  // First try MediaStore; the emulator can write its own new Pictures item
+  // even when it has not enabled all-files access.
+  if(storage_access::SaveImageToGallery(bytes.data(),bytes.size(),png,id,last_saved_path)){
+   PHOTO_LOG("GMM photo save: MediaStore success bytes=%zu",bytes.size());return true;
   }
-  if(fd<0)return false;
-  size_t written=0;bool ok=true;
-  while(written<bytes.size()){
-   const ssize_t n=write(fd,bytes.data()+written,bytes.size()-written);
-   if(n<=0){if(n<0&&errno==EINTR)continue;ok=false;break;}
-   written+=size_t(n);
+  PHOTO_LOG("GMM photo save: MediaStore unavailable, trying filesystem");
+  std::string private_dir;
+  if(private_files_dir.empty()){
+   std::ifstream cmd("/proc/self/cmdline",std::ios::binary);std::string pkg;std::getline(cmd,pkg,'\0');
+   if(!pkg.empty()&&pkg.find('/')==std::string::npos){
+    const std::string base="/data/user/0/"+pkg+"/files";
+    struct stat st{};if(stat(base.c_str(),&st)==0&&S_ISDIR(st.st_mode))private_files_dir=base;
+   }
   }
-  if(close(fd)!=0)ok=false;
-  if(!ok){unlink(path.c_str());return false;}
-  last_saved_path=path;return true;
+  if(!private_files_dir.empty())private_dir=private_files_dir+"/GMMReceived";
+  const auto save_dir=[&](const std::string& dest)->bool{
+   if(dest.empty())return false;
+   if(mkdir(dest.c_str(),0700)!=0&&errno!=EEXIST){
+    PHOTO_LOG("GMM photo save: mkdir failed errno=%d",errno);return false;
+   }
+   struct stat dir_stat{};
+   if(lstat(dest.c_str(),&dir_stat)!=0||!S_ISDIR(dir_stat.st_mode))return false;
+   for(unsigned serial=0;serial<10000;serial++){
+    const std::string path=dest+"/received_"+std::to_string(id)+"_"+std::to_string(serial)+(png?".png":".jpg");
+    const int fd=open(path.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+    if(fd<0){if(errno==EEXIST)continue;PHOTO_LOG("GMM photo save: open failed errno=%d",errno);return false;}
+    size_t written=0;bool ok=true;
+    while(written<bytes.size()){
+     const ssize_t n=write(fd,bytes.data()+written,bytes.size()-written);
+     if(n<0&&errno==EINTR)continue;
+     if(n<=0){ok=false;break;}
+     written+=size_t(n);
+    }
+    if(close(fd)!=0)ok=false;
+    if(!ok){unlink(path.c_str());PHOTO_LOG("GMM photo save: write failed");return false;}
+    last_saved_path=path;PHOTO_LOG("GMM photo save: filesystem success bytes=%zu",bytes.size());return true;
+   }
+   return false;
+  };
+  if(storage_access::Granted()){
+   mkdir("/sdcard/Pictures",0755);
+   if(save_dir("/sdcard/Pictures/GMMReceived"))return true;
+  }
+  if(save_dir(private_dir))return true;
+  PHOTO_LOG("GMM photo save: all destinations failed");return false;
  }
 
  void IncomingBrowse(const Message& msg){
@@ -516,7 +524,10 @@ class Session {
    }
    case wire::Kind::Done: {
     if(!rx.Active()||msg.sender!=requested_sender||p.id!=incoming_offer.id)return;
-    Bytes photo;const bool valid=chat_bot_bridge::Read().developer_unlocked&&rx.Finish(photo)&&SaveReceived(photo,p.id);
+    Bytes photo;const bool authorized=chat_bot_bridge::Read().developer_unlocked;
+    const bool verified=authorized&&rx.Finish(photo);
+    const bool valid=verified&&SaveReceived(photo,p.id);
+    PHOTO_LOG("GMM photo receiver: done authorized=%d verified=%d saved=%d bytes=%zu",authorized,verified,valid,photo.size());
     Note(valid?"Fotoğraf alındı: "+last_saved_path:"Fotoğraf doğrulanamadı veya kaydedilemedi");
     incoming_offer={};requested_sender=0;incoming_deadline=0;
     snap.incoming=false;snap.incoming_from.clear();
@@ -665,7 +676,7 @@ class Session {
   if(incoming_offer.id&&now>incoming_deadline){rx.Cancel();incoming_offer={};requested_sender=0;snap.incoming=false;Note("Gelen fotoğraf isteği zaman aşımına uğradı.");}
   if(outgoing_id&&now>outgoing_deadline){ResetSession();Note("Fotoğraf aktarımında zaman aşımı.");}
   if(!outgoing_id||!tx_accepted||now<next_send||!IsPeer(outgoing_peer))return;
-  next_send=now+.023; // smooth reliable transfer, one image at a time
+  next_send=now+.036; // pace reliable packets for slower emulators; one image at a time
   const size_t chunks=(tx_data.size()+kChunkBytes-1)/kChunkBytes;
   if(tx_index<chunks){const auto data=wire::EncodeChunk(outgoing_id,tx_index,tx_data);
    if(SendEvent(outgoing_peer,data)){

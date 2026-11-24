@@ -249,7 +249,21 @@ int main() {
   }
   // Oyun paneli: bölüm listesi -> tek bölüm -> geriyle tam liste.
   Direct("Oyun");Frame();Frame();
-  for(auto label:{"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Karakter hızı"})assert(items.count(label));
+  for(auto label:{"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Karakter hızı","İsim/mesaj kopyalama"})assert(items.count(label));
+  { // Exact rich-text copy of room name and visible chat lines.
+    static std::string copied;
+    keyboard_ui::SetCopyProvider([](const std::string& value){copied=value;return true;});
+    auto snapshot=chat_bot_bridge::Read();snapshot.room_name="<color=red>Oda<size=21>";
+    snapshot.raw_messages={"<size=32><color=#ff0000>Merhaba</color> 😀"};
+    chat_bot_bridge::Publish(snapshot);
+    Direct("İsim/mesaj kopyalama");Frame();Frame();
+    assert(items.count("Oda adını kopyala"));
+    Direct("Oda adını kopyala");assert(copied==snapshot.room_name);
+    Frame();Frame();
+    const std::string label="Kopyala: "+snapshot.raw_messages.back()+"##raw_chat_copy";
+    Direct(label.c_str());assert(copied==snapshot.raw_messages.back());
+    Frame();Frame();Direct(u8"< Bölümlere dön");Frame();Frame();
+  }
   assert(!items.count("Infinity Ammo"));
   {
     gameplay_bridge::Snapshot tools;tools.ready=true;tools.context=77;tools.ghost_ready=tools.infinity_ready=true;gameplay_bridge::Publish(tools);Frame();Frame();
@@ -290,7 +304,7 @@ int main() {
     Frame();Frame();Direct("MomSpider");Frame();Frame();Direct("Durdur");pause=gameplay_bridge::Take();
     assert(pause.size()==1&&pause[0].enemy==2&&pause[0].flag);
     Frame();Frame();
-    Direct(u8"< Bölümlere dön");Frame();Frame();
+    Click(u8"< Bölümlere dön");Frame();Frame();
   }
   {
     gameplay_bridge::Snapshot progression;progression.ready=progression.authority=progression.difficulty_ready=true;progression.context=77;progression.difficulty=2;

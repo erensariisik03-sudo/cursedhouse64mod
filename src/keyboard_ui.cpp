@@ -944,7 +944,7 @@ void GameplaySectionBody(float key_height,float content){
     case 9:{
         static std::string note;
         const auto& vote=s.vote;
-        ImGui::TextWrapped("Bir oyuncuya dokun: ismi panoya kopyalanır.");
+        ImGui::TextWrapped("İsme veya sohbete dokun: ham metin tek seferde panoya kopyalanır. Rich-text etiketleri korunur.");
         const auto room_name=chat_bot_bridge::Read().room_name;
         if(!room_name.empty()){
             ActionKey("Oda adını kopyala",content,key_height,[room_name]{const bool ok=g_copy&&g_copy(room_name);note=ok?"Oda kopyalandı: "+room_name:"Oda adı kopyalanamadı.";InvalidateKeys();});
@@ -954,7 +954,9 @@ void GameplaySectionBody(float key_height,float content){
         // Photon names are used directly, without stripping <size>, <color> or emoji tags.
         const auto peer_state=photo_transport_bridge::Read();
         if(peer_state.peers.empty()&&peer_state.local_name.empty())ImGui::TextWrapped("Odadaki oyuncu listesi bekleniyor.");
-        if(ImGui::BeginChild("##copy_players",ImVec2(0,key_height*4),false)){
+        const auto copy_state=chat_bot_bridge::Read();
+        BeginTouchList("##copy_players_messages",key_height*5.2f);
+        {
             if(!peer_state.local_name.empty()){
                 const std::string name=peer_state.local_name;
                 ActionKey("Kendi ham ismimi kopyala",ImGui::GetContentRegionAvail().x,key_height,[name]{const bool ok=g_copy&&g_copy(name);note=ok?"Ham isim kopyalandi.":"Kopyalanamadi.";InvalidateKeys();});
@@ -965,7 +967,25 @@ void GameplaySectionBody(float key_height,float content){
                 ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name=p.display]{const bool ok=g_copy&&g_copy(name);note=ok?"Ham isim kopyalandi.":"Kopyalanamadi.";InvalidateKeys();});
                 ImGui::PopID();
             }
-        }ImGui::EndChild();
+            ImGui::Separator();
+            ImGui::TextWrapped("Ham sohbet mesajları (son 30; en yeni üstte):");
+            if(copy_state.raw_messages.empty())ImGui::TextWrapped("Henüz odada mesaj görünmüyor.");
+            for(size_t i=copy_state.raw_messages.size();i>0;--i){
+                const auto& raw=copy_state.raw_messages[i-1];
+                ImGui::PushID(static_cast<int>(i)+10000);
+                // Label only is shortened; clipboard gets the full original message.
+                std::string preview=chat_bot_core::PrefixScalars(raw,60);
+                for(char& c:preview)if(c=='\n'||c=='\r'||c=='\t')c=' ';
+                const std::string label="Kopyala: "+preview+"##raw_chat_copy";
+                ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[raw]{
+                    const bool ok=g_copy&&g_copy(raw);
+                    note=ok?"Ham mesaj kopyalandı.":"Mesaj kopyalanamadı.";
+                    InvalidateKeys();
+                });
+                ImGui::PopID();
+            }
+        }
+        EndTouchList();
         if(!vote.players.empty())ImGui::TextWrapped("Arkadaşlık kodu bu oyun sürümünden henüz okunamıyor.");
         break;
     }
@@ -977,13 +997,13 @@ void GameplayBody(float key_height,float content){
     if(previous_page!=g_gameplay_page){ImGui::SetScrollY(0);previous_page=g_gameplay_page;}
     if(g_gameplay_page>=0){
         static const char* titles[]={"Eşya spawn","","Düşman öldür","God Mode","Hayalet modu","","Oyuncu atma","Zorluk","Karakter hızı"};
-        if(g_gameplay_page<9)ImGui::Text("%s",titles[g_gameplay_page]);else if(g_gameplay_page==9)ImGui::Text("İsim kopyala");
+        if(g_gameplay_page<9)ImGui::Text("%s",titles[g_gameplay_page]);else if(g_gameplay_page==9)ImGui::Text("İsim/mesaj kopyalama");
         GameplaySectionBody(key_height,content);
         return;
     }
     ImGui::TextWrapped("Oyun özellikleri");
     ImGui::TextWrapped("Bir bölüm seç.");
-    const char* labels[]={"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Zorluk","Karakter hızı","İsim kopyala"};
+    const char* labels[]={"Eşya spawn","Düşman öldür","God Mode","Hayalet modu","Oyuncu atma","Zorluk","Karakter hızı","İsim/mesaj kopyalama"};
     const int pages[]={0,2,3,4,6,7,8,9};
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
     for(int i=0;i<8;++i){
@@ -1262,19 +1282,32 @@ void Draw() {
     if(g_visible) {if(g_shortcuts_only)DrawShortcutStrip(io);else DrawKeyboard(io);}
     else if(g_integrated){DrawHub(io);DrawAutoJoin(io);}
     else DrawShowButton(io);
-    // A colored in-game welcome banner: standard Android Toast text styling is
-    // controlled by SystemUI on Android 11+, so this is drawn in the GLES UI.
+    // Android 11+ SystemUI owns native Toast styling. Render one compact,
+    // dark, centered toast-shaped overlay; no duplicate native welcome Toast.
     static double first_draw=-1;
     if(first_draw<0)first_draw=ImGui::GetTime();
-    if(ImGui::GetTime()-first_draw<5.0){
+    const double age=ImGui::GetTime()-first_draw;
+    if(age<3.8){
         const char *pieces[]={"Di","Cap","rio Mod"};
         const ImU32 colors[]={IM_COL32(255,75,75,255),IM_COL32(255,158,45,255),IM_COL32(255,222,65,255)};
-        float total=0;for(const char* v:pieces)total+=ImGui::CalcTextSize(v).x;
-        float x=(io.DisplaySize.x-total)*.5f;
-        ImDrawList* fg=ImGui::GetForegroundDrawList();
+        const float font_size=ImGui::GetFontSize()*1.08f;
+        const float scale=font_size/ImGui::GetFontSize();
+        float total=0.f;
+        for(const char* value:pieces)total+=ImGui::CalcTextSize(value).x*scale;
+        const float padding=std::max(16.f,io.DisplaySize.x*.04f);
+        const float box_width=total+2*padding;
+        const float box_height=font_size+std::max(20.f,io.DisplaySize.y*.02f);
+        const float left=(io.DisplaySize.x-box_width)*.5f;
+        const float top=io.DisplaySize.y-box_height-std::max(20.f,io.DisplaySize.y*.045f);
+        const float fade=age>3.3?static_cast<float>((3.8-age)/.5):1.f;
+        auto* fg=ImGui::GetForegroundDrawList();
+        fg->AddRectFilled(ImVec2(left,top),ImVec2(left+box_width,top+box_height),IM_COL32(25,25,27,int(232*fade)),box_height*.48f);
+        float x=left+padding;
+        const float y=top+(box_height-font_size)*.5f;
         for(int i=0;i<3;i++){
-            fg->AddText(ImVec2(x,io.DisplaySize.y*.08f),colors[i],pieces[i]);
-            x+=ImGui::CalcTextSize(pieces[i]).x;
+            fg->AddText(ImGui::GetFont(),font_size,ImVec2(x,y),
+                (colors[i]&IM_COL32(255,255,255,0)) | (ImU32(int(255*fade))<<IM_COL32_A_SHIFT),pieces[i]);
+            x+=ImGui::CalcTextSize(pieces[i]).x*scale;
         }
     }
     if(!g_list_touch.visible)g_list_touch={};
