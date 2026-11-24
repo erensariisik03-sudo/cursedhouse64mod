@@ -32,6 +32,13 @@ int main() {
     // Etiket temizleme
     assert(StripTags("<color=#ff0000>Ali</color>: <size=20>merhaba") == "Ali: merhaba");
     assert(StripTags("a < b") == "a < b");
+    // Preserve the *entire* original nickname, not only its color tag.
+    const std::string decorated=u8"<color=#ff00cc><size=22><b>𝓐ℓi👑‍🔥</b></size></color>";
+    assert(OriginalNickname(decorated)==decorated);
+    assert(OriginalNickname(u8"★Ali⚡👨‍👩‍👧‍👦")==u8"★Ali⚡👨‍👩‍👧‍👦");
+    assert(OriginalNickname("A<3") == "A<3");
+    assert(OriginalNickname("abc\nxyz").empty());
+    assert(OriginalNickname(std::string("abc\xFF",4)).empty());
     // Gönderen eşleme
     assert(MatchSender("<color=#0f0>Ali</color>: selam nasılsın", "Ali").value() == "selam nasılsın");
     assert(MatchSender("[Ali]: selam", "Ali").value() == "selam");

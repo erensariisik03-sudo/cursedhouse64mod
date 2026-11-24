@@ -33,6 +33,41 @@ inline std::string StripTags(const std::string& in) {
     }
     return out;
 }
+// The visible Photon nickname is not just an optional colour: Unity/TextMeshPro
+// names can contain nested rich-text tags, emoji, non-Latin lettering, combining
+// marks, zero-width joiners and literal punctuation. Sending a reconstructed
+// "<color>plain</color>" string changes such names. Preserve the ORIGINAL name,
+// with only well-defined bounds / UTF-8 validation; the plain name used for
+// filtering remains independent from the visible sender alias.
+inline bool ValidNicknameUtf8(const std::string& name) {
+    if (name.empty() || name.size() > 512) return false;
+    for (size_t i = 0; i < name.size();) {
+        const unsigned char c = static_cast<unsigned char>(name[i]);
+        if (c < 0x20 || c == 0x7F) return false;
+        if (c < 0x80) { ++i; continue; }
+        size_t n = 0; uint32_t cp = 0;
+        if (c >= 0xC2 && c <= 0xDF) { n=2; cp=c&0x1F; }
+        else if (c >= 0xE0 && c <= 0xEF) { n=3; cp=c&0x0F; }
+        else if (c >= 0xF0 && c <= 0xF4) { n=4; cp=c&0x07; }
+        else return false;
+        if (i+n > name.size()) return false;
+        for (size_t j=1; j<n; ++j) {
+            const auto next=static_cast<unsigned char>(name[i+j]);
+            if ((next&0xC0)!=0x80) return false;
+            cp=(cp<<6)|(next&0x3F);
+        }
+        if ((n==2&&cp<0x80)||(n==3&&cp<0x800)||(n==4&&cp<0x10000)||
+            (cp>=0xD800&&cp<=0xDFFF)||cp>0x10FFFF) return false;
+        i+=n;
+    }
+    return true;
+}
+inline std::string OriginalNickname(const std::string& raw) {
+    if (ValidNicknameUtf8(raw)) return raw;
+    // Do not forward corrupted or control-character-filled nicknames.
+    const std::string fallback=Trim(StripTags(raw));
+    return ValidNicknameUtf8(fallback) ? fallback : std::string();
+}
 inline size_t ScalarCount(const std::string& s) {
     size_t n = 0;
     for (unsigned char c : s) if ((c & 0xC0) != 0x80) ++n;

@@ -10,6 +10,7 @@ enum class Edit { None, Key, Persona, Speech, Delegate };
 struct Snapshot {
     bool chat_ready = false, enabled = false, has_key = false, busy = false, cool = true;
     std::vector<std::string> players;
+    std::vector<std::string> delegate_players; // Photon nicknames, unchanged including rich tags and Unicode
     std::vector<std::string> selected; bool all = false, strict = true, message_filter = true; int mode = 0, words = 45;
     std::string model, status = u8"AI | Bekleniyor.", last_in, last_out, persona, room_name, delegate_name;
 };

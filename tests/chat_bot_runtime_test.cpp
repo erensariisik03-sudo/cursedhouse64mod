@@ -303,5 +303,18 @@ int main(){
   for(int i=0;i<8&&h.f.sent.empty();++i)h.Step();
   assert(h.f.sent.size()==1&&h.f.sent.back()=="Merhaba oda"&&h.f.sent_names.back()=="Ali");
  }
+ // Names with multiple rich tags, emoji and special Unicode must be sent verbatim.
+ {Harness h;
+  const std::string fancy=u8"<color=#00ffaa><size=23><b>𝓐li🎮‍🔥 ★</b></size></color>";
+  h.f.others[0]=h.f.S(fancy);
+  h.Step();h.Step();
+  const auto snap=chat_bot_bridge::Read();
+  assert(std::find(snap.delegate_players.begin(),snap.delegate_players.end(),fancy)!=snap.delegate_players.end());
+  chat_bot_bridge::SelectDelegate(fancy);h.Step();
+  h.f.kb_status=1;h.f.kb_text="Tekrar merhaba";
+  chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Delegate);h.Step();
+  for(int i=0;i<8&&h.f.sent.empty();++i)h.Step();
+  assert(h.f.sent.size()==1&&h.f.sent.back()=="Tekrar merhaba"&&h.f.sent_names.back()==fancy);
+ }
  std::cout<<"Bot controller: zero HTTP for small talk, silent name-prefixed/chunk SKIP, timed strict-only reminders, draft/focus/cooldown/room/name guards and stale-result rejection; local profanity warnings with slang bypass and repeat bounds: PASS\n";
 }

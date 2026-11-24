@@ -264,16 +264,24 @@ class Controller {
     void Players() {
         if (own_nick) { bool ok = false; const std::string n = chat_bot_core::Trim(chat_bot_core::StripTags(ReadString(own_nick, nullptr, ok))); if (ok) own_name = n; }
         std::vector<std::string> names;
+        std::vector<std::string> aliases;
         Root list(api, api.Call(players));
         const int n = list.Get() ? Count(list.Get()) : -1;
         for (int i = 0; i < n && i < 32; ++i) {
             Root p(api, At(list.Get(), i)); if (!p.Get()) continue;
             bool ok = false;
-            const std::string name = chat_bot_core::Trim(chat_bot_core::StripTags(ReadString(nick, p.Get(), ok)));
-            if (ok && !name.empty() && std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
+            const std::string original=ReadString(nick, p.Get(), ok);
+            const std::string name = chat_bot_core::Trim(chat_bot_core::StripTags(original));
+            if (ok) {
+                // Text AI uses a stripped name; delegated display names keep
+                // the entire nickname even if it is only symbols like <3>.
+                if(!name.empty()&&std::find(names.begin(),names.end(),name)==names.end())names.push_back(name);
+                const std::string alias=chat_bot_core::OriginalNickname(original);
+                if(!alias.empty()&&std::find(aliases.begin(),aliases.end(),alias)==aliases.end())aliases.push_back(alias);
+            }
         }
         if (!list.Get() || n < 0) return; // okunamadı: eski liste ve bot durumu korunur
-        snap.players = names;
+        snap.players = names;snap.delegate_players=std::move(aliases);
         if (enabled && !all && !selected.empty()) {
             const bool any = std::any_of(selected.begin(), selected.end(), [&](const std::string& n) { return std::find(names.begin(), names.end(), n) != names.end(); });
             if (!any) { enabled = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Seçilen oyuncuların hiçbiri odada değil; bot kapatıldı."); }
@@ -424,7 +432,7 @@ class Controller {
         if(delegate_outbox.empty()||now-delegate_since>20.0){delegate_outbox.clear();return false;}
         if(!chat_send_gate::status_alias_ready.load()||!active_room)return false;
         const auto& next=delegate_outbox.front();
-        if(std::find(snap.players.begin(),snap.players.end(),next.first)==snap.players.end()){delegate_outbox.clear();return false;}
+        if(std::find(snap.delegate_players.begin(),snap.delegate_players.end(),next.first)==snap.delegate_players.end()){delegate_outbox.clear();return false;}
         Root owner(api,ChatOwner());if(!owner.Get())return false;
         bool allowed=false;api.field_get_value(owner.Get(),allowed_field,&allowed);
         if(!chat_send_gate::Available(allowed))return false;
@@ -433,6 +441,7 @@ class Controller {
         bool ok=false;auto* focus=api.Call(input_focused,input.Get(),nullptr,&ok);
         if(!ok||!focus||*static_cast<bool*>(api.object_unbox(focus)))return false;
         if(!ReadString(input_text,input.Get(),ok).empty()||!ok)return false;
+        // Do not synthesize formatting: the exact nickname is the display alias.
         Root alias(api,reinterpret_cast<Object*>(api.string_new(next.first.c_str())));
         Root text(api,reinterpret_cast<Object*>(api.string_new(next.second.c_str())));
         if(!alias.Get()||!text.Get())return false;
@@ -460,7 +469,7 @@ class Controller {
         const std::string value = chat_bot_core::Trim(chat_bot_core::PrefixScalars(raw, 1024));
         if (editing == Edit::Key) { key = value; SaveConfig(); Status(key.empty() ? u8"AI | Anahtar silindi." : u8"AI | Anahtar kaydedildi (cihazda kalıcı)."); }
         else if(editing == Edit::Delegate) {
-            if(!value.empty()&&!delegate_name.empty()&&std::find(snap.players.begin(),snap.players.end(),delegate_name)!=snap.players.end()){
+            if(!value.empty()&&!delegate_name.empty()&&std::find(snap.delegate_players.begin(),snap.delegate_players.end(),delegate_name)!=snap.delegate_players.end()){
                 delegate_outbox.emplace_back(delegate_name,chat_bot_core::PrefixScalars(value,200));delegate_since=now_;
                 Status(u8"AI | Mesaj gönderim için sıraya alındı.");
             }else Status(u8"AI | Oyuncu veya mesaj seçilmedi.");
@@ -543,7 +552,7 @@ public:
         else snap.room_name.clear();
         if(!current_room.Get()){
             ClearStatus();
-            snap.players.clear();snap.room_name.clear();delegate_name.clear();delegate_outbox.clear();reminder.Reset();active_room=0;
+            snap.players.clear();snap.delegate_players.clear();snap.room_name.clear();delegate_name.clear();delegate_outbox.clear();reminder.Reset();active_room=0;
             if(enabled){enabled=false;InvalidateReplies();Status(u8"AI | Odadan çıkıldı; bot kapatıldı.");}
             else DropOutbox();
             Publish();return;
@@ -557,7 +566,7 @@ public:
             engaged.clear();talking.clear();last_accept.clear();last_smalltalk.clear();last_warning.clear();next_warning=0;history.clear();
         }
         active_room=room_id;
-        if(!delegate_name.empty()&&std::find(snap.players.begin(),snap.players.end(),delegate_name)==snap.players.end()&&now>=next_players){delegate_name.clear();delegate_outbox.clear();}
+        if(!delegate_name.empty()&&std::find(snap.delegate_players.begin(),snap.delegate_players.end(),delegate_name)==snap.delegate_players.end()&&now>=next_players){delegate_name.clear();delegate_outbox.clear();}
         if (now >= next_players) { next_players = now + 1.0; Players(); }
         reminder.Update(now,enabled&&all,strict,active_room,own_name,!snap.players.empty());
         if(outbox_reminder&&(!enabled||!all||!strict||reminder_name!=own_name||reminder_room!=active_room||snap.players.empty()))DropOutbox();

@@ -55,9 +55,13 @@ struct ListTouch {
     bool visible=false,down=false,dragged=false,recording=false;
     float start_x=0,start_y=0,last_y=0,delta=0,threshold=8;
     std::function<void()> tap;
+    bool thumb_down=false;
+    float track_top=0,track_bottom=0,thumb_height=0,scroll_max=0,scroll_set=-1;
+    ImVec2 bar_min{},bar_max{};
 };
-ListTouch g_list_touch;
-void InvalidateKeys(){g_touch_keys.clear();g_touch_repeat={};g_list_touch={};}
+ListTouch g_list_touch,g_hub_touch;
+bool g_touching_hub=false;
+void InvalidateKeys(){g_touch_keys.clear();g_touch_repeat={};g_list_touch={};g_hub_touch={};}
 
 float Width(const Layout& l, float units) { return units * l.unit + (units - 1.0f) * l.gap; }
 void Dirty() { g_text_dirty = g_restore_cursor = true; }
@@ -136,7 +140,7 @@ void ActionKey(const char* label,float width,float height,std::function<void()> 
     const bool pressed=Key(label,width,height,active,repeat);
     if(!(ImGui::GetItemFlags()&ImGuiItemFlags_Disabled)){
         ImRect hit(ImGui::GetItemRectMin(),ImGui::GetItemRectMax());hit.ClipWith(ImGui::GetCurrentWindow()->ClipRect);
-        if(hit.Min.x<hit.Max.x&&hit.Min.y<hit.Max.y)g_touch_keys.push_back({hit.Min,hit.Max,action,repeat,g_list_touch.recording});
+        if(hit.Min.x<hit.Max.x&&hit.Min.y<hit.Max.y)g_touch_keys.push_back({hit.Min,hit.Max,action,repeat,g_list_touch.recording||g_hub_touch.recording});
     }
     if(pressed)action();
 }
@@ -512,10 +516,49 @@ int g_hub_tab=0; // 0 = AI, 1 = Kıyafet, 2 = Oyun
 // Oyun panelinde -1 bölüm listesini, 0..3 alt sayfaları gösterir.
 int g_gameplay_page=-1;
 int g_bot_page=-1;
-// 0: Metin AI, 1: Sesli AI, 2: Kişilik, 3: API, 4: Temsil, 5: Geçmiş, 6: Kelimeler, 7: Konuşmacı
+// One touch-aware scroll region is visible at a time on each AI subpage.
+void RenderTouchThumb(ListTouch& t,ImGuiWindow* window){
+    t.scroll_max=ImGui::GetScrollMaxY();
+    const ImVec2 a=window->InnerClipRect.Min,b=window->InnerClipRect.Max;
+    t.track_top=a.y+3;t.track_bottom=b.y-3;
+    const float track_h=std::max(1.f,t.track_bottom-t.track_top);
+    t.thumb_height=t.scroll_max>1?std::max(22.f,track_h*track_h/(track_h+t.scroll_max)):track_h;
+    t.thumb_height=std::min(t.thumb_height,track_h);
+    const float bar_x=std::min(window->Pos.x+window->Size.x-11.f,b.x+2.f);
+    t.bar_min=ImVec2(bar_x-5.f,t.track_top);t.bar_max=ImVec2(bar_x+10.f,t.track_bottom);
+    if(t.scroll_max>1){
+        const float y=t.track_top+(track_h-t.thumb_height)*std::clamp(ImGui::GetScrollY()/t.scroll_max,0.f,1.f);
+        window->DrawList->AddRectFilled(ImVec2(bar_x,y),ImVec2(bar_x+5.f,y+t.thumb_height),IM_COL32(95,195,210,220),3.f);
+    }
+}
+void UpdateTouchScroll(ListTouch& t){
+    if(t.scroll_set>=0){ImGui::SetScrollY(std::clamp(t.scroll_set,0.f,ImGui::GetScrollMaxY()));t.scroll_set=-1;}
+    if(t.delta!=0){ImGui::SetScrollY(std::clamp(ImGui::GetScrollY()+t.delta,0.f,ImGui::GetScrollMaxY()));t.delta=0;}
+}
+void BeginTouchList(const char* id,float height){
+    ImGui::BeginChild(id,ImVec2(0,height),false,ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    auto* window=ImGui::GetCurrentWindow();
+    if(g_list_touch.window!=window->ID)g_list_touch={};
+    auto& t=g_list_touch;t.window=window->ID;t.visible=true;t.recording=true;
+    t.min=window->InnerClipRect.Min;t.max=window->InnerClipRect.Max;
+    t.threshold=std::max(7.f,ImGui::GetFrameHeight()*.23f);
+    UpdateTouchScroll(t);
+}
+void EndTouchList(){
+    auto* window=ImGui::GetCurrentWindow();auto& t=g_list_touch;t.recording=false;
+    RenderTouchThumb(t,window);
+    ImGui::EndChild();
+}
+// 0: Metin AI, 1: Sesli AI, 2: Kişilik, 3: API, 4: Temsil, 5: Geçmiş, 6: Kelimeler, 7: Konuşmacı, 8: Yanıt türü
 void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
-    static int previous=-2;if(previous!=g_bot_page){ImGui::SetScrollY(0);previous=g_bot_page;}
     const auto s=chat_bot_bridge::Read();const auto v=voice_ai_bridge::Read();
+    // A selected SEDA utterance should be visible immediately. Capture stays
+    // paused until the user submits/ignores it, so never silently auto-answer.
+    static bool had_pending=false;
+    const bool pending=!v.selection_text.empty()&&v.settings.manual_keywords;
+    if(pending&&!had_pending&&g_bot_page==1)g_bot_page=6;
+    had_pending=pending;
+    static int previous=-2;if(previous!=g_bot_page){ImGui::SetScrollY(0);previous=g_bot_page;}
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
     if(g_bot_page<0){
         const float menu_height=std::max(19.f,key_height*.70f);
@@ -526,7 +569,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
         ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
-    ActionKey((g_bot_page==6||g_bot_page==7)?u8"← Sesli AI":u8"← Genel AI menüsü",content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7)?1:-1;InvalidateKeys();});
+    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"← Sesli AI":u8"← Genel AI menüsü",content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:-1;InvalidateKeys();});
     switch(g_bot_page){
     case 0:{
         ImGui::TextWrapped("METİN AI - diğer AI türü açıksa otomatik kapatılır.");
@@ -538,10 +581,10 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ActionKey("Kişileri yenile",content,key_height,[]{chat_bot_bridge::Refresh();InvalidateKeys();});
         ActionKey(s.all?"Herkes: AÇIK":"Herkes: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleAll();InvalidateKeys();},s.all);
         float list_height=std::max(key_height,std::min(key_height*3,max_height-ImGui::GetCursorPosY()-key_height*3));
-        ImGui::BeginChild("##bot_players",ImVec2(0,list_height),false);
+        BeginTouchList("##bot_players",list_height);
         if(s.players.empty())ImGui::TextWrapped("Oda oyuncuları bekleniyor.");
         for(const auto& name:s.players){ImGui::PushID(name.c_str());ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{chat_bot_bridge::Select(name);InvalidateKeys();},std::find(s.selected.begin(),s.selected.end(),name)!=s.selected.end());ImGui::PopID();}
-        ImGui::EndChild();
+        EndTouchList();
         ActionKey(s.message_filter?"Mesaj filtresi: AÇIK":"Mesaj filtresi: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleFilter();InvalidateKeys();},s.message_filter);
         ActionKey(s.strict?"Adla çağırma: AÇIK":"Adla çağırma: KAPALI",content,key_height,[]{chat_bot_bridge::ToggleStrict();InvalidateKeys();},s.strict);
         int words=s.words;ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##bot_len",&words,chat_bot_core::kMinWords,chat_bot_core::kMaxWords,"Yanıt: %d kelime"))chat_bot_bridge::SetWords(words);
@@ -555,9 +598,10 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             if(enabled)chat_bot_bridge::Enable(false);
             voice_ai_bridge::Enable(enabled);chat_bot_bridge::VoiceFx(enabled);InvalidateKeys();},v.settings.enabled);
         ImGui::EndDisabled();
-        if(!v.selection_text.empty())ActionKey("Konuşma kelimelerini seç",content,key_height,[]{g_bot_page=6;InvalidateKeys();},true);
+        ActionKey(v.selection_text.empty()?"Konuşma kelimelerini seç (bekleniyor)":"Konuşma kelimelerini seç",content,key_height,[]{g_bot_page=6;InvalidateKeys();},!v.selection_text.empty());
         ActionKey("Konuşmacı seç",content,key_height,[]{g_bot_page=7;InvalidateKeys();});
         ActionKey("Konuşmayı durdur",content,key_height,[]{voice_ai_bridge::Stop();InvalidateKeys();});
+        ActionKey("Yanıt türünü seç",content,key_height,[]{g_bot_page=8;InvalidateKeys();});
         ActionKey(v.settings.manual_keywords?"Manuel kelime seçimi: AÇIK":"Manuel kelime seçimi: KAPALI",content,key_height,[enabled=!v.settings.manual_keywords]{voice_ai_bridge::ManualKeywords(enabled);InvalidateKeys();},v.settings.manual_keywords);
         ActionKey(v.settings.destination?"Ses yalnızca bu cihazda":"Ses odaya gönderilir",content,key_height,[local=!v.settings.destination]{voice_ai_bridge::Destination(local);InvalidateKeys();},v.settings.destination);
         {int tone=voice_ai_bridge::tone.load();ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##voice_tone",&tone,0,100,"Ses tonu: %d%%"))voice_ai_bridge::SetTone(tone);}
@@ -579,25 +623,45 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ActionKey("API anahtarı gir / değiştir",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Key);InvalidateKeys();});break;
     case 4:{
         ImGui::TextWrapped("Oyuncu adını seçip mesaj yaz. Sohbet görünür adı seçili oyuncu adı olabilir, fakat Photon aktör kimliğin kendi hesabın olarak kalır.");
-        if(s.players.empty())ImGui::TextWrapped("Önce odaya gir; oyuncu listesi bekleniyor.");
-        if(ImGui::BeginChild("##delegate_players",ImVec2(0,key_height*3),false)){
-            for(const auto& name:s.players){ImGui::PushID(name.c_str());ActionKey(name.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{chat_bot_bridge::SelectDelegate(name);InvalidateKeys();},s.delegate_name==name);ImGui::PopID();}
-        }ImGui::EndChild();
+        if(s.delegate_players.empty())ImGui::TextWrapped("Önce odaya gir; oyuncu listesi bekleniyor.");
+        BeginTouchList("##delegate_players",key_height*3);
+        {
+            for(const auto& name:s.delegate_players){
+                ImGui::PushID(name.c_str());
+                // ImGui treats "##" as an ID marker; draw the nickname as raw
+                // text instead so symbols/emoji are displayed without loss.
+                ActionKey("##delegate_nickname",ImGui::GetContentRegionAvail().x,key_height,[name]{chat_bot_bridge::SelectDelegate(name);InvalidateKeys();},s.delegate_name==name);
+                const ImVec2 min=ImGui::GetItemRectMin(),max=ImGui::GetItemRectMax();
+                const ImVec2 text_pos(min.x+8.f,min.y+(key_height-ImGui::GetFontSize())*.5f);
+                auto* draw=ImGui::GetWindowDrawList();draw->PushClipRect(ImVec2(min.x+6.f,min.y),ImVec2(max.x-5.f,max.y),true);
+                draw->AddText(text_pos,ImGui::GetColorU32(ImGuiCol_Text),name.c_str());
+                draw->PopClipRect();
+                ImGui::PopID();
+            }
+        }EndTouchList();
         ImGui::TextWrapped("Seçilen: %s",s.delegate_name.empty()?"Yok":s.delegate_name.c_str());
         ImGui::BeginDisabled(s.delegate_name.empty());
         ActionKey("Mesaj yaz ve gönder",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Delegate);InvalidateKeys();});
         ImGui::EndDisabled();break;
     }
+    case 8:{
+        ImGui::TextWrapped("Yanıt biçimi | Üç moddan yalnızca biri aktiftir.");
+        ActionKey("Metni sesle cevapla",content,key_height,[]{voice_ai_bridge::Mode(1,1);InvalidateKeys();},v.settings.input==1&&v.settings.output==1);
+        ActionKey("Sesi sesle cevapla",content,key_height,[]{voice_ai_bridge::Mode(0,1);InvalidateKeys();},v.settings.input==0&&v.settings.output==1);
+        ActionKey("Metin + sesi sesle cevapla",content,key_height,[]{voice_ai_bridge::Mode(2,1);InvalidateKeys();},v.settings.input==2&&v.settings.output==1);
+        ImGui::TextWrapped("Sesli AI yanıtları ayrıca oyun sohbetine yazılır.");break;
+    }
     case 7:{
         ImGui::TextWrapped("SEDA | Bir anda bir oyuncu dinlenir.");
         ActionKey("Otomatik tek konuşmacı",content,key_height,[]{voice_ai_bridge::TargetActor(0);InvalidateKeys();},v.settings.target_actor==0);
         if(v.players.empty())ImGui::TextWrapped("Henüz sesli sohbete katılan oyuncu yok.");
-        if(ImGui::BeginChild("##pick_voice_players",ImVec2(0,std::max(key_height*2,max_height-ImGui::GetCursorPosY()-key_height*1.5f)),false)){
+        BeginTouchList("##pick_voice_players",std::max(key_height*2,max_height-ImGui::GetCursorPosY()-key_height*1.5f));
+        {
             for(const auto& player:v.players){ImGui::PushID(player.first);
                 std::string label=player.second+(v.active_actor==player.first?" (dinleniyor)":"");
                 ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[actor=player.first]{voice_ai_bridge::TargetActor(actor);InvalidateKeys();},v.settings.target_actor==player.first);
                 ImGui::PopID();}
-        }ImGui::EndChild();break;
+        }EndTouchList();break;
     }
     case 6:{
         ImGui::TextWrapped("SEDA | Kelime seçimi (sadece seçilenler AI'ye gider)");
@@ -608,26 +672,22 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             if(seen!=v.selection_name+"/"+v.selection_text){seen=v.selection_name+"/"+v.selection_text;chosen.assign(tokens.size(),false);}
             ImGui::TextWrapped("%s konuştu - anahtar kelimeleri seç:",v.selection_name.c_str());
             const float list_height=std::max(60.f,std::min(key_height*3,max_height-ImGui::GetCursorPosY()-key_height*4));
-            if(ImGui::BeginChild("##selection_words",ImVec2(0,list_height),false)){
-                auto* list=ImGui::GetCurrentWindow();
-                if(g_list_touch.window!=list->ID)g_list_touch={};
-                g_list_touch.window=list->ID;g_list_touch.visible=true;
-                g_list_touch.min=list->InnerClipRect.Min;g_list_touch.max=list->InnerClipRect.Max;
-                g_list_touch.threshold=std::max(6.f,key_height*.22f);
-                if(g_list_touch.delta!=0){ImGui::SetScrollY(std::clamp(ImGui::GetScrollY()+g_list_touch.delta,0.f,ImGui::GetScrollMaxY()));g_list_touch.delta=0;}
-                g_list_touch.recording=true;
-                for(size_t i=0;i<tokens.size();++i){ImGui::PushID(int(i));
+            BeginTouchList("##selection_words",list_height);
+            for(size_t i=0;i<tokens.size();++i){ImGui::PushID(int(i));
                 if(i%2)ImGui::SameLine();
                 ActionKey(tokens[i].c_str(),half,key_height,[i]{if(i<chosen.size())chosen[i]=!chosen[i];InvalidateKeys();},i<chosen.size()&&chosen[i]);
                 ImGui::PopID();}
-                g_list_touch.recording=false;
-            }ImGui::EndChild();
+            EndTouchList();
             ActionKey("Hepsini seç",half,key_height,[count=tokens.size()]{chosen.assign(count,true);InvalidateKeys();});ImGui::SameLine();
             ActionKey("Seçimi sil",half,key_height,[count=tokens.size()]{chosen.assign(count,false);InvalidateKeys();});
+            const auto selected_count=std::count(chosen.begin(),chosen.end(),true);
+            ImGui::Text("Seçilen: %d / %d",int(selected_count),int(tokens.size()));
+            ImGui::BeginDisabled(selected_count==0);
             ActionKey("Seçilenleri AI'ye gönder",content,key_height,[]{std::vector<int> indices;for(size_t i=0;i<chosen.size();++i)if(chosen[i])indices.push_back(int(i));if(!indices.empty())voice_ai_bridge::SubmitSelected(std::move(indices));InvalidateKeys();});
+            ImGui::EndDisabled();
             ActionKey("Bu konuşmayı atla",content,key_height,[]{voice_ai_bridge::SkipSelected();InvalidateKeys();});
         }
-        else ImGui::TextWrapped("Henüz işlenecek konuşma yok.");
+        else ImGui::TextWrapped("Bekleyen konuşma yok. Sesli AI ve Manuel kelime seçimi açıkken bir oyuncu konuşunca kelimeler burada çıkacak. Dinlenen kişi: %s",v.active_actor?"seçili oyuncu":"henüz seçilmedi");
         break;
     }
     default:
@@ -902,7 +962,7 @@ void DrawAutoJoin(const ImGuiIO& io){
 // Yuvarlak, yarı saydam menü düğmesi + AI, Kıyafet ve bölümlemeli Oyun paneli.
 void DrawHub(const ImGuiIO& io){
     const float scale=std::clamp(std::min(io.DisplaySize.x,io.DisplaySize.y)/500.0f,.7f,1.6f);
-    const float key_height=36*scale,width=std::min(io.DisplaySize.x*.5f,340*scale);
+    const float key_height=43*scale,width=std::min(io.DisplaySize.x*.50f,324*scale);
     const float d=48*scale; // düğme çapı
     static ImVec2 pos(-1,-1);
     static float moved=0;
@@ -948,6 +1008,11 @@ void DrawHub(const ImGuiIO& io){
     ImGui::SetNextWindowBgAlpha(.74f);
     const auto flags=ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_AlwaysAutoResize;
     if(ImGui::Begin("##hub",nullptr,flags)){
+        auto* hub=ImGui::GetCurrentWindow();
+        g_hub_touch.visible=true;g_hub_touch.recording=true;
+        g_hub_touch.min=hub->InnerClipRect.Min;g_hub_touch.max=hub->InnerClipRect.Max;
+        g_hub_touch.threshold=std::max(7.f,key_height*.23f);
+        UpdateTouchScroll(g_hub_touch);
         const float content=ImGui::GetContentRegionAvail().x;
         const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
         if(g_hub_tab==0&&g_bot_page>=0){BotBody(io,key_height,content,max_height);}
@@ -964,6 +1029,8 @@ void DrawHub(const ImGuiIO& io){
             else if(g_hub_tab==1)WardrobeBody(io,key_height,content);
             else GameplayBody(key_height,content);
         }
+        g_hub_touch.recording=false;
+        RenderTouchThumb(g_hub_touch,hub);
         RecordWindow();
     }
     ImGui::End();
@@ -1010,8 +1077,18 @@ void SetEmojiSupport(uint64_t mask,bool query_ok) {
     g_emoji_ready=true; g_emoji_page=0;
 }
 bool TouchDown(float x,float y){
-    auto& list=g_list_touch;
+    g_touching_hub=false;
+    auto within=[&](const ListTouch& l){return l.visible&&x>=l.min.x&&x<l.max.x&&y>=l.min.y&&y<l.max.y;};
+    auto within_bar=[&](const ListTouch& l){return l.visible&&l.scroll_max>1&&x>=l.bar_min.x&&x<l.bar_max.x&&y>=l.bar_min.y&&y<l.bar_max.y;};
+    g_touching_hub=!(within(g_list_touch)||within_bar(g_list_touch))&&(within(g_hub_touch)||within_bar(g_hub_touch));
+    auto& list=g_touching_hub?g_hub_touch:g_list_touch;
     const TouchKey* top=nullptr;for(auto i=g_touch_keys.rbegin();i!=g_touch_keys.rend();++i)if(x>=i->min.x&&x<i->max.x&&y>=i->min.y&&y<i->max.y){top=&*i;break;}
+    if(list.visible&&list.scroll_max>1&&x>=list.bar_min.x&&x<list.bar_max.x&&y>=list.bar_min.y&&y<list.bar_max.y){
+        list.down=true;list.dragged=true;list.thumb_down=true;list.tap={};list.start_x=x;list.start_y=list.last_y=y;
+        const float range=std::max(1.f,(list.track_bottom-list.track_top-list.thumb_height));
+        list.scroll_set=std::clamp((y-list.track_top-list.thumb_height*.5f)/range,0.f,1.f)*list.scroll_max;
+        return true;
+    }
     if((!top||top->list)&&list.visible&&x>=list.min.x&&x<list.max.x&&y>=list.min.y&&y<list.max.y){
         list.down=true;list.dragged=false;list.start_x=x;list.start_y=list.last_y=y;list.tap={};
         for(const auto& key:g_touch_keys)if(key.list&&x>=key.min.x&&x<key.max.x&&y>=key.min.y&&y<key.max.y){list.tap=key.action;break;}
@@ -1025,8 +1102,13 @@ bool TouchDown(float x,float y){
     return false;
 }
 void TouchHeld(float x,float y){
-    auto& list=g_list_touch;
+    auto& list=g_touching_hub?g_hub_touch:g_list_touch;
     if(list.down){
+        if(list.thumb_down){
+            const float range=std::max(1.f,list.track_bottom-list.track_top-list.thumb_height);
+            list.scroll_set=std::clamp((y-list.track_top-list.thumb_height*.5f)/range,0.f,1.f)*list.scroll_max;
+            list.last_y=y;return;
+        }
         if(std::fabs(y-list.start_y)>=list.threshold||std::fabs(x-list.start_x)>=list.threshold){list.dragged=true;list.tap={};}
         if(list.dragged)list.delta+=list.last_y-y;
         list.last_y=y;return;
@@ -1034,7 +1116,7 @@ void TouchHeld(float x,float y){
     if(!g_touch_repeat||x<g_repeat_min.x||x>=g_repeat_max.x||y<g_repeat_min.y||y>=g_repeat_max.y)return;
     if(ImGui::GetTime()>=g_repeat_at){const auto action=g_touch_repeat;g_repeat_at=ImGui::GetTime()+.035;action();}
 }
-void TouchUp(){const auto tap=g_list_touch.down&&!g_list_touch.dragged?g_list_touch.tap:std::function<void()>{};g_list_touch.down=false;g_list_touch.tap={};g_touch_repeat={};if(tap)tap();}
+void TouchUp(){auto& list=g_touching_hub?g_hub_touch:g_list_touch;const auto tap=list.down&&!list.dragged?list.tap:std::function<void()>{};list.down=false;list.thumb_down=false;list.tap={};g_touch_repeat={};g_touching_hub=false;if(tap)tap();}
 bool HitTest(float x,float y) {
     for(int i=0;i<g_rect_count;++i) if(x>=g_rect_min[i].x&&x<g_rect_max[i].x&&y>=g_rect_min[i].y&&y<g_rect_max[i].y) return true;
     return false;
@@ -1051,6 +1133,7 @@ void ResetTransientState() {
 void Draw() {
     g_touch_keys.clear();
     g_list_touch.visible=false;g_list_touch.recording=false;
+    g_hub_touch.visible=false;g_hub_touch.recording=false;
     g_rect_count=0;
     const auto& io=ImGui::GetIO();
     if(io.DisplaySize.x<=0||io.DisplaySize.y<=0) return;
@@ -1058,5 +1141,6 @@ void Draw() {
     else if(g_integrated){DrawHub(io);DrawAutoJoin(io);}
     else DrawShowButton(io);
     if(!g_list_touch.visible)g_list_touch={};
+    if(!g_hub_touch.visible)g_hub_touch={};
 }
 }

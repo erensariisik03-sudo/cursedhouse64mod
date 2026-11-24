@@ -63,6 +63,7 @@ struct Runtime {
  Worker worker;std::deque<Request> requests;std::deque<std::string> text_out;
  Request awaiting_selection;bool selection_active=false;int active_actor=0;std::vector<chat_bot_core::Turn> history;
  std::unordered_map<std::string,double> engaged_voice,side_talk_voice;
+ std::unordered_map<int,std::string> verified_speakers;
  Class *manager_class{},*view_class{},*rec_class{},*source_class{};
  const Method *find{},*length{},*item{},*alive{},*go{},*active{},*current_room{},*manager_get{},*available{},*speaker_get{},*remote_get{},*owner_get{},*mine{},*actor_get{},*nick{},*rate_get{},*channels_get{},
  *get_record{},*set_record{},*get_transmit{},*set_transmit{},*get_source{},*set_source{},*get_clip{},*set_clip{},*get_loop{},*set_loop{},*get_detect{},*set_detect{},
@@ -109,7 +110,7 @@ struct Runtime {
  }
  void Reset(bool disable){
   worker.Cancel();capture=false;++capture_epoch;std::atomic_store(&streams,std::shared_ptr<const Streams>(std::make_shared<Streams>()));{std::lock_guard<std::mutex> l(segments_mutex);segments.Clear();}
-  StopAudio();++epoch;requests.clear();text_out.clear();selection_active=false;active_actor=0;awaiting_selection=Request{};snap.selection_text.clear();snap.selection_name.clear();snap.players.clear();history.clear();engaged_voice.clear();side_talk_voice.clear();next_request=Now()+.6;snap.heard.clear();snap.reply.clear();if(disable){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;voice_ai_bridge::texts.clear();}
+  StopAudio();++epoch;requests.clear();text_out.clear();selection_active=false;active_actor=0;awaiting_selection=Request{};snap.selection_text.clear();snap.selection_name.clear();snap.players.clear();verified_speakers.clear();history.clear();engaged_voice.clear();side_talk_voice.clear();next_request=Now()+.6;snap.heard.clear();snap.reply.clear();if(disable){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;voice_ai_bridge::texts.clear();}
  }
  bool NetworkAllowed(){
   if(!room_id||!room_properties||!hash_item||!voice_client||!voice_joined||!Active(manager.Get())||!a.Value<bool>(available,manager.Get(),false)||!Alive(recorder.Get()))return false;
@@ -122,18 +123,26 @@ struct Runtime {
   manager.Set(a.Call(manager_get));recorder.Set(Active(manager.Get())?Ref(manager.Get(),"recorder"):nullptr);snap.network_ready=NetworkAllowed();
   auto found=std::make_shared<Streams>();
   auto candidates=std::make_shared<Streams>();
+  std::vector<int> room_actors;
   if(settings.enabled&&settings.input!=1&&snap.network_ready){Each(view_class,[&](Object* view){
    if(candidates->size()>=24||!Active(view))return;
    Root pv(a,Ref(view,"photonView"));if(!Alive(pv.Get())||a.Value<bool>(mine,pv.Get(),true))return;
    Root owner(a,a.Call(owner_get,pv.Get())),name(a,a.Call(nick,owner.Get()));int actor=a.Value<int>(actor_get,owner.Get(),0);std::string label=chat_bot_core::StripTags(a.Utf8(reinterpret_cast<String*>(name.Get())));if(actor<=0||label.empty()||!Allowed(label)||std::any_of(candidates->begin(),candidates->end(),[&](const auto& old){return old->actor==actor;}))return;
+   room_actors.push_back(actor);
    Root speaker(a,a.Call(speaker_get,view)),link(a,speaker.Get()?a.Call(remote_get,speaker.Get()):nullptr);if(!Alive(speaker.Get())||!link.Get())return;
    auto* info_type=a.class_from_type(a.field_get_type(voice_info));uint32_t align=0;int bytes=a.class_value_size(info_type,&align);if(bytes<=0||bytes>256||align>alignof(std::max_align_t))return;
    alignas(std::max_align_t) std::array<unsigned char,256> info{};a.field_get_value(link.Get(),voice_info,info.data());int rate=0,channels=0;
    if(!Read(rate_get,reinterpret_cast<Object*>(info.data()),rate)||!Read(channels_get,reinterpret_cast<Object*>(info.data()),channels)||rate<8000||rate>48000||channels<1||channels>2)return;
+   verified_speakers[actor]=label; // Verified voice channel once; player may later be silent.
    candidates->push_back(std::make_shared<Stream>(a,link.Get(),actor,rate,channels,label));
   });}
   snap.players.clear();
-  for(const auto& candidate:*candidates)snap.players.emplace_back(candidate->actor,candidate->name);
+  // Keep only previously verified voice users still represented in the current room.
+  for(auto it=verified_speakers.begin();it!=verified_speakers.end();){
+   if(std::find(room_actors.begin(),room_actors.end(),it->first)==room_actors.end())it=verified_speakers.erase(it);
+   else {snap.players.emplace_back(it->first,it->second);++it;}
+  }
+  std::sort(snap.players.begin(),snap.players.end());
   int target=settings.target_actor?settings.target_actor:active_actor;
   auto pick=std::find_if(candidates->begin(),candidates->end(),[&](const auto& c){return c->actor==target;});
   if(pick==candidates->end()&&!settings.target_actor&&!candidates->empty())pick=candidates->begin();
