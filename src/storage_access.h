@@ -11,9 +11,11 @@ namespace storage_access {
 void SetVM(JavaVM* vm);
 bool Granted();
 bool OpenSettings();
+bool ShowToast(const char* message);
 #else
 inline void SetVM(JavaVM*) {}
 inline bool Granted() { return false; }
 inline bool OpenSettings() { return false; }
+inline bool ShowToast(const char*) { return false; }
 #endif
 }

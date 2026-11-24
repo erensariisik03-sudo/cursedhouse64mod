@@ -414,11 +414,19 @@ void Update(Object* self, const Method* method) {
     // Run on the first live Unity main-thread frame, never from JNI_OnLoad.
     // Android owns the permission screen; no hidden or automatic grant.
     std::call_once(g_storage_first_launch, [] {
+        storage_access::ShowToast("DiCaprio Mod");
         if (!storage_access::Granted()) {
             LOGI("GMM storage: requesting user confirmation in Android Settings");
             storage_access::OpenSettings();
         }
     });
+    static bool checked_after_settings=false;
+    static auto first_check=std::chrono::steady_clock::now();
+    if(!checked_after_settings && std::chrono::steady_clock::now()-first_check>std::chrono::seconds(12)){
+        checked_after_settings=true;
+        if(!storage_access::Granted())
+            storage_access::ShowToast("İzin verilmedi; bazı özelliklerden yararlanamazsın.");
+    }
     float x = 0, y = 0; bool down = false;
     const int width = g_api.Value<int>(m.screenW), height = g_api.Value<int>(m.screenH);
     const bool valid = width > 0 && height > 0 && ReadPointer(x, y, down);

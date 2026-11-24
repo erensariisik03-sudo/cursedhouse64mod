@@ -229,16 +229,17 @@ int main() {
     net.listing_ready=true;net.remote_files={"photo.png"};photo_transport_bridge::Publish(net);Frame();Frame();
     // The file row must work through the *parent* hub's touch/scroll
     // instead of a nested child that can swallow real device touches.
-    Direct("Al: photo.png");action=photo_transport_bridge::Take();
-    assert(action.choose_remote_file=="photo.png"&&action.fetch);
-    net.selected_remote_file="photo.png";photo_transport_bridge::Publish(net);Frame();Frame();
-    Direct("Secilen fotografi al");action=photo_transport_bridge::Take();assert(action.fetch);
+    Direct("[ ] photo.png");action=photo_transport_bridge::Take();
+    assert(action.choose_remote_file=="photo.png"&&!action.fetch);
+    net.selected_remote_files={"photo.png"};net.selected_remote_file="photo.png";photo_transport_bridge::Publish(net);Frame();Frame();
+    Direct("Secilen fotograflari al");action=photo_transport_bridge::Take();assert(action.fetch);
     // Multiple files must keep the clicked filename, rather than taking an
     // arbitrary first entry.
     net.remote_files={"photo.png","other.jpg"};net.selected_remote_file.clear();
     photo_transport_bridge::Publish(net);Frame();Frame();
-    Direct("Al: other.jpg");action=photo_transport_bridge::Take();
-    assert(action.choose_remote_file=="other.jpg"&&action.fetch);
+    Direct("[ ] other.jpg");action=photo_transport_bridge::Take();
+    assert(action.choose_remote_file=="other.jpg"&&!action.fetch);
+    photo_transport_bridge::SelectAll();action=photo_transport_bridge::Take();assert(action.select_all);
     // Closing developer authentication must automatically hide the receiver screen.
     bot.developer_unlocked=false;chat_bot_bridge::Publish(bot);
     photo_transport_bridge::Publish({});Frame();Frame();

@@ -632,28 +632,29 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             ImGui::TextWrapped(net.listing_ready?"Oyuncunun izin verdigi fotograflar:":"Karsi oyuncunun onayi / listesi bekleniyor...");
             if(net.listing_ready){
                 ImGui::TextWrapped("Karsidan gelen fotograf sayisi: %d",(int)net.remote_files.size());
-                if(net.remote_files.size()==1)
-                    ImGui::TextWrapped("Tek fotograf varsa otomatik secilir. Asagidaki Al butonuna basabilirsin.");
-                else
-                    ImGui::TextWrapped("Fotografi indirmek icin dosyanin 'Al:' satirina dokun.");
+                ImGui::TextWrapped("Birden fazla fotograf secip tek izinde sirayla indirebilirsin.");
+                if(!net.fetching&&net.queue_remaining==0){
+                    ActionKey("Tumunu sec",content,key_height,[]{photo_transport_bridge::SelectAll();InvalidateKeys();});
+                    ActionKey("Secimi temizle",content,key_height,[]{photo_transport_bridge::ClearSelection();InvalidateKeys();});
+                }
                 // Do not put the remote file buttons in a second scrollable
                 // child. On real devices the nested touch region can intercept
                 // their taps; the parent hub already supports touch scrolling.
                 for(const auto& name:net.remote_files){
                     ImGui::PushID(name.c_str());
-                    const std::string label="Al: "+name;
-                    ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{photo_transport_bridge::FetchRemoteFile(name);InvalidateKeys();},net.selected_remote_file==name);
+                    const bool checked=std::find(net.selected_remote_files.begin(),net.selected_remote_files.end(),name)!=net.selected_remote_files.end();
+                    const std::string label=std::string(checked?"[x] ":"[ ] ")+name;
+                    ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name]{photo_transport_bridge::ChooseRemoteFile(name);InvalidateKeys();},checked);
                     ImGui::PopID();
                 }
                 if(net.remote_files.empty())ImGui::TextWrapped("Paylasilan klasorde JPG/PNG yok.");
-                if(!net.selected_remote_file.empty())ImGui::TextWrapped("Secilen dosya: %s",net.selected_remote_file.c_str());
-                else if(net.remote_files.size()>1)ImGui::TextWrapped("Henuz bir dosya secilmedi.");
-                ImGui::BeginDisabled(net.fetching||net.remote_files.empty());
-                ActionKey("Secilen fotografi al",content,key_height,[]{photo_transport_bridge::Fetch();InvalidateKeys();});
+                ImGui::TextWrapped("Secilen: %d | Sirada: %d",(int)net.selected_remote_files.size(),(int)net.queue_remaining);
+                ImGui::BeginDisabled(net.fetching||net.queue_remaining>0||net.remote_files.empty());
+                ActionKey("Secilen fotograflari al",content,key_height,[]{photo_transport_bridge::Fetch();InvalidateKeys();});
                 ImGui::EndDisabled();
             }
         }
-        ImGui::TextWrapped("Karsi cihaz kabul etmeden dosya adi gelmez. Yalnizca karsi cihazdaki Pictures/GMMShare gosterilir.");
+        ImGui::TextWrapped("Karsi cihaz bir kez izin verince Pictures dosyalari gorulur. Yetki 15 dakika veya iptale kadar surer.");
         break;
     }
     case 0:{
@@ -950,12 +951,18 @@ void GameplaySectionBody(float key_height,float content){
             ImGui::TextWrapped("Oda: %s",room_name.c_str());
         }
         if(!note.empty())ImGui::TextWrapped("%s",note.c_str());
-        if(vote.players.empty())ImGui::TextWrapped("Odadaki oyuncu listesi bekleniyor.");
+        // Photon names are used directly, without stripping <size>, <color> or emoji tags.
+        const auto peer_state=photo_transport_bridge::Read();
+        if(peer_state.peers.empty()&&peer_state.local_name.empty())ImGui::TextWrapped("Odadaki oyuncu listesi bekleniyor.");
         if(ImGui::BeginChild("##copy_players",ImVec2(0,key_height*4),false)){
-            for(const auto& p:vote.players){
+            if(!peer_state.local_name.empty()){
+                const std::string name=peer_state.local_name;
+                ActionKey("Kendi ham ismimi kopyala",ImGui::GetContentRegionAvail().x,key_height,[name]{const bool ok=g_copy&&g_copy(name);note=ok?"Ham isim kopyalandi.":"Kopyalanamadi.";InvalidateKeys();});
+            }
+            for(const auto& p:peer_state.peers){
                 ImGui::PushID(p.actor);
-                const auto label=p.name+(p.actor==vote.local?" (sen)":"");
-                ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name=p.name]{const bool ok=g_copy&&g_copy(name);note=ok?"Kopyalandı: "+name:"Kopyalanamadı.";InvalidateKeys();});
+                const auto label="#"+std::to_string(p.actor)+" "+p.display;
+                ActionKey(label.c_str(),ImGui::GetContentRegionAvail().x,key_height,[name=p.display]{const bool ok=g_copy&&g_copy(name);note=ok?"Ham isim kopyalandi.":"Kopyalanamadi.";InvalidateKeys();});
                 ImGui::PopID();
             }
         }ImGui::EndChild();
@@ -1045,6 +1052,16 @@ void DrawAutoJoin(const ImGuiIO& io){
 // Yuvarlak, yarı saydam menü düğmesi + AI, Kıyafet ve bölümlemeli Oyun paneli.
 void DrawSharePrompt(const ImGuiIO& io,float scale,float key_height){
     const auto share=photo_transport_bridge::Read();
+    if(share.share_active&&!share.share_request){
+        const float boxw=std::min(io.DisplaySize.x*.74f,360.f*scale);
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*.5f,io.DisplaySize.y*.12f),ImGuiCond_Always,ImVec2(.5f,0));
+        ImGui::SetNextWindowSize(ImVec2(boxw,0),ImGuiCond_Always);
+        if(ImGui::Begin("##gmm_share_active",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoMove)){
+            ImGui::TextWrapped("Pictures paylasiliyor: %s",share.share_with.c_str());
+            ActionKey("Paylasimi kapat",ImGui::GetContentRegionAvail().x,key_height,[]{photo_transport_bridge::StopSharing();InvalidateKeys();});
+            RecordWindow();
+        }ImGui::End();
+    }
     if(share.share_request){
         const float boxw=std::min(io.DisplaySize.x*.90f,420.f*scale);
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*.5f,io.DisplaySize.y*.5f),ImGuiCond_Always,ImVec2(.5f,.5f));
@@ -1053,7 +1070,7 @@ void DrawSharePrompt(const ImGuiIO& io,float scale,float key_height){
         if(ImGui::Begin("##gmm_photo_share_request",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoMove)){
             ImGui::TextWrapped("GMM Connect | Paylasim istegi");
             ImGui::TextWrapped("%s fotograf listenizi gormek istiyor.",share.share_request_from.c_str());
-            ImGui::TextWrapped("Sadece Pictures/GMMShare klasorundeki JPG/PNG fotograflar paylasilir. Bu cihazdan tek dosya isteyebilir.");
+            ImGui::TextWrapped("Pictures klasorunun icindeki JPG/PNG dosyalari 15 dakika bu oyuncuya acilacak. Birden fazla dosya tek izinde alinabilir. Paylasimi istedigin zaman kapatabilirsin.");
             const float actionw=(ImGui::GetContentRegionAvail().x-ImGui::GetStyle().ItemSpacing.x)/2.f;
             ImGui::PushID("share_approve");ActionKey("Kabul et",actionw,key_height,[]{photo_transport_bridge::AllowBrowse();InvalidateKeys();});ImGui::PopID();ImGui::SameLine();
             ImGui::PushID("share_deny");ActionKey("Reddet",actionw,key_height,[]{photo_transport_bridge::DenyBrowse();InvalidateKeys();});ImGui::PopID();
@@ -1245,6 +1262,21 @@ void Draw() {
     if(g_visible) {if(g_shortcuts_only)DrawShortcutStrip(io);else DrawKeyboard(io);}
     else if(g_integrated){DrawHub(io);DrawAutoJoin(io);}
     else DrawShowButton(io);
+    // A colored in-game welcome banner: standard Android Toast text styling is
+    // controlled by SystemUI on Android 11+, so this is drawn in the GLES UI.
+    static double first_draw=-1;
+    if(first_draw<0)first_draw=ImGui::GetTime();
+    if(ImGui::GetTime()-first_draw<5.0){
+        const char *pieces[]={"Di","Cap","rio Mod"};
+        const ImU32 colors[]={IM_COL32(255,75,75,255),IM_COL32(255,158,45,255),IM_COL32(255,222,65,255)};
+        float total=0;for(const char* v:pieces)total+=ImGui::CalcTextSize(v).x;
+        float x=(io.DisplaySize.x-total)*.5f;
+        ImDrawList* fg=ImGui::GetForegroundDrawList();
+        for(int i=0;i<3;i++){
+            fg->AddText(ImVec2(x,io.DisplaySize.y*.08f),colors[i],pieces[i]);
+            x+=ImGui::CalcTextSize(pieces[i]).x;
+        }
+    }
     if(!g_list_touch.visible)g_list_touch={};
     if(!g_hub_touch.visible)g_hub_touch={};
 }

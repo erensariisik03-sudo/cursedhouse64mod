@@ -98,10 +98,10 @@ void EventHook(Object* client,Object* event,const Method* method) {
 }
 
 static double Now() {return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();}
-static const std::string kShareDir="/sdcard/Pictures/GMMShare";
+static const std::string kShareDir="/sdcard/Pictures";
 class Session {
  const Api& a;
- const Method *raise{},*client_get{},*op_raise{},*opt_ctor{},*current_room{},*local_player{},*players{},*actor_get{},*nick_get{},*array_length{},*array_item{};
+ const Method *raise{},*client_get{},*op_raise{},*opt_ctor{},*current_room{},*local_player{},*players{},*actor_get{},*nick_get{},*own_nick{},*array_length{},*array_item{};
  Class *opt_class{},*send_class{},*int_class{};
  Field *target_actors{},*reliable{},*encrypted{};
  const Method* send_reliable_get{};
@@ -124,7 +124,7 @@ class Session {
  std::string private_files_dir;
  std::string last_saved_path;
  // One-time, per-room browse authorization. The data owner must tap Accept
- // before any filename is listed; only /Pictures/GMMShare can be listed/read.
+ // before any filename is listed; only direct /Pictures JPG/PNG files can be read.
  uint64_t share_request_id=0,approved_id=0,browse_id=0;
  int share_request_actor=0,approved_actor=0,browse_actor=0;
  double share_deadline=0,approval_deadline=0,browse_deadline=0,next_browse_send=0;
@@ -132,6 +132,10 @@ class Session {
  std::vector<std::string> approved_files;
  std::deque<std::pair<int,std::string>> browse_outbox;
  std::string selected_remote_file;
+ std::vector<std::string> selections;
+ std::deque<std::string> batch;
+ size_t batch_finished=0;
+ std::string sharing_with;
 
  const Method* M(const char* ns,const char* cls,const char* name,int n=0){return a.FindMethod(a.Find(ns,cls),name,n);}
  bool IsPeer(int actor)const {return actor>0&&std::any_of(peers.begin(),peers.end(),[&](const auto& p){return p.actor==actor;});}
@@ -140,6 +144,7 @@ class Session {
   share_request_id=approved_id=browse_id=0;share_request_actor=approved_actor=browse_actor=0;
   share_deadline=approval_deadline=browse_deadline=next_browse_send=0;
   browse_granted=browse_fetching=false;approved_files.clear();browse_outbox.clear();selected_remote_file.clear();
+  selections.clear();batch.clear();sharing_with.clear();batch_finished=0;
   snap.share_request=snap.browsing=snap.listing_ready=snap.fetching=false;
   snap.share_request_from.clear();snap.remote_files.clear();snap.selected_remote_file.clear();
  }
@@ -161,6 +166,7 @@ class Session {
   players=M("Photon.Pun","PhotonNetwork","get_PlayerListOthers");
   actor_get=M("Photon.Realtime","Player","get_ActorNumber");
   nick_get=M("Photon.Realtime","Player","get_NickName");
+  own_nick=M("Photon.Pun","PhotonNetwork","get_NickName");
   array_length=M("System","Array","get_Length");
   array_item=M("System","Array","GetValueImpl",1);
   opt_class=a.Find("Photon.Realtime","RaiseEventOptions");
@@ -297,10 +303,11 @@ class Session {
    std::lock_guard<std::mutex> lock(inbox_mutex);inbox.clear();
   }
   room_id=id;
-  peers.clear();local_actor=0;
+  peers.clear();local_actor=0;snap.local_name.clear();
   if(!room.Get())return;
   Root me(a,a.Call(local_player));
   local_actor=a.Value<int>(actor_get,me.Get(),0);
+  if(own_nick){Root own(a,a.Call(own_nick));if(own.Get())snap.local_name=a.Utf8(reinterpret_cast<String*>(own.Get()));}
   Root others(a,a.Call(players));
   if(!others.Get())return;
   const int count=a.Value<int>(array_length,others.Get(),-1);
@@ -317,9 +324,9 @@ class Session {
  }
  std::vector<std::string> LocalImages() {
   std::vector<std::string> files;
-  mkdir("/sdcard/Pictures",0755);mkdir(kShareDir.c_str(),0700);
+  mkdir("/sdcard/Pictures",0755);
   DIR* dir=opendir(kShareDir.c_str());if(!dir)return files;
-  for(dirent* entry;(entry=readdir(dir))!=nullptr && files.size()<40;){
+  for(dirent* entry;(entry=readdir(dir))!=nullptr && files.size()<100;){
    const std::string name=entry->d_name;
    if(!browse::NameOk(name))continue;
    const auto dot=name.find_last_of('.');if(dot==std::string::npos)continue;
@@ -374,10 +381,14 @@ class Session {
   struct stat dir_stat{};
   if(lstat(dest.c_str(),&dir_stat)!=0||!S_ISDIR(dir_stat.st_mode))return false;
   const bool png=bytes.size()>=8&&bytes[0]==137&&bytes[1]==80;
-  const std::string path=dest+"/received_"+std::to_string(id)+(png?".png":".jpg");
-  // Exclusive create prevents overwriting any existing user file and avoids
-  // following a malicious symlink with the same destination name.
-  const int fd=open(path.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+  // Use a unique filename per received photo; multiple photos share one consent ID.
+  std::string path;int fd=-1;
+  for(unsigned serial=0;serial<10000;serial++){
+   path=dest+"/received_"+std::to_string(id)+"_"+std::to_string(serial)+(png?".png":".jpg");
+   fd=open(path.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+   if(fd>=0)break;
+   if(errno!=EEXIST)return false;
+  }
   if(fd<0)return false;
   size_t written=0;bool ok=true;
   while(written<bytes.size()){
@@ -399,7 +410,7 @@ class Session {
     share_request_id=p.id;share_request_actor=msg.sender;share_deadline=now+60;
     snap.share_request=true;snap.share_request_from=std::to_string(msg.sender);
     for(const auto& peer:peers)if(peer.actor==msg.sender)snap.share_request_from=peer.display;
-    Note("Paylasim istegi: Karsi oyuncu GMMShare listesini istiyor. Kabul veya Reddet.");
+    Note("Paylasim istegi: Karsi oyuncu Pictures fotograflarini istiyor. Kabul veya Reddet.");
     break;
    case browse::Kind::Grant:
     if(browse_id==p.id&&browse_actor==msg.sender){browse_granted=true;Note("Oyuncu izin verdi. Fotograf listesi geliyor...");}
@@ -409,7 +420,7 @@ class Session {
       const bool was_fetching=browse_fetching;
       browse_id=0;browse_actor=0;browse_granted=browse_fetching=false;
       snap.browsing=snap.listing_ready=snap.fetching=false;
-      snap.remote_files.clear();selected_remote_file.clear();
+      snap.remote_files.clear();selected_remote_file.clear();selections.clear();batch.clear();
       Note(was_fetching?"Karsi cihaz secilen fotografi acamadi ya da paylasim suresi doldu.":
                        "Oyuncu paylasim istegini reddetti veya oturum iptal edildi.");
     }
@@ -420,12 +431,12 @@ class Session {
     }
     if(approved_id==p.id&&approved_actor==msg.sender){
       approved_id=0;approved_actor=0;approval_deadline=0;
-      approved_files.clear();browse_outbox.clear();
+      approved_files.clear();browse_outbox.clear();sharing_with.clear();
     }
     break;
    case browse::Kind::Listing:
     if(browse_id==p.id&&browse_actor==msg.sender&&browse_granted&&!snap.listing_ready&&
-       snap.remote_files.size()<40&&std::find(snap.remote_files.begin(),snap.remote_files.end(),p.name)==snap.remote_files.end())
+       snap.remote_files.size()<100&&std::find(snap.remote_files.begin(),snap.remote_files.end(),p.name)==snap.remote_files.end())
       snap.remote_files.push_back(p.name);
     break;
    case browse::Kind::End:
@@ -435,7 +446,7 @@ class Session {
       // useful without a separate row tap; do NOT choose arbitrarily if
       // multiple files were shared.
       if(snap.remote_files.size()==1){
-       selected_remote_file=snap.remote_files.front();
+       selected_remote_file=snap.remote_files.front();selections={selected_remote_file};
        Note("Tek fotograf otomatik secildi. 'Secilen fotografi al' dugmesine bas.");
       }else Note(snap.remote_files.empty()?"Paylasilan klasorde uygun fotograf yok.":"Paylasilan fotograflardan birini sec.");
       PHOTO_LOG("GMM photo browse listing complete count=%zu auto_selected=%d",snap.remote_files.size(),!selected_remote_file.empty());
@@ -456,8 +467,8 @@ class Session {
     if(!LoadChosen(p.name,tx_data)){
       PHOTO_LOG("GMM photo owner: fetch denied because approved image is not readable");
       SendEvent(msg.sender,browse::Encode(browse::Kind::Deny,p.id,msg.sender));
-      approved_id=0;approved_actor=0;approved_files.clear();approval_deadline=0;
-      Note("Secilen fotograf acilamadi. Dosyayi GMMShare klasorunde kontrol et.");
+      // Keep owner consent; failure of one image does not expose other files.
+      Note("Secilen fotograf acilamadi. Dosyayi Pictures klasorunde kontrol et.");
       break;
     }
     outgoing_id=approved_id;outgoing_peer=approved_actor;
@@ -465,7 +476,7 @@ class Session {
       outgoing_deadline=now+45;tx_accepted=false;tx_index=0;snap.sending=true;
       snap.progress=0;snap.total=tx_data.size();Note("Onaylanan fotograf gonderiliyor...");
     }else{ResetSession();Note("Photon fotograf teklifi gonderilemedi.");}
-    approved_id=0;approved_actor=0;approved_files.clear();approval_deadline=0;
+    // Keep owner approval for more images within this same session.
     break;
    }
    default:break;
@@ -485,7 +496,7 @@ class Session {
       if(!rx.BeginTrusted(approved,local_actor,true)||!SendEvent(msg.sender,wire::EncodeAccept(p.id,msg.sender))){
         rx.Cancel();browse_fetching=false;snap.fetching=false;Note("Fotograf alma baglantisi kurulamadi.");return;
       }
-      incoming_offer=approved;requested_sender=msg.sender;incoming_deadline=now+90;
+      incoming_offer=approved;requested_sender=msg.sender;incoming_deadline=now+30;
       snap.incoming=false;snap.total=p.total;snap.progress=0;Note("Secilen fotograf aliniyor...");return;
     }
     incoming_offer={p.id,msg.sender,p.recipient,p.total,(p.total+kChunkBytes-1)/kChunkBytes,p.digest};
@@ -496,11 +507,11 @@ class Session {
    }
    case wire::Kind::Accept: {
     if(!outgoing_id||p.id!=outgoing_id||msg.sender!=outgoing_peer||p.recipient!=local_actor)return;
-    tx_accepted=true;outgoing_deadline=now+90;Note("Karşı cihaz onayladı. Gönderiliyor...");break;
+    tx_accepted=true;outgoing_deadline=now+30;Note("Karşı cihaz onayladı. Gönderiliyor...");break;
    }
    case wire::Kind::Chunk: {
     if(!chat_bot_bridge::Read().developer_unlocked||!rx.Active()||(!browse_fetching&&!photo_transfer_bridge::Read().receiving)){rx.Cancel();return;}
-    if(rx.Push(p.id,msg.sender,p.index,p.bytes))snap.progress+=p.bytes.size();
+    if(rx.Push(p.id,msg.sender,p.index,p.bytes)){snap.progress+=p.bytes.size();incoming_deadline=now+30;browse_deadline=now+900;}
     break;
    }
    case wire::Kind::Done: {
@@ -509,7 +520,11 @@ class Session {
     Note(valid?"Fotoğraf alındı: "+last_saved_path:"Fotoğraf doğrulanamadı veya kaydedilemedi");
     incoming_offer={};requested_sender=0;incoming_deadline=0;
     snap.incoming=false;snap.incoming_from.clear();
-    if(browse_fetching){browse_fetching=false;browse_id=0;browse_actor=0;snap.fetching=snap.browsing=snap.listing_ready=false;}
+    if(browse_fetching){
+      browse_fetching=false;snap.fetching=false;batch_finished++;
+      browse_deadline=now+900;
+      PHOTO_LOG("GMM photo batch: completed=%zu queued=%zu",batch_finished,batch.size());
+    }
     break;
    }
    case wire::Kind::Cancel: {
@@ -528,7 +543,7 @@ class Session {
   if(c.choose_actor>0&&IsPeer(c.choose_actor)){
    if(pending_actor!=c.choose_actor&&browse_id){
     browse_id=0;browse_actor=0;browse_granted=browse_fetching=false;
-    snap.browsing=snap.listing_ready=snap.fetching=false;snap.remote_files.clear();selected_remote_file.clear();
+    snap.browsing=snap.listing_ready=snap.fetching=false;snap.remote_files.clear();selected_remote_file.clear();selections.clear();batch.clear();
    }
    pending_actor=c.choose_actor;pending_file.clear();
   }
@@ -537,10 +552,11 @@ class Session {
    const int actor=share_request_actor;const uint64_t id=share_request_id;
    auto files=LocalImages();
    if(SendEvent(actor,browse::Encode(browse::Kind::Grant,id,actor))){
-    approved_id=id;approved_actor=actor;approval_deadline=now+180;approved_files=std::move(files);
+    approved_id=id;approved_actor=actor;approval_deadline=now+900;approved_files=std::move(files);
+    sharing_with=std::to_string(actor);for(const auto& peer:peers)if(peer.actor==actor)sharing_with=peer.display;
     for(const auto& filename:approved_files)browse_outbox.emplace_back(actor,browse::Encode(browse::Kind::Listing,id,actor,filename));
     browse_outbox.emplace_back(actor,browse::Encode(browse::Kind::End,id,actor));
-    Note("GMMShare dosyalari paylasildi. Tek fotograf istegi bekleniyor.");
+    Note("Pictures fotograflari paylasildi; ayni oturumda tekrar onay gerekmiyor.");
    }else Note("Paylasim izni gonderilemedi.");
    share_request_id=0;share_request_actor=0;share_deadline=0;snap.share_request=false;snap.share_request_from.clear();
   }
@@ -549,13 +565,18 @@ class Session {
    share_request_id=0;share_request_actor=0;share_deadline=0;snap.share_request=false;snap.share_request_from.clear();
    Note("Paylasim istegi reddedildi.");
   }
+  if(c.stop_sharing&&approved_id){
+   SendEvent(approved_actor,browse::Encode(browse::Kind::Deny,approved_id,approved_actor));
+   approved_id=0;approved_actor=0;approved_files.clear();browse_outbox.clear();sharing_with.clear();approval_deadline=0;
+   Note("Paylasim durduruldu; yeni istek yeniden izin gerektirir.");
+  }
   if(c.cancel_browse&&browse_id&&!browse_fetching){
    PHOTO_LOG("GMM photo UI: browse cancelled target=%d",browse_actor);
    SendEvent(browse_actor,browse::Encode(browse::Kind::Deny,browse_id,browse_actor));
    browse_id=0;browse_actor=0;browse_deadline=0;
    browse_granted=browse_fetching=false;
    snap.browsing=snap.listing_ready=snap.fetching=false;
-   snap.remote_files.clear();selected_remote_file.clear();
+   snap.remote_files.clear();selected_remote_file.clear();selections.clear();batch.clear();
    Note("Fotoğraf listesi isteği iptal edildi. Yeniden deneyebilirsin.");
   }
   if(c.request_browse){
@@ -567,7 +588,8 @@ class Session {
    else {
     std::random_device rng;uint64_t id=(uint64_t(rng())<<32)|uint64_t(rng());if(!id)id=1;
     if(SendEvent(pending_actor,browse::Encode(browse::Kind::Request,id,pending_actor))){
-     browse_id=id;browse_actor=pending_actor;browse_deadline=now+180;browse_granted=browse_fetching=false;
+     browse_id=id;browse_actor=pending_actor;browse_deadline=now+900;browse_granted=browse_fetching=false;
+     selections.clear();batch.clear();batch_finished=0;
      snap.browsing=true;snap.listing_ready=snap.fetching=false;snap.remote_files.clear();selected_remote_file.clear();
      Note("Fotograf listesi icin diger oyuncunun onayi bekleniyor...");
     }else Note("Photon istek gonderilemedi. Ag baglantisini kontrol et.");
@@ -576,28 +598,27 @@ class Session {
   }
   if(!c.choose_remote_file.empty()){
    const bool listed=std::find(snap.remote_files.begin(),snap.remote_files.end(),c.choose_remote_file)!=snap.remote_files.end();
-   PHOTO_LOG("GMM photo UI: remote choose grant=%d list_ready=%d listed=%d fetching=%d",browse_granted,snap.listing_ready,listed,browse_fetching);
-   if(browse_granted&&snap.listing_ready&&listed&&!browse_fetching){
-    selected_remote_file=c.choose_remote_file;
-    Note("Fotograf secildi. Indirme istegi hazir.");
-   }else Note("Fotograf secilemedi: paylasim sona erdi veya dosya listede yok.");
+   if(browse_granted&&snap.listing_ready&&listed&&!browse_fetching&&batch.empty()){
+    auto it=std::find(selections.begin(),selections.end(),c.choose_remote_file);
+    if(it==selections.end())selections.push_back(c.choose_remote_file);
+    else selections.erase(it);
+    selected_remote_file=selections.empty()?std::string():selections.back();
+    Note(std::to_string(selections.size())+" fotograf secildi.");
+   }
   }
+  if(c.select_all&&browse_granted&&snap.listing_ready&&!browse_fetching&&batch.empty()){
+   selections=snap.remote_files;selected_remote_file=selections.empty()?std::string():selections.back();
+  }
+  if(c.clear_selection&&!browse_fetching&&batch.empty()){selections.clear();selected_remote_file.clear();}
   if(c.fetch){
-   // A single listed file is unambiguous. Recover from any stale/missed
-   // selection event without weakening the explicit consent requirements.
-   if(selected_remote_file.empty()&&snap.listing_ready&&snap.remote_files.size()==1)
-    selected_remote_file=snap.remote_files.front();
-   PHOTO_LOG("GMM photo UI: fetch pressed dev=%d request=%d grant=%d list=%d selected=%d files=%zu busy=%d peer=%d",
-             chat_bot_bridge::Read().developer_unlocked,!!browse_id,browse_granted,snap.listing_ready,!selected_remote_file.empty(),snap.remote_files.size(),browse_fetching,IsPeer(browse_actor));
+   if(selections.empty()&&snap.listing_ready&&snap.remote_files.size()==1)selections={snap.remote_files.front()};
+   PHOTO_LOG("GMM photo UI: fetch batch selected=%zu authorized=%d active=%d",selections.size(),browse_granted,browse_fetching);
    if(!chat_bot_bridge::Read().developer_unlocked)Note("Gelistirici sifresi olmadan fotograf alinamaz.");
-   else if(!browse_id||!browse_granted||!snap.listing_ready||selected_remote_file.empty()||browse_fetching||!IsPeer(browse_actor))
-    Note("Fotograf alinamadi: paylasim iznini ve dosya secimini kontrol et.");
-   else if(SendEvent(browse_actor,browse::Encode(browse::Kind::Fetch,browse_id,browse_actor,selected_remote_file))){
-    browse_fetching=true;snap.fetching=true;snap.browsing=true;browse_deadline=now+120;
-    Note("Secilen fotograf karsi cihazdan istendi...");
-   }else Note("Fotograf istek paketi gonderilemedi.");
+   else if(!browse_id||!browse_granted||!snap.listing_ready||selections.empty()||browse_fetching||!batch.empty()||!IsPeer(browse_actor))
+    Note("Fotograf alinamadi: paylasimi ve secimi kontrol et.");
+   else{batch=std::deque<std::string>(selections.begin(),selections.end());batch_finished=0;
+    Note(std::to_string(batch.size())+" fotograf sirayla alinacak.");}
   }
-
   if(!c.choose_file.empty()){
    const auto found=std::find(snap.files.begin(),snap.files.end(),c.choose_file);
    if(found!=snap.files.end())pending_file=c.choose_file;
@@ -620,15 +641,22 @@ class Session {
     outgoing_peer=pending_actor;const auto offer=wire::EncodeOffer(outgoing_id,outgoing_peer,tx_data);
     if(SendEvent(outgoing_peer,offer)){outgoing_deadline=Now()+45;tx_accepted=false;tx_index=0;snap.sending=true;snap.total=tx_data.size();snap.progress=0;Note("Fotoğraf teklifi gönderildi. Karşı cihazın onayı bekleniyor.");}
     else{ResetSession();Note("Photon fotoğraf teklifi gönderilemedi.");}
-   }else Note("Önce oyuncu ve GMMShare içinden 256 KB altında JPG/PNG seç.");
+   }else Note("Once oyuncu ve Pictures icinden JPG/PNG sec.");
   }
  }
  void TransferStep(){
   const double now=Now();
   if(share_request_id&&now>share_deadline){share_request_id=0;share_request_actor=0;snap.share_request=false;snap.share_request_from.clear();Note("Paylasim isteginin suresi doldu.");}
-  if(approved_id&&now>approval_deadline){approved_id=0;approved_actor=0;approved_files.clear();browse_outbox.clear();}
-  if(browse_id&&now>browse_deadline){browse_id=0;browse_actor=0;browse_granted=browse_fetching=false;
+  if(approved_id&&(now>approval_deadline||!IsPeer(approved_actor))){approved_id=0;approved_actor=0;approved_files.clear();browse_outbox.clear();sharing_with.clear();}
+  if(browse_id&&(now>browse_deadline||!IsPeer(browse_actor))){browse_id=0;browse_actor=0;browse_granted=browse_fetching=false;batch.clear();selections.clear();
    snap.browsing=snap.fetching=snap.listing_ready=false;snap.remote_files.clear();selected_remote_file.clear();Note("Fotograf isteginde zaman asimi.");}
+  if(!batch.empty()&&!browse_fetching&&!rx.Active()&&browse_id&&browse_granted&&snap.listing_ready&&IsPeer(browse_actor)){
+   const auto name=batch.front();
+   if(SendEvent(browse_actor,browse::Encode(browse::Kind::Fetch,browse_id,browse_actor,name))){
+    batch.pop_front();browse_fetching=true;snap.fetching=true;browse_deadline=now+900;
+    Note("Fotograf isteniyor ("+std::to_string(batch_finished+1)+"): "+name);
+   }else Note("Fotograf istegi gonderilemedi; tekrar deneniyor.");
+  }
   if(!browse_outbox.empty()&&now>=next_browse_send){
    const auto& next=browse_outbox.front();
    if(SendEvent(next.first,next.second))browse_outbox.pop_front();
@@ -637,11 +665,11 @@ class Session {
   if(incoming_offer.id&&now>incoming_deadline){rx.Cancel();incoming_offer={};requested_sender=0;snap.incoming=false;Note("Gelen fotoğraf isteği zaman aşımına uğradı.");}
   if(outgoing_id&&now>outgoing_deadline){ResetSession();Note("Fotoğraf aktarımında zaman aşımı.");}
   if(!outgoing_id||!tx_accepted||now<next_send||!IsPeer(outgoing_peer))return;
-  next_send=now+.07;
+  next_send=now+.023; // smooth reliable transfer, one image at a time
   const size_t chunks=(tx_data.size()+kChunkBytes-1)/kChunkBytes;
   if(tx_index<chunks){const auto data=wire::EncodeChunk(outgoing_id,tx_index,tx_data);
    if(SendEvent(outgoing_peer,data)){
-    snap.progress=std::min(tx_data.size(),(tx_index+1)*kChunkBytes);++tx_index;
+    snap.progress=std::min(tx_data.size(),(tx_index+1)*kChunkBytes);++tx_index;outgoing_deadline=now+30;
    }else Note("Fotoğraf paketi gönderilemedi; bağlantı tekrar deneniyor.");
   }else{
    if(SendEvent(outgoing_peer,wire::EncodeDone(outgoing_id))){
@@ -672,13 +700,15 @@ public:
    if(IsPeer(browse_actor))SendEvent(browse_actor,browse::Encode(browse::Kind::Deny,browse_id,browse_actor));
    browse_id=0;browse_actor=0;browse_deadline=0;
    browse_granted=browse_fetching=false;snap.browsing=snap.fetching=snap.listing_ready=false;
-   snap.remote_files.clear();selected_remote_file.clear();
+   snap.remote_files.clear();selected_remote_file.clear();selections.clear();batch.clear();
    rx.Cancel();incoming_offer={};requested_sender=0;snap.incoming=false;
    Note("Gelistirici kilidi kapandi; fotograf alma iptal edildi.");
   }
   if(!browse_fetching&&!photo_transfer_bridge::Read().receiving&&rx.Active()){rx.Cancel();incoming_offer={};requested_sender=0;snap.incoming=false;Note("Alma modu kapatıldı; transfer durduruldu.");}
   TransferStep();
   snap.selected_actor=pending_actor;snap.selected_file=pending_file;snap.selected_remote_file=selected_remote_file;
+  snap.selected_remote_files=selections;snap.queue_remaining=batch.size()+(browse_fetching?1U:0U);
+  snap.share_active=approved_id!=0;snap.share_with=sharing_with;
   snap.selected_name.clear();for(const auto& peer:peers)if(peer.actor==pending_actor)snap.selected_name=peer.display;
   bridge::Publish(snap);
  }

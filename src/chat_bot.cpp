@@ -13,6 +13,7 @@
 #include "photo_transfer_bridge.h"
 #include "developer_lock.h"
 #include "photo_transport_bridge.h"
+#include "storage_access.h"
 #include "text_buffer.h"
 #include <android/log.h>
 #include <algorithm>
@@ -25,6 +26,8 @@
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
+#include <ctime>
+#include <cerrno>
 #define BOT_LOG(...) __android_log_print(ANDROID_LOG_INFO, "multiplayermod", __VA_ARGS__)
 namespace chat_bot {
 namespace {
@@ -59,7 +62,9 @@ class Controller {
     Field *message_field{}, *input_field{}, *allowed_field{};
     chat_bot_engine::Engine engine;
     chat_bot_bridge::Snapshot snap;
-    std::unordered_set<int> seen;
+    std::unordered_set<int> seen, logged_ids;
+    double next_chat_log=0;
+    uintptr_t logged_room=0;
     std::vector<chat_bot_core::Turn> history;
     std::string key, custom, last_seen;
     std::vector<std::string> selected; bool all = false, strict = true, message_filter = true; int mode = 0, words = chat_bot_core::kMinWords;
@@ -295,6 +300,50 @@ class Controller {
         }
     }
     void Status(const std::string& s) { snap.status = s; }
+    // Append only chat messages actually visible to this client, never remote
+    // private content. Log independently of AI being enabled. Preserve TMP tags.
+    void LogVisibleChat(uintptr_t current_id){
+        if(current_id!=logged_room){logged_room=current_id;logged_ids.clear();}
+        if(now_<next_chat_log)return;
+        next_chat_log=now_+0.8;
+        if(!storage_access::Granted())return;
+        Root array(api,Array(chat_message_class,1));
+        const int n=array.Get()?Count(array.Get()):-1;
+        if(n<0||n>400)return;
+        struct Line {int order;std::string text;};
+        std::vector<Line> fresh;
+        for(int i=0;i<n;i++){
+            Root o(api,At(array.Get(),i));if(!o.Get()||!IsAlive(o.Get()))continue;
+            bool ok=false;auto* boxed=api.Call(instance_id,o.Get(),nullptr,&ok);
+            if(!ok||!boxed)continue;
+            const int id=*static_cast<int*>(api.object_unbox(boxed));
+            if(logged_ids.count(id))continue;
+            Object* field=nullptr;api.field_get_value(o.Get(),message_field,&field);
+            Root label(api,field);if(!label.Get())continue;
+            std::string raw=ReadString(text_get,label.Get(),ok);
+            if(!ok||raw.empty())continue;
+            logged_ids.insert(id);
+            if(raw.size()>4096)raw.resize(4096);
+            for(char& c:raw)if(c=='\r'||c=='\n')c=' ';
+            int order=i;
+            Root tr(api,(get_transform&&sibling)?api.Call(get_transform,o.Get(),nullptr,&ok):nullptr);
+            if(tr.Get()){auto* idx=api.Call(sibling,tr.Get(),nullptr,&ok);if(ok&&idx)order=*static_cast<int*>(api.object_unbox(idx));}
+            fresh.push_back({order,std::move(raw)});
+        }
+        if(fresh.empty())return;
+        if(mkdir("/sdcard/gmmod",0700)!=0&&errno!=EEXIST)return;
+        struct stat st{};if(lstat("/sdcard/gmmod",&st)!=0||!S_ISDIR(st.st_mode))return;
+        std::time_t when=std::time(nullptr);std::tm tm{};localtime_r(&when,&tm);
+        char file[80],timebuf[40];
+        std::strftime(file,sizeof(file),"/sdcard/gmmod/chat_%Y%m%d.log",&tm);
+        std::strftime(timebuf,sizeof(timebuf),"%Y-%m-%d %H:%M:%S",&tm);
+        if(stat(file,&st)==0&&st.st_size>50*1024*1024)return;
+        std::ofstream out(file,std::ios::app|std::ios::binary);if(!out)return;
+        std::sort(fresh.begin(),fresh.end(),[](const Line& l,const Line& r){return l.order<r.order;});
+        std::string room_label=snap.room_name;
+        for(char& c:room_label)if(c=='\r'||c=='\n')c=' ';
+        for(const auto& line:fresh)out<<"["<<timebuf<<"] [room="<<room_label<<"] "<<line.text<<"\n";
+    }
     // Mevcut tüm satırları gördük say: yalnız bundan sonra gelenlere cevap verilir.
     bool Scan(bool mark_only) {
         Root array(api, Array(chat_message_class, 1)); // kapalı sohbet penceresindeki satırlar da dahil: geçmiş yeniden etkinleşince 'yeni' sayılmasın
@@ -323,7 +372,7 @@ class Controller {
         if (fresh.size() > 2) { snap.last_in = u8"(geçmiş yenilendi; atlandı)"; return true; } // toplu belirme = eski satırlar, cevaplanmaz
         std::sort(fresh.begin(), fresh.end(), [](const New& a, const New& b) { return a.order < b.order; });
         for (const auto& f : fresh) {
-            // Panelde yalnız ekran içi gösterim; sohbet metni loga yazılmaz.
+            // AI paneli icin onizleme; ayrica ekranda gorunen mesajlar yerel loga yazilir.
             snap.last_in = chat_bot_core::PrefixScalars(chat_bot_core::Trim(chat_bot_core::StripTags(f.plain)), 60);
             if (!own_name.empty() && chat_bot_core::MatchSender(f.plain, own_name)) continue; // kendi satırımız
             const std::vector<std::string>& candidates = all ? snap.players : selected;
@@ -576,6 +625,7 @@ public:
         if(current_room.Get()&&room_name_get){bool room_ok=false;const auto value=ReadString(room_name_get,current_room.Get(),room_ok);if(room_ok)snap.room_name=value;}
         else snap.room_name.clear();
         if(!current_room.Get()){
+            logged_room=0;logged_ids.clear();next_chat_log=0;
             ClearStatus();
             snap.players.clear();snap.delegate_players.clear();snap.room_name.clear();delegate_name.clear();delegate_outbox.clear();reminder.Reset();active_room=0;
             if(enabled){enabled=false;InvalidateReplies();Status(u8"AI | Odadan çıkıldı; bot kapatıldı.");}
@@ -587,10 +637,11 @@ public:
         const auto room_id=reinterpret_cast<uintptr_t>(current_room.Get());
         if(active_room&&active_room!=room_id){
             ClearStatus();delegate_outbox.clear();delegate_name.clear();
-            InvalidateReplies();reminder.Reset();baseline=false;seen.clear();
+            InvalidateReplies();reminder.Reset();baseline=false;seen.clear();logged_ids.clear();
             engaged.clear();talking.clear();last_accept.clear();last_smalltalk.clear();last_warning.clear();next_warning=0;history.clear();
         }
         active_room=room_id;
+        LogVisibleChat(room_id);
         if(!delegate_name.empty()&&std::find(snap.delegate_players.begin(),snap.delegate_players.end(),delegate_name)==snap.delegate_players.end()&&now>=next_players){delegate_name.clear();delegate_outbox.clear();}
         if (now >= next_players) { next_players = now + 1.0; Players(); }
         reminder.Update(now,enabled&&all,strict,active_room,own_name,!snap.players.empty());

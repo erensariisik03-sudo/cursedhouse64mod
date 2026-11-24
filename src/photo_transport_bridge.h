@@ -11,18 +11,20 @@ struct Snapshot {
     bool ready=false, incoming=false, sending=false;
     bool in_room=false;
     int local_actor=0;
-    bool share_request=false, browsing=false, listing_ready=false, fetching=false;
-    std::string share_request_from;
+    bool share_request=false, browsing=false, listing_ready=false, fetching=false,share_active=false;
+    std::string share_request_from,share_with,local_name;
     int selected_actor=0;
     std::string selected_name,selected_file,selected_remote_file,status="Photon fotoğraf kanalı hazırlanıyor...";
     std::string incoming_from;
     std::vector<Peer> peers;
-    std::vector<std::string> files,remote_files;
+    std::vector<std::string> files,remote_files,selected_remote_files;
+    size_t queue_remaining=0;
     size_t progress=0,total=0;
 };
 struct Commands {
     bool refresh=false,offer=false,accept=false,reject=false;
     bool request_browse=false,cancel_browse=false,allow_browse=false,deny_browse=false,fetch=false;
+    bool select_all=false,clear_selection=false,stop_sharing=false;
     int choose_actor=0;
     std::string choose_file,choose_remote_file;
 };
@@ -32,6 +34,9 @@ inline Commands pending;
 inline Snapshot Read(){std::lock_guard<std::mutex> l(mutex);return state;}
 inline void Publish(Snapshot s){std::lock_guard<std::mutex> l(mutex);state=std::move(s);}
 inline Commands Take(){std::lock_guard<std::mutex> l(mutex);Commands c=std::move(pending);pending={};return c;}
+inline void SelectAll(){std::lock_guard<std::mutex> l(mutex);pending.select_all=true;}
+inline void ClearSelection(){std::lock_guard<std::mutex> l(mutex);pending.clear_selection=true;}
+inline void StopSharing(){std::lock_guard<std::mutex> l(mutex);pending.stop_sharing=true;}
 inline void RequestBrowse(){std::lock_guard<std::mutex> l(mutex);pending.request_browse=true;}
 inline void CancelBrowse(){std::lock_guard<std::mutex> l(mutex);pending.cancel_browse=true;}
 inline void AllowBrowse(){std::lock_guard<std::mutex> l(mutex);pending.allow_browse=true;}

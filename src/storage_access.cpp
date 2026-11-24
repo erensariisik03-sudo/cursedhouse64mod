@@ -126,5 +126,29 @@ bool OpenSettings() {
     env->PopLocalFrame(nullptr);
     return ok;
 }
+bool ShowToast(const char* message){
+    if(!message||!*message)return false;
+    Env t;JNIEnv* env=t.env;
+    if(!env||env->PushLocalFrame(30)!=JNI_OK)return false;
+    bool ok=false;
+    do{
+        jclass at=env->FindClass("android/app/ActivityThread");
+        jclass toast=env->FindClass("android/widget/Toast");
+        if(!at||!toast||Failed(env))break;
+        jmethodID appMethod=env->GetStaticMethodID(at,"currentApplication","()Landroid/app/Application;");
+        jmethodID make=env->GetStaticMethodID(toast,"makeText","(Landroid/content/Context;Ljava/lang/CharSequence;I)Landroid/widget/Toast;");
+        jmethodID show=env->GetMethodID(toast,"show","()V");
+        if(!appMethod||!make||!show||Failed(env))break;
+        jobject app=env->CallStaticObjectMethod(at,appMethod);
+        jstring str=env->NewStringUTF(message);
+        if(!app||!str||Failed(env))break;
+        jobject instance=env->CallStaticObjectMethod(toast,make,app,str,static_cast<jint>(1));
+        if(!instance||Failed(env))break;
+        env->CallVoidMethod(instance,show);
+        ok=!Failed(env);
+    }while(false);
+    Failed(env);env->PopLocalFrame(nullptr);return ok;
+}
+
 } // namespace storage_access
 #endif

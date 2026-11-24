@@ -1,6 +1,6 @@
 #pragma once
 // GMM IMG2 consent-based, one-session browse protocol. The data owner must
-// explicitly approve a request before any filenames from GMMShare are sent.
+// explicitly approve a request before any filenames from the approved Pictures directory are sent.
 // The attested sender must always come from Photon EventData, not the payload.
 #include "photo_transfer_security.h"
 #include <charconv>

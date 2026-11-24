@@ -75,7 +75,7 @@ public:
     void Reset(){*this=Gate{};}
     int AttemptsRemaining()const{return 5-int(failed_);}
 };
-constexpr size_t kMaxImageBytes=256*1024;
+constexpr size_t kMaxImageBytes=8*1024*1024; // per image cap; avoids unbounded Photon buffering
 constexpr size_t kChunkBytes=768;
 constexpr size_t kMaxChunks=(kMaxImageBytes+kChunkBytes-1)/kChunkBytes;
 inline bool IsImage(const Bytes& b){
