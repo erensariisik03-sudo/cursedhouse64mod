@@ -93,3 +93,5 @@ build/tests/voice_ai_runtime_test
 
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src tests/photo_transfer_protocol_test.cpp -o build/tests/photo_transfer_protocol_test
 build/tests/photo_transfer_protocol_test
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I src tests/photo_browse_protocol_test.cpp -o build/tests/photo_browse_protocol_test
+build/tests/photo_browse_protocol_test
