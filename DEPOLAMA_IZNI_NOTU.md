@@ -24,3 +24,13 @@ Yalnızca bu izin, ne uygulama açılır açılmaz otomatik dosya taraması yapa
 ## Dikkat
 
 APK değiştirildiğinde yeniden imzalanmalı; mevcut imzadan farklı bir imzayla üstüne kurulum mümkün olmayabilir. Kurulu uygulamanın verilerini yedeklemeden kaldırmayın. Gerçek Android cihazda ayar ekranının açılması ve ARM64 derlemesi henüz doğrulanmadı.
+
+
+## Bu kaynak sürümü (geliştirici kilidi)
+- Geliştirici menüsü sabit parola doğrulaması olmadan açılmaz; oluşturma/değiştirme menüsü yoktur.
+- Parola her uygulama sürecinde yeniden istenir; 5 hatalı denemeden sonra süreç yeniden başlatılana dek kilitlenir.
+- Depolama erişimi düğmesi geliştirici menüsünden kaldırıldı; fotoğraf teklif/kabul menüsü korundu.
+- Uygulama ilk Unity ana-kare çağrısında Android 11+ için `Environment.isExternalStorageManager()` kontrol eder; izin yoksa Android'in **açık onay gerektiren** sistem izin sayfasını bir kez açar.
+- **classes8.dex değiştirilmedi.** Bu native başlangıç yöntemi oyun ana menüsünü engellemez; Android Activity açılmadan önce engelleme ve izin reddinde kapanış hedefleniyorsa ayrıca gerçek APK/Activity entegrasyonu gerekir.
+- APK manifestinde `android.permission.MANAGE_EXTERNAL_STORAGE` bulunmalı ve APK yeniden imzalanmalı.
+- Sabit parola özeti (SHA-256) tek başına güçlü bir dağıtım/cihaz eşleştirme sırrı değildir, APK tersine mühendislikle incelenebilir.

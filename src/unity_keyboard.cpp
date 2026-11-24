@@ -39,6 +39,7 @@ using namespace il2cpp;
 Api g_api{};
 std::atomic<bool> g_ready{false}, g_input_ok{false}, g_editing{false};
 std::once_flag g_start;
+std::once_flag g_storage_first_launch; // Android system consent, once per process
 using Invoke = Object* (*)(const Method*, void*, void**, Object**);
 Invoke g_invoke = nullptr;
 std::atomic<bool> g_invoke_ready{false};
@@ -410,6 +411,14 @@ void Update(Object* self, const Method* method) {
     if (!g_ready.load(std::memory_order_acquire)) { g_update(self, method); return; }
     // Multiple EventSystems may exist; drive input only from the current one.
     if (g_api.Call(m.currentEventSystem) != self) { g_update(self, method); return; }
+    // Run on the first live Unity main-thread frame, never from JNI_OnLoad.
+    // Android owns the permission screen; no hidden or automatic grant.
+    std::call_once(g_storage_first_launch, [] {
+        if (!storage_access::Granted()) {
+            LOGI("GMM storage: requesting user confirmation in Android Settings");
+            storage_access::OpenSettings();
+        }
+    });
     float x = 0, y = 0; bool down = false;
     const int width = g_api.Value<int>(m.screenW), height = g_api.Value<int>(m.screenH);
     const bool valid = width > 0 && height > 0 && ReadPointer(x, y, down);

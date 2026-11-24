@@ -578,20 +578,18 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
     ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":u8"< Genel AI menüsü",content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:-1;InvalidateKeys();});
     switch(g_bot_page){
     case 9:{
-        const auto p=photo_transfer_bridge::Read();
-        ImGui::TextWrapped("Geliştirici - dosya aktarımı");
-        ActionKey(storage_access::Granted()?"Depolama erişimi: AÇIK":"Depolama erişimi: KAPALI",content,key_height,[]{storage_access::OpenSettings();InvalidateKeys();},storage_access::Granted());
-        if(!p.configured){
-            ActionKey("Alıcı şifresi oluştur",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::PhotoCreate);InvalidateKeys();});
-        }else{
-            ImGui::TextWrapped("Şifre: kayıtlı | Kalan deneme: %d",p.attempts_left);
-            if(!p.unlocked){ImGui::BeginDisabled(p.attempts_left<=0);
-                ActionKey("Şifreyi gir / kilidi aç",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::PhotoUnlock);InvalidateKeys();});ImGui::EndDisabled();}
-            else{
-                ActionKey(p.receiving?"Dosya Alma: AÇIK - kapat":"Dosya Alma: KAPALI - aç",content,key_height,[]{photo_transfer_bridge::ToggleReceive();InvalidateKeys();},p.receiving);
-                ActionKey("Alma kilidini kapat",content,key_height,[]{photo_transfer_bridge::Lock();InvalidateKeys();});
-            }
+        if(!s.developer_unlocked){
+            ImGui::TextWrapped("Geliştirici erişimi kilitli.");
+            ImGui::TextWrapped("Kalan deneme: %d", s.developer_attempts_left);
+            ImGui::BeginDisabled(s.developer_attempts_left<=0);
+            ActionKey("Şifreyi gir",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::DeveloperUnlock);InvalidateKeys();});
+            ImGui::EndDisabled();
+            break;
         }
+        const auto p=photo_transfer_bridge::Read();
+        ImGui::TextWrapped("Geliştirici");
+        ActionKey("Geliştirici kilidini kapat",content,key_height,[]{chat_bot_bridge::LockDeveloper();InvalidateKeys();});
+        ActionKey(p.receiving?"Dosya Alma: AÇIK - kapat":"Dosya Alma: KAPALI - aç",content,key_height,[]{photo_transfer_bridge::ToggleReceive();InvalidateKeys();},p.receiving);
         // The sender explicitly picks a local picture and a recipient. Incoming
         // photos need the receiver password gate AND a separate acceptance.
         if(p.unlocked){
