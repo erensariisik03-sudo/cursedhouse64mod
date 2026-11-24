@@ -101,7 +101,7 @@ static double Now() {return std::chrono::duration<double>(std::chrono::steady_cl
 static const std::string kShareDir="/sdcard/Pictures/GMMShare";
 class Session {
  const Api& a;
- const Method *raise{},*client_get{},*op_raise{},*current_room{},*local_player{},*players{},*actor_get{},*nick_get{},*array_length{},*array_item{};
+ const Method *raise{},*client_get{},*op_raise{},*opt_ctor{},*current_room{},*local_player{},*players{},*actor_get{},*nick_get{},*array_length{},*array_item{};
  Class *opt_class{},*send_class{},*int_class{};
  Field *target_actors{},*reliable{},*encrypted{};
  const Method* send_reliable_get{};
@@ -164,6 +164,10 @@ class Session {
   array_length=M("System","Array","get_Length");
   array_item=M("System","Array","GetValueImpl",1);
   opt_class=a.Find("Photon.Realtime","RaiseEventOptions");
+  // il2cpp_object_new only allocates: it does NOT run the managed .ctor.
+  // Photon RaiseEventOptions.ctor sets Flags = WebFlags.Default.
+  // Skipping this can cause NullReferenceException in OpRaiseEvent.
+  opt_ctor=a.FindMethod(opt_class,".ctor",0);
   send_class=a.Find("ExitGames.Client.Photon","SendOptions");
   int_class=a.Find("System","Int32");
   target_actors=opt_class?a.class_get_field_from_name(opt_class,"TargetActors"):nullptr;
@@ -179,11 +183,11 @@ class Session {
   auto* client=a.Find("Photon.Realtime","LoadBalancingClient");
   auto* on_event=a.FindMethod(client,"OnEvent",1);
   if(!raise||!current_room||!local_player||!players||!actor_get||!nick_get||!array_length||!array_item||
-     !opt_class||!send_class||!int_class||!target_actors||!encrypted||(!reliable&&!send_reliable_get)||
+     !opt_class||!opt_ctor||!send_class||!int_class||!target_actors||!encrypted||(!reliable&&!send_reliable_get)||
      (!event_code_field&&!event_code_get)||(!event_indexer&&!event_sender_get)||!event_data||!on_event||!Entry(on_event)){
-   PHOTO_LOG("GMM photo resolve: methods raise=%d room=%d me=%d peers=%d actor=%d nick=%d len=%d item=%d options=%d send=%d int=%d targets=%d enc=%d reliable=%d code=%d indexer=%d data=%d hook=%d",
+   PHOTO_LOG("GMM photo resolve: methods raise=%d room=%d me=%d peers=%d actor=%d nick=%d len=%d item=%d options=%d ctor=%d send=%d int=%d targets=%d enc=%d reliable=%d code=%d indexer=%d data=%d hook=%d",
     !!raise,!!current_room,!!local_player,!!players,!!actor_get,!!nick_get,!!array_length,!!array_item,
-    !!opt_class,!!send_class,!!int_class,!!target_actors,!!encrypted,!!reliable||!!send_reliable_get,
+    !!opt_class,!!opt_ctor,!!send_class,!!int_class,!!target_actors,!!encrypted,!!reliable||!!send_reliable_get,
     !!event_code_field||!!event_code_get,!!event_indexer||!!event_sender_get,!!event_data,!!on_event&&!!Entry(on_event));
    return false;
   }
@@ -192,6 +196,7 @@ class Session {
    PHOTO_LOG("GMM photo resolve: SendOptions ABI size=%d align=%u",send_size,alignment);return false;
   }
   a.runtime_class_init(send_class);
+  a.runtime_class_init(opt_class);
   event_api=&a;
   installed=DobbyHook(Entry(on_event),reinterpret_cast<void*>(EventHook),reinterpret_cast<void**>(&original_event))==0 && original_event;
   if(!installed)PHOTO_LOG("GMM photo resolve: Photon OnEvent hook installation failed");
@@ -227,8 +232,25 @@ class Session {
   if(!valid||!IsPeer(recipient)||text.empty()||text.size()>1800){
    PHOTO_LOG("GMM photo send blocked: ready=%d peer=%d target=%d payload_length=%zu",valid,IsPeer(recipient),recipient,text.size());return false;
   }
-  Root option(a,a.object_new(opt_class));Root target(a,a.array_new(int_class,1));
-  if(!option.Get()||!target.Get()||a.array_length(target.Get())!=1)return false;
+  Root option(a,a.object_new(opt_class));
+  if(!option.Get())return false;
+  bool constructor_ok=false;
+  a.Call(opt_ctor,option.Get(),nullptr,&constructor_ok);
+  if(!constructor_ok){
+   PHOTO_LOG("GMM photo TX: RaiseEventOptions constructor failed");
+   return false;
+  }
+  // Validate the non-null reference that the managed constructor sets.
+  if(Field* flags=a.class_get_field_from_name(opt_class,"Flags")){
+   Object* initialized_flags=nullptr;
+   a.field_get_value(option.Get(),flags,&initialized_flags);
+   if(!initialized_flags){
+    PHOTO_LOG("GMM photo TX: RaiseEventOptions.Flags null after constructor");
+    return false;
+   }
+  }
+  Root target(a,a.array_new(int_class,1));
+  if(!target.Get()||a.array_length(target.Get())!=1)return false;
   auto* target_class=a.object_get_class(target.Get());
   if(!target_class||a.array_element_size(target_class)!=4)return false;
   const size_t header=a.array_object_header_size();
@@ -251,20 +273,21 @@ class Session {
   void* args[]={const_cast<uint8_t*>(&event),payload.Get(),option.Get(),a.object_unbox(settings.Get())};
   bool invoked=false;
   bool success=InvokeSend(raise,nullptr,args,"PhotonNetwork.RaiseEvent",invoked);
+  bool fallback_attempted=false,fallback_invoked=false;
   // A failed enqueue or managed exception is safe to retry on the SDK client.
   // Do not retry after success, otherwise the receiving player gets duplicates.
   if(!success&&client_get&&op_raise){
    bool client_ok=false;
    Root client(a,a.Call(client_get,nullptr,nullptr,&client_ok));
    if(client_ok&&client.Get()){
-    bool fallback_invoked=false;
+    fallback_attempted=true;
     success=InvokeSend(op_raise,client.Get(),args,"LoadBalancingClient.OpRaiseEvent",fallback_invoked);
     if(success)PHOTO_LOG("GMM photo TX recovered with Realtime client path");
    }else PHOTO_LOG("GMM photo TX Realtime client not available");
   }
   if(text.size()>9 && text[8]!='C')
    PHOTO_LOG("GMM photo TX: protocol=%c kind=%c target=%d ok=%d",text[6],text[8],recipient,success);
-  if(!success)PHOTO_LOG("GMM photo SendEvent failed: invoke=%d fallback=%d",invoked,!!op_raise);
+  if(!success)PHOTO_LOG("GMM photo SendEvent failed: invoke=%d fallback_available=%d fallback_attempted=%d fallback_invoked=%d",invoked,!!op_raise,fallback_attempted,fallback_invoked);
   return success;
  }
  void DiscoverRoom(){
