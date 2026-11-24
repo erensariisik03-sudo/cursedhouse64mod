@@ -4,7 +4,6 @@
 #include "storage_access.h"
 #include "photo_transport_bridge.h"
 #include "photo_transfer_protocol.h"
-#include "photo_browse_protocol.h"
 #include "dobby.h"
 #include <android/log.h>
 #include <algorithm>
@@ -35,7 +34,6 @@ namespace photo_transport {namespace {
 using namespace il2cpp;
 using namespace photo_transfer_security;
 namespace wire=photo_transfer_protocol;
-namespace browse=photo_browse_protocol;
 namespace bridge=photo_transport_bridge;
 struct Root {
  const Api& a;Handle h=0;explicit Root(const Api& api,Object* p=nullptr):a(api){if(p)h=a.gchandle_new(p,false);}
@@ -73,7 +71,7 @@ void EventHook(Object* client,Object* event,const Method* method) {
        if(klass&&!std::strcmp(a.class_get_name(klass),"String")&&
           !std::strcmp(a.class_get_namespace(klass),"System")){
         std::string line=a.Utf8(reinterpret_cast<String*>(data.Get()));
-        if(line.size()<=1800&&(line.compare(0,7,"GMMIMG1")==0||line.compare(0,7,"GMMIMG2")==0)){
+        if(line.size()<=1800&&line.compare(0,7,"GMMIMG1")==0){
          std::lock_guard<std::mutex> lock(inbox_mutex);
          if(inbox.size()<64)inbox.push_back({actor,std::move(line)});
         }
@@ -112,26 +110,10 @@ class Session {
  std::vector<bridge::Peer> peers;
  std::string private_files_dir;
  std::string last_saved_path;
- // One-time, per-room browse authorization. The data owner must tap Accept
- // before any filename is listed; only /Pictures/GMMShare can be listed/read.
- uint64_t share_request_id=0,approved_id=0,browse_id=0;
- int share_request_actor=0,approved_actor=0,browse_actor=0;
- double share_deadline=0,approval_deadline=0,browse_deadline=0,next_browse_send=0;
- bool browse_granted=false,browse_fetching=false;
- std::vector<std::string> approved_files;
- std::deque<std::pair<int,std::string>> browse_outbox;
- std::string selected_remote_file;
 
  const Method* M(const char* ns,const char* cls,const char* name,int n=0){return a.FindMethod(a.Find(ns,cls),name,n);}
  bool IsPeer(int actor)const {return actor>0&&std::any_of(peers.begin(),peers.end(),[&](const auto& p){return p.actor==actor;});}
  void Note(std::string s){snap.status=std::move(s);}
- void ResetBrowse(){
-  share_request_id=approved_id=browse_id=0;share_request_actor=approved_actor=browse_actor=0;
-  share_deadline=approval_deadline=browse_deadline=next_browse_send=0;
-  browse_granted=browse_fetching=false;approved_files.clear();browse_outbox.clear();selected_remote_file.clear();
-  snap.share_request=snap.browsing=snap.listing_ready=snap.fetching=false;
-  snap.share_request_from.clear();snap.remote_files.clear();snap.selected_remote_file.clear();
- }
  void ResetSession(){
   rx.Cancel();incoming_offer={};requested_sender=0;outgoing_id=0;outgoing_peer=0;tx_data.clear();tx_index=0;tx_accepted=false;
   incoming_deadline=outgoing_deadline=0;snap.incoming=snap.sending=false;snap.incoming_from.clear();snap.progress=snap.total=0;
@@ -200,7 +182,7 @@ class Session {
  void DiscoverRoom(){
   Root room(a,a.Call(current_room));const uintptr_t id=reinterpret_cast<uintptr_t>(room.Get());
   if(room_id&&room_id!=id){
-   ResetSession();ResetBrowse();pending_actor=0;pending_file.clear();
+   ResetSession();pending_actor=0;pending_file.clear();
    std::lock_guard<std::mutex> lock(inbox_mutex);inbox.clear();
   }
   room_id=id;
@@ -228,7 +210,7 @@ class Session {
   DIR* dir=opendir(kShareDir.c_str());if(!dir)return files;
   for(dirent* entry;(entry=readdir(dir))!=nullptr && files.size()<40;){
    const std::string name=entry->d_name;
-   if(!browse::NameOk(name))continue;
+   if(name.empty()||name[0]=='.'||name.find('/')!=std::string::npos||name.find('\\')!=std::string::npos||name.size()>128)continue;
    const auto dot=name.find_last_of('.');if(dot==std::string::npos)continue;
    std::string ext=name.substr(dot);std::transform(ext.begin(),ext.end(),ext.begin(),[](unsigned char c){return char(std::tolower(c));});
    if(ext!=".jpg"&&ext!=".jpeg"&&ext!=".png")continue;
@@ -237,26 +219,14 @@ class Session {
   }
   closedir(dir);std::sort(files.begin(),files.end());return files;
  }
- bool LoadChosen(const std::string& filename,Bytes& bytes){
-  bytes.clear();
-  if(!browse::NameOk(filename))return false;
-  const std::string path=kShareDir+"/"+filename;
-  // Open the exact approved file without following symlinks (no lstat/open race).
-  const int fd=open(path.c_str(),O_RDONLY|O_NOFOLLOW);
-  if(fd<0)return false;
-  struct stat st{};
-  const bool allowed=fstat(fd,&st)==0&&S_ISREG(st.st_mode)&&st.st_size>=8&&st.st_size<=static_cast<off_t>(kMaxImageBytes);
-  if(!allowed){close(fd);return false;}
-  bytes.resize(static_cast<size_t>(st.st_size));size_t read_bytes=0;bool ok=true;
-  while(read_bytes<bytes.size()){
-   const ssize_t n=read(fd,bytes.data()+read_bytes,bytes.size()-read_bytes);
-   if(n<0&&errno==EINTR)continue;
-   if(n<=0){ok=false;break;}
-   read_bytes+=size_t(n);
-  }
-  if(close(fd)!=0)ok=false;
-  if(!ok||!IsImage(bytes)){bytes.clear();return false;}
-  return true;
+ bool LoadChosen(std::string filename,Bytes& bytes){
+  if(filename.empty()||filename.size()>128||filename=="."||filename==".."||filename.find('/')!=std::string::npos||filename.find('\\')!=std::string::npos)return false;
+  const auto path=kShareDir+"/"+filename;
+  struct stat st{};if(lstat(path.c_str(),&st)!=0||!S_ISREG(st.st_mode)||st.st_size<8||st.st_size>static_cast<off_t>(kMaxImageBytes))return false;
+  std::ifstream in(path,std::ios::binary);if(!in)return false;
+  bytes.resize(static_cast<size_t>(st.st_size));
+  in.read(reinterpret_cast<char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
+  return in.gcount()==static_cast<std::streamsize>(bytes.size())&&IsImage(bytes);
  }
  bool SaveReceived(const Bytes& bytes,uint64_t id){
   last_saved_path.clear();
@@ -297,68 +267,12 @@ class Session {
   last_saved_path=path;return true;
  }
 
- void IncomingBrowse(const Message& msg){
-  browse::Packet p;if(!browse::Decode(msg.data,p)||!IsPeer(msg.sender)||!local_actor||p.recipient!=local_actor)return;
-  const double now=Now();
-  switch(p.kind){
-   case browse::Kind::Request:
-    if(share_request_id||approved_id||!room_id){SendEvent(msg.sender,browse::Encode(browse::Kind::Deny,p.id,msg.sender));break;}
-    share_request_id=p.id;share_request_actor=msg.sender;share_deadline=now+60;
-    snap.share_request=true;snap.share_request_from=std::to_string(msg.sender);
-    for(const auto& peer:peers)if(peer.actor==msg.sender)snap.share_request_from=peer.display;
-    Note("Paylasim istegi: Karsi oyuncu GMMShare listesini istiyor. Kabul veya Reddet.");
-    break;
-   case browse::Kind::Grant:
-    if(browse_id==p.id&&browse_actor==msg.sender){browse_granted=true;Note("Oyuncu izin verdi. Fotograf listesi geliyor...");}
-    break;
-   case browse::Kind::Deny:
-    if(browse_id==p.id&&browse_actor==msg.sender){
-      browse_id=0;browse_actor=0;browse_granted=browse_fetching=false;
-      snap.browsing=snap.listing_ready=snap.fetching=false;
-      snap.remote_files.clear();selected_remote_file.clear();Note("Oyuncu paylasim istegini reddetti.");
-    }
-    break;
-   case browse::Kind::Listing:
-    if(browse_id==p.id&&browse_actor==msg.sender&&browse_granted&&!snap.listing_ready&&
-       snap.remote_files.size()<40&&std::find(snap.remote_files.begin(),snap.remote_files.end(),p.name)==snap.remote_files.end())
-      snap.remote_files.push_back(p.name);
-    break;
-   case browse::Kind::End:
-    if(browse_id==p.id&&browse_actor==msg.sender&&browse_granted){
-      snap.listing_ready=true;Note(snap.remote_files.empty()?"Paylasilan klasorde uygun fotograf yok.":"Paylasilan fotograflardan birini sec.");
-    }
-    break;
-   case browse::Kind::Fetch:
-    if(approved_id==p.id&&approved_actor==msg.sender&&now<approval_deadline&&!outgoing_id&&
-       std::find(approved_files.begin(),approved_files.end(),p.name)!=approved_files.end()&&LoadChosen(p.name,tx_data)){
-      outgoing_id=approved_id;outgoing_peer=approved_actor;
-      if(SendEvent(outgoing_peer,wire::EncodeOffer(outgoing_id,outgoing_peer,tx_data))){
-       outgoing_deadline=now+45;tx_accepted=false;tx_index=0;snap.sending=true;
-       snap.progress=0;snap.total=tx_data.size();Note("Onaylanan fotograf gonderiliyor...");
-      }else{ResetSession();Note("Photon fotograf teklifi gonderilemedi.");}
-      approved_id=0;approved_actor=0;approved_files.clear();approval_deadline=0;
-    }
-    break;
-   default:break;
-  }
- }
  void Incoming(const Message& msg){
-  if(msg.data.compare(0,7,"GMMIMG2")==0){IncomingBrowse(msg);return;}
   wire::Packet p;if(!wire::Decode(msg.data,p)||!IsPeer(msg.sender)||!local_actor||!room_id)return;
   const double now=Now();
   switch(p.kind){
    case wire::Kind::Offer: {
-    if(p.recipient!=local_actor||incoming_offer.id||rx.Active())return;
-    const bool requested=browse_id==p.id&&browse_actor==msg.sender&&browse_fetching;
-    if(!requested&&!photo_transfer_bridge::Read().receiving)return;
-    if(requested){
-      Offer approved{p.id,msg.sender,p.recipient,p.total,(p.total+kChunkBytes-1)/kChunkBytes,p.digest};
-      if(!rx.BeginTrusted(approved,local_actor,true)||!SendEvent(msg.sender,wire::EncodeAccept(p.id,msg.sender))){
-        rx.Cancel();browse_fetching=false;snap.fetching=false;Note("Fotograf alma baglantisi kurulamadi.");return;
-      }
-      incoming_offer=approved;requested_sender=msg.sender;incoming_deadline=now+90;
-      snap.incoming=false;snap.total=p.total;snap.progress=0;Note("Secilen fotograf aliniyor...");return;
-    }
+    if(p.recipient!=local_actor||!photo_transfer_bridge::Read().receiving||incoming_offer.id||rx.Active())return;
     incoming_offer={p.id,msg.sender,p.recipient,p.total,(p.total+kChunkBytes-1)/kChunkBytes,p.digest};
     incoming_deadline=now+45;requested_sender=msg.sender;
     snap.incoming=true;snap.incoming_from=std::to_string(msg.sender);
@@ -370,7 +284,7 @@ class Session {
     tx_accepted=true;outgoing_deadline=now+90;Note("Karşı cihaz onayladı. Gönderiliyor...");break;
    }
    case wire::Kind::Chunk: {
-    if(!rx.Active()||(!browse_fetching&&!photo_transfer_bridge::Read().receiving)){rx.Cancel();return;}
+    if(!rx.Active()||!photo_transfer_bridge::Read().receiving){rx.Cancel();return;}
     if(rx.Push(p.id,msg.sender,p.index,p.bytes))snap.progress+=p.bytes.size();
     break;
    }
@@ -379,9 +293,7 @@ class Session {
     Bytes photo;const bool valid=rx.Finish(photo)&&SaveReceived(photo,p.id);
     Note(valid?"Fotoğraf alındı: "+last_saved_path:"Fotoğraf doğrulanamadı veya kaydedilemedi");
     incoming_offer={};requested_sender=0;incoming_deadline=0;
-    snap.incoming=false;snap.incoming_from.clear();
-    if(browse_fetching){browse_fetching=false;browse_id=0;browse_actor=0;snap.fetching=snap.browsing=snap.listing_ready=false;}
-    break;
+    snap.incoming=false;snap.incoming_from.clear();break;
    }
    case wire::Kind::Cancel: {
     if(msg.sender==outgoing_peer&&p.id==outgoing_id){ResetSession();Note("Gönderim karşı cihaz tarafından iptal edildi.");}
@@ -392,55 +304,7 @@ class Session {
   }
  }
  void HandleCommands(const bridge::Commands& c){
-  const double now=Now();
-  if(c.choose_actor>0&&IsPeer(c.choose_actor)){
-   if(pending_actor!=c.choose_actor&&browse_id){
-    browse_id=0;browse_actor=0;browse_granted=browse_fetching=false;
-    snap.browsing=snap.listing_ready=snap.fetching=false;snap.remote_files.clear();selected_remote_file.clear();
-   }
-   pending_actor=c.choose_actor;pending_file.clear();
-  }
-  if(c.allow_browse&&share_request_id&&now<share_deadline&&IsPeer(share_request_actor)){
-   const int actor=share_request_actor;const uint64_t id=share_request_id;
-   auto files=LocalImages();
-   if(SendEvent(actor,browse::Encode(browse::Kind::Grant,id,actor))){
-    approved_id=id;approved_actor=actor;approval_deadline=now+180;approved_files=std::move(files);
-    for(const auto& filename:approved_files)browse_outbox.emplace_back(actor,browse::Encode(browse::Kind::Listing,id,actor,filename));
-    browse_outbox.emplace_back(actor,browse::Encode(browse::Kind::End,id,actor));
-    Note("GMMShare dosyalari paylasildi. Tek fotograf istegi bekleniyor.");
-   }else Note("Paylasim izni gonderilemedi.");
-   share_request_id=0;share_request_actor=0;share_deadline=0;snap.share_request=false;snap.share_request_from.clear();
-  }
-  if(c.deny_browse&&share_request_id){
-   SendEvent(share_request_actor,browse::Encode(browse::Kind::Deny,share_request_id,share_request_actor));
-   share_request_id=0;share_request_actor=0;share_deadline=0;snap.share_request=false;snap.share_request_from.clear();
-   Note("Paylasim istegi reddedildi.");
-  }
-  if(c.request_browse){
-   if(!IsPeer(pending_actor))Note("Once ayni odadan hedef oyuncu sec.");
-   else if(browse_id||outgoing_id||rx.Active())Note("Once onceki istegin bitmesini bekle.");
-   else {
-    std::random_device rng;uint64_t id=(uint64_t(rng())<<32)|uint64_t(rng());if(!id)id=1;
-    if(SendEvent(pending_actor,browse::Encode(browse::Kind::Request,id,pending_actor))){
-     browse_id=id;browse_actor=pending_actor;browse_deadline=now+180;browse_granted=browse_fetching=false;
-     snap.browsing=true;snap.listing_ready=snap.fetching=false;snap.remote_files.clear();selected_remote_file.clear();
-     Note("Fotograf listesi icin diger oyuncunun onayi bekleniyor...");
-    }else Note("Photon istek gonderilemedi. Ag baglantisini kontrol et.");
-   }
-  }
-  if(!c.choose_remote_file.empty()){
-   if(browse_granted&&snap.listing_ready&&std::find(snap.remote_files.begin(),snap.remote_files.end(),c.choose_remote_file)!=snap.remote_files.end())
-    selected_remote_file=c.choose_remote_file;
-  }
-  if(c.fetch){
-   if(!browse_id||!browse_granted||!snap.listing_ready||selected_remote_file.empty()||browse_fetching)
-    Note("Once oyuncudan liste izni al ve fotograflardan birini sec.");
-   else if(SendEvent(browse_actor,browse::Encode(browse::Kind::Fetch,browse_id,browse_actor,selected_remote_file))){
-    browse_fetching=true;snap.fetching=true;snap.browsing=true;browse_deadline=now+120;
-    Note("Secilen fotograf karsi cihazdan istendi...");
-   }else Note("Fotograf istek paketi gonderilemedi.");
-  }
-
+  if(c.choose_actor>0&&IsPeer(c.choose_actor)){pending_actor=c.choose_actor;pending_file.clear();}
   if(!c.choose_file.empty()){
    const auto found=std::find(snap.files.begin(),snap.files.end(),c.choose_file);
    if(found!=snap.files.end())pending_file=c.choose_file;
@@ -463,15 +327,6 @@ class Session {
  }
  void TransferStep(){
   const double now=Now();
-  if(share_request_id&&now>share_deadline){share_request_id=0;share_request_actor=0;snap.share_request=false;snap.share_request_from.clear();Note("Paylasim isteginin suresi doldu.");}
-  if(approved_id&&now>approval_deadline){approved_id=0;approved_actor=0;approved_files.clear();browse_outbox.clear();}
-  if(browse_id&&now>browse_deadline){browse_id=0;browse_actor=0;browse_granted=browse_fetching=false;
-   snap.browsing=snap.fetching=snap.listing_ready=false;snap.remote_files.clear();selected_remote_file.clear();Note("Fotograf isteginde zaman asimi.");}
-  if(!browse_outbox.empty()&&now>=next_browse_send){
-   const auto& next=browse_outbox.front();
-   if(SendEvent(next.first,next.second))browse_outbox.pop_front();
-   next_browse_send=now+.08;
-  }
   if(incoming_offer.id&&now>incoming_deadline){rx.Cancel();incoming_offer={};requested_sender=0;snap.incoming=false;Note("Gelen fotoğraf isteği zaman aşımına uğradı.");}
   if(outgoing_id&&now>outgoing_deadline){ResetSession();Note("Fotoğraf aktarımında zaman aşımı.");}
   if(!outgoing_id||!tx_accepted||now<next_send||!IsPeer(outgoing_peer))return;
@@ -492,15 +347,15 @@ public:
  void Install(){valid=Resolve();snap.ready=valid;Note(valid?"Photon GMM fotoğraf kanalı hazır":"Photon sürümü uyumsuz: ağ bağlantısı kurulamadı");PHOTO_LOG("GMM photo transport hook=%d",valid);bridge::Publish(snap);}
  void Pump(bool loading){
   if(!valid)return;
-  if(loading){ResetSession();ResetBrowse();bridge::Publish(snap);return;}
+  if(loading){ResetSession();bridge::Publish(snap);return;}
   if(Now()>next_poll){next_poll=Now()+1.0;DiscoverRoom();snap.peers=peers;}
-  if(!room_id){ResetSession();ResetBrowse();snap.peers.clear();snap.ready=valid;bridge::Publish(snap);return;}
+  if(!room_id){ResetSession();snap.peers.clear();snap.ready=valid;bridge::Publish(snap);return;}
   std::deque<Message> pending;{std::lock_guard<std::mutex> l(inbox_mutex);pending.swap(inbox);}
   for(const auto& msg:pending)Incoming(msg);
   HandleCommands(bridge::Take());
-  if(!browse_fetching&&!photo_transfer_bridge::Read().receiving&&rx.Active()){rx.Cancel();incoming_offer={};requested_sender=0;snap.incoming=false;Note("Alma modu kapatıldı; transfer durduruldu.");}
+  if(!photo_transfer_bridge::Read().receiving&&rx.Active()){rx.Cancel();incoming_offer={};requested_sender=0;snap.incoming=false;Note("Alma modu kapatıldı; transfer durduruldu.");}
   TransferStep();
-  snap.selected_actor=pending_actor;snap.selected_file=pending_file;snap.selected_remote_file=selected_remote_file;
+  snap.selected_actor=pending_actor;snap.selected_file=pending_file;
   snap.selected_name.clear();for(const auto& peer:peers)if(peer.actor==pending_actor)snap.selected_name=peer.display;
   bridge::Publish(snap);
  }

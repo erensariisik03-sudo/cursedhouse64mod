@@ -68,8 +68,6 @@ public:
     bool Unlock(const std::string& password){if(!configured_||failed_>=5||password.empty())return false;auto test=Pbkdf2(password,salt_,kIterations);
         if(Same(test.data(),check_.data(),32)){unlocked_=true;failed_=0;return true;}
         ++failed_;unlocked_=receive_=false;return false;}
-    // Only call after developer_lock::Session::Verify succeeded locally.
-    void AuthorizeVerifiedSession(){configured_=unlocked_=true;receive_=false;failed_=0;}
     bool SetReceiving(bool enable){if(enable&&!unlocked_)return false;receive_=enable;return true;}
     void Lock(){unlocked_=receive_=false;}
     void Reset(){*this=Gate{};}
