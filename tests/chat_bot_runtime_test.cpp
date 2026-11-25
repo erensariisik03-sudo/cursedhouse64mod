@@ -97,6 +97,7 @@ Object* Invoke(const Method* m,void* self,void** args,Object** error){
  if(name=="set_text"){o->text=static_cast<Object*>(args[0])->text;return nullptr;}
  if(name=="SendMessage"){
   chat_send_gate::StatusSend display;
+  assert(chat_send_gate::automatic_send); // every bot/terminal send must bypass draft restoration
   assert(fake->allowed&&!fake->focused);
   auto* alias=chat_send_gate::active_status_alias?GetRoot(chat_send_gate::active_status_alias):nullptr;
   fake->sent_names.push_back(alias?test_utf::ToUtf8(alias->text):fake->own);

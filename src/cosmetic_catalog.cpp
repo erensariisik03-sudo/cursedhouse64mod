@@ -278,8 +278,9 @@ bool Controller::RefreshWardrobeLists() {
     std::vector<std::string> skins,accessories;
     // ImGui has skin and accessory tabs. Emotes are read by the game's loader too,
     // but are not exposed by this two-tab panel.
-    if (!ReadWardrobeList(0,skins) || !ReadWardrobeList(1,accessories)) {
-        wardrobe_bridge::ClearLists();
+    if (!ReadWardrobeList(0,skins) || !ReadWardrobeList(1,accessories) ||
+        (skins.empty()&&!ids_[0].empty()) || (accessories.empty()&&!ids_[1].empty())) {
+        // Keep last valid snapshot for this profile while the view rebuilds.
         wardrobe_bridge::SetStatus("Gardırop listesi henüz hazır değil. Oyun içi gardırop ekranını açın.");
         COS_LOG("v12 cosmetics: wardrobe card source unavailable; no account-list fallback used");
         return false;
@@ -305,8 +306,10 @@ void Controller::Rollback() {
         }
         if (!items.empty()) return;
     }
-    ClearTargets(); status_.added={}; status_.phase=Phase::Disabled;
-    COS_LOG("v12 cosmetics: stopped after failed apply or profile change; keyboard remains active");
+    ClearTargets(); status_.added={};
+    status_.phase=retry_after_rollback_?Phase::Waiting:Phase::Disabled;
+    retry_after_rollback_=false;
+    COS_LOG("v12 cosmetics: rollback complete; phase=%s",status_.phase==Phase::Waiting?"retry":"disabled");
 }
 void Controller::Wait(double now,const char* reason) {
     ClearSources(); status_.phase=Phase::Waiting; next_=now+2.0;
@@ -326,8 +329,9 @@ void Controller::Tick(double now) {
         return;
     }
     if (status_.phase==Phase::Apply) {
-        if (!Apply()) Fail("apply failed or active profile changed");
-        if (status_.phase==Phase::Ready) next_=now+2.0;
+        if(!SameProfile()){retry_after_rollback_=true;next_=now+2.0;Fail("active profile changed; retry after rollback");}
+        else if (!Apply()) Fail("apply failed");
+        if (status_.phase==Phase::Ready) {next_=now+2.0;next_notify_=now+4.0;}
         return;
     }
     if (now<next_) return;
@@ -344,13 +348,19 @@ void Controller::Tick(double now) {
     if (status_.phase==Phase::Ready && SameProfile()) {
         // Poll the real card-source getters at a low rate. The locker can rebuild
         // after its screen opens/closes without requiring a profile/account reread.
-        RefreshWardrobeLists();
         bool unchanged=true;
         for (auto& t:targets_) {
             int count=0;
             if (!Integer(t.count,api_.gchandle_get_target(t.list),count) || count!=t.final_count) unchanged=false;
         }
-        if (unchanged) return;
+        if (unchanged) {
+            if(!RefreshWardrobeLists()&&now>=next_notify_){
+                next_notify_=now+4.0;
+                NotifyChanged();
+                RefreshWardrobeLists();
+            }
+            return;
+        }
     }
     Object* profile=Call0(profile_get_);
     if (!profile || !Begin(profile)) { ClearTargets(); Wait(now,"signed-in cosmetic lists"); }

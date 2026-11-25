@@ -121,7 +121,10 @@ class Controller {
             ClearStatus();Status(u8"AI | System sohbet etiketi hazır değil; terminal gösterimi atlandı.");return;
         }
         const auto lines=chat_bot_fx::Lines(event,detail,explicit_active>=0 ? (explicit_active==1) : (enabled||voice_ai_bridge::Read().settings.enabled));
-        status_lines.assign(lines.begin(),lines.end()); // latest event replaces unfinished animation
+        // Do not interrupt startup with the first model notification.
+        if(event==chat_bot_fx::Event::Model&&!status_lines.empty()&&status_room==active_room){
+            if(status_lines.size()+lines.size()<=80)status_lines.insert(status_lines.end(),lines.begin(),lines.end());
+        }else status_lines.assign(lines.begin(),lines.end());
         status_next=now_;status_deadline=now_+chat_bot_fx::kTimeout;status_room=active_room;
     }
     bool SendStatusLine(const std::string& line) {
@@ -155,6 +158,7 @@ class Controller {
             } permission(api,owner.Get(),allowed_field,allowed);
             bool permitted=false;api.field_get_value(owner.Get(),allowed_field,&permitted);
             if(permitted){
+                chat_send_gate::AutomaticSend automatic;
                 chat_send_gate::StatusAlias display(alias.handle);
                 api.Call(send,owner.Get(),nullptr,&sent);
             }
@@ -175,6 +179,7 @@ class Controller {
         if(status_lines.empty())return;
         if(now>status_deadline){ClearStatus();return;}
         if(now<status_next)return;
+        if(!outbox.empty()&&now>=gap_until)return;
         if(!api.Value<bool>(queue,nullptr,false))return;
         Root current(api,api.Call(room));
         const auto id=reinterpret_cast<uintptr_t>(current.Get());
@@ -182,7 +187,7 @@ class Controller {
         status_room=id;status_next=now+chat_bot_fx::kInterval;
         const auto revision=status_revision;const std::string line=status_lines.front();
         if(SendStatusLine(line)&&revision==status_revision){
-            status_lines.pop_front();gap_until=now+kMinGap;
+            status_lines.pop_front();status_deadline=now+chat_bot_fx::kTimeout;
         }
     }
 
@@ -474,12 +479,18 @@ class Controller {
         void* args[] = {text.Get()};
         api.Call(input_set, input.Get(), args, &ok);
         if (!ok) return false;
-        api.Call(send, owner.Get(), nullptr, &ok);
+        bool invoked=false;
+        {chat_send_gate::AutomaticSend automatic;api.Call(send, owner.Get(), nullptr, &invoked);}
         const std::string after = ReadString(input_text, input.Get(), ok);
         if (ok && after == outbox.front()) { // gönderilmedi (alan temizlenmedi): taslağı geri al
             Root empty(api, reinterpret_cast<Object*>(api.string_new(""))); void* a2[] = {empty.Get()};
             api.Call(input_set, input.Get(), a2, &ok);
             return false;
+        }
+        if(!invoked||!ok||!after.empty()){
+            Status(u8"AI | Gönderim doğrulanamadı; tekrar gönderilmedi.");
+            gap_until=now+kChunkGap;
+            return true;
         }
         snap.last_out = chat_bot_core::PrefixScalars(outbox.front(), 60);
         recent_sent.push_back(outbox.front()); while (recent_sent.size() > 12) recent_sent.pop_front();
@@ -509,7 +520,7 @@ class Controller {
         Root text(api,reinterpret_cast<Object*>(api.string_new(next.second.c_str())));
         if(!alias.Get()||!text.Get())return false;
         void* args[]={text.Get()};api.Call(input_set,input.Get(),args,&ok);if(!ok)return false;
-        {chat_send_gate::StatusAlias guard(alias.handle);api.Call(send,owner.Get(),nullptr,&ok);}
+        {chat_send_gate::AutomaticSend automatic;chat_send_gate::StatusAlias guard(alias.handle);api.Call(send,owner.Get(),nullptr,&ok);}
         bool read_ok=false;auto after=ReadString(input_text,input.Get(),read_ok);
         if(!ok||!read_ok||after==next.second){
             if(read_ok&&after==next.second){Root empty(api,reinterpret_cast<Object*>(api.string_new("")));void* reset[]={empty.Get()};if(empty.Get())api.Call(input_set,input.Get(),reset);}
@@ -675,12 +686,12 @@ public:
                 else { Status(u8"AI | Tüm modeller hata verdi (HTTP " + std::to_string(r.code) + u8"). Anahtarı/ağı kontrol et."); next_request = now + 8; }
             }
             if(outbox_reminder&&(!pending.empty()||engine.Busy()))DropOutbox();
-            if (status_lines.empty() && !outbox.empty() && now >= gap_until && TrySend(now)) {
+            if (!outbox.empty() && now >= gap_until && TrySend(now)) {
                 outbox.pop_front();if(warning_chunks)--warning_chunks;
                 if(outbox.empty())outbox_reminder=false;
             }
             else if (!outbox.empty() && now - outbox_since > kOutboxTimeout) { DropOutbox(); } // TrySend zaten durum yazdı
-            if (status_lines.empty() && outbox.empty() && !pending.empty() && now >= next_request) {
+            if (outbox.empty() && !pending.empty() && now >= next_request) {
                 if (pending.front().canned) { // selam: AI'ya gitmeden hazır cevap
                     outbox.push_back(pending.front().text); pending.pop_front(); outbox_since = now; Status(u8"AI | Selam cevabı hazır.");
                 } else if(!engine.Busy()&&!key.empty()) {

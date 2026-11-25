@@ -29,7 +29,8 @@ private:
     const il2cpp::Api& api_;
     Status status_{};
     bool initialized_ = false, started_ = false, catalog_ready_ = false;
-    bool notifying_ = false;
+    bool notifying_ = false, retry_after_rollback_ = false;
+    double next_notify_ = 0;
     double next_ = 0;
     int attempts_ = 0;
     il2cpp::Class *library_class_{}, *profile_class_{}, *string_class_{}, *cache_class_{}, *action_class_{};

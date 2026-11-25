@@ -2052,7 +2052,7 @@ struct Runtime {
         Root old(api,api.Call(vote_text,input.Get(),nullptr,&ok));if(!ok||!old.Get()||!api.Utf8(reinterpret_cast<String*>(old.Get())).empty())return false;
         Root text(api,reinterpret_cast<Object*>(api.string_new(notice.c_str())));if(!text.Get())return false;
         void* args[]={text.Get()};api.Call(vote_set,input.Get(),args,&ok);if(!ok)return false;
-        api.Call(vote_send,owner.Get(),nullptr,&ok);const bool invoked=ok;
+        {chat_send_gate::AutomaticSend automatic;api.Call(vote_send,owner.Get(),nullptr,&ok);}const bool invoked=ok;
         Root after(api,api.Call(vote_text,input.Get(),nullptr,&ok));if(!ok||!after.Get())return false;
         const auto value=api.Utf8(reinterpret_cast<String*>(after.Get()));
         if(value==notice){void* reset[]={old.Get()};api.Call(vote_set,input.Get(),reset);return false;}

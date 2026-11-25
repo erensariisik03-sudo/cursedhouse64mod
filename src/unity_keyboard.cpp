@@ -331,7 +331,7 @@ bool SendChatDraft(Object* input,const char* origin){
     // as well, so IME Done behaves the same as tapping the game's Send button.
     if(ok&&Alive(input)){
         bool after_ok=false;const auto after=ReadText(input,&after_ok);
-        if(after_ok&&after!=text){
+        if(after_ok&&after.empty()&&!text.empty()){
             ScopedRoot draft(reinterpret_cast<Object*>(g_api.string_new(text.c_str())));
             if(draft.Get()){
                 void* args[]={draft.Get()};bool write_ok=false;
@@ -372,11 +372,11 @@ void SendChat(Object* self,const Method* method) {
     ScopedRoot field(input);
     bool text_ok=false;
     const std::string draft=field.Get()?ReadText(field.Get(),&text_ok):std::string();
-    const bool preserve=text_ok&&!text_buffer::Clean(draft.c_str()).empty();
+    const bool preserve=!chat_send_gate::automatic_send&&!chat_send_gate::active_status_alias&&!g_quick_target&&text_ok&&!text_buffer::Clean(draft.c_str()).empty();
     g_chat_send(self,method);
     if(preserve&&Alive(field.Get())){
         bool now_ok=false;const auto after=ReadText(field.Get(),&now_ok);
-        if(now_ok&&after!=draft){
+        if(now_ok&&after.empty()){
             ScopedRoot old_text(reinterpret_cast<Object*>(g_api.string_new(draft.c_str())));
             if(old_text.Get()){
                 void* args[]={old_text.Get()};bool write_ok=false;

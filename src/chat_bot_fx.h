@@ -4,7 +4,7 @@
 #include <vector>
 namespace chat_bot_fx {
 enum class Event { Start, Stop, Profile, Model };
-inline constexpr double kInterval=1.0/6.0,kTimeout=5.0;
+inline constexpr double kInterval=1.0/6.0,kTimeout=20.0;
 // Decorative terminal text only: never publish actual classes, APIs or provider IDs.
 inline std::vector<std::string> Lines(Event event,const std::string& detail,bool enabled) {
     std::vector<std::string> lines={std::string("<#888F>")+chat_shortcut::kPayload};

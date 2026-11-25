@@ -231,6 +231,12 @@ int main(){
  Reset();cooldown=true;editor.text="manual chat";g_chat_send=OriginalChatSend;g_api.field_set_value=WriteChatFlag;
  chat_send_gate::ready=true;SendChat(chat,nullptr);
  assert(chat_sends==1&&sent=="manual chat"&&editor.text=="manual chat"&&cooldown&&roots.empty());
+ editor.text="automatic reply";
+ {chat_send_gate::AutomaticSend automatic;SendChat(chat,nullptr);}
+ assert(chat_sends==2&&sent=="automatic reply"&&editor.text.empty()&&roots.empty());
+ editor.text="manual next";new_draft=true;SendChat(chat,nullptr);
+ assert(chat_sends==3&&editor.text=="newer Android draft");
+ assert(!chat_send_gate::automatic_send);
  assert(chat_send_gate::Available(false));chat_send_gate::ready=false;assert(!chat_send_gate::Available(false));
  g_api.field_set_value=nullptr;
  // Status alias affects only the synchronous chat scope, never the stored nick.

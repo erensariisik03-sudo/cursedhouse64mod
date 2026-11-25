@@ -209,7 +209,9 @@ int main(){
         Run(c,20);assert(f.adds==36&&f.notifications==1); // No repeated notification each frame.
         const auto refreshed=wardrobe_bridge::Read();
         assert(std::find(refreshed.items[1].begin(),refreshed.items[1].end(),"wardrobe-only-skin")!=refreshed.items[1].end());
-        f.profile->fields["emotes"]->items.clear();Run(c,40);assert(f.adds==48);
+        f.view_lists["skins"]->items.clear();f.view_lists["accessories"]->items.clear();
+        Run(c,32);assert(f.notifications==2&&wardrobe_bridge::Read().items[1].size()==14);
+        f.profile->fields["emotes"]->items.clear();Run(c,48);assert(f.adds==48);
         f.profile=f.NewProfile();Run(c,60);assert(f.adds==84); // New sign-in cache.
     }assert(f.roots.empty());}
     for(bool after:{false,true}){Fixture f;f.fail_add=10;f.throw_after_add=after;auto api=API();{
@@ -223,9 +225,9 @@ int main(){
     }assert(f.roots.empty());}
     {Fixture f;auto api=API();{Controller c(api);Run(c,0,33);
         for(int i=33;i<100&&!f.adds;++i)Tick(c,i*.1);
-        assert(f.adds>0);auto* old=f.profile;f.profile=f.NewProfile();Run(c,10);
-        assert(c.GetStatus().phase==Phase::Disabled&&old->fields["skins"]->items.size()==1);
-        assert(f.profile->fields["skins"]->items.size()==1);
+        assert(f.adds>0);auto* old=f.profile;f.profile=f.NewProfile();Run(c,10);Run(c,22);
+        assert(c.GetStatus().phase==Phase::Ready&&old->fields["skins"]->items.size()==1);
+        assert(f.profile->fields["skins"]->items.size()==13);
     }assert(f.roots.empty());}
     {Fixture f;f.static_catalog=false;auto api=API();{Controller c(api);Run(c);assert(c.GetStatus().phase==Phase::Ready);}assert(f.roots.empty());}
     {Fixture f;f.static_catalog=false;f.array->items.push_back(f.library);auto api=API();{
@@ -254,7 +256,7 @@ int main(){
     }assert(f.roots.empty());}
     {Fixture f;f.listener=nullptr;auto api=API();{Controller c(api);Run(c);assert(c.GetStatus().phase==Phase::Ready&&f.notifications==0);}assert(f.roots.empty());}
     {Fixture f;f.listener=f.S("not an Action");auto api=API();{Controller c(api);Run(c);assert(c.GetStatus().phase==Phase::Ready&&f.notifications==0);}assert(f.roots.empty());}
-    {Fixture f;f.notification_error=true;auto api=API();{Controller c(api);Run(c);assert(c.GetStatus().phase==Phase::Ready&&f.notifications==1);}assert(f.roots.empty());}
+    {Fixture f;f.notification_error=true;auto api=API();{Controller c(api);Run(c);assert(c.GetStatus().phase==Phase::Ready&&f.notifications==2);f.notification_error=false;Run(c,20);assert(f.notifications==3&&wardrobe_bridge::Read().items[1].size()==14);}assert(f.roots.empty());}
     {Fixture f;auto api=API();{Controller c(api);f.reenter=&c;Run(c);assert(c.GetStatus().phase==Phase::Ready&&f.notifications==1);}assert(f.roots.empty());}
     {Fixture f;auto api=API();api.field_static_get_value=nullptr;{Controller c(api);Run(c);assert(c.GetStatus().phase==Phase::Ready&&f.notifications==0);}assert(f.roots.empty());}
     std::cout<<"Cosmetic catalog: wardrobe change notification after complete commit, stale-view rebuild, no partial/repeated notification, listener failure/reentry guards, bounded edits, rollback, profile refresh and GC roots: PASS\n";

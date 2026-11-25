@@ -7,6 +7,13 @@ inline std::atomic<bool> ready{false};
 // Only a synchronous decorative chat send may use this rooted display alias.
 // Never write Photon player properties or the account nickname.
 inline std::atomic<bool> status_alias_ready{false};
+inline thread_local bool automatic_send=false;
+struct AutomaticSend {
+    bool previous;
+    AutomaticSend():previous(automatic_send){automatic_send=true;}
+    ~AutomaticSend(){automatic_send=previous;}
+    AutomaticSend(const AutomaticSend&)=delete;
+};
 inline thread_local il2cpp::Handle status_alias=0;
 inline thread_local il2cpp::Handle active_status_alias=0;
 struct StatusAlias {

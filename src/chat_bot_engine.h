@@ -13,9 +13,9 @@
 
 namespace chat_bot_engine {
 using HttpFn = bool (*)(const std::string& url, const std::string& key, const std::string& body, int& code, std::string& response);
-inline constexpr std::array<const char*, 6> kModels = {
+inline constexpr std::array<const char*, 5> kModels = {
     // Öncelik sırası: en hızlı / en yüksek kotalı "lite" modeller önce, daha yavaş büyük modeller yedek.
-    "gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-flash-lite-latest",
     "gemini-2.5-flash", "gemini-3-flash-preview"};
 struct Result {
     bool ok = false, empty = false, all_failed = false;
