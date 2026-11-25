@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 namespace chat_bot_bridge {
-enum class Edit { None, Key, Persona, Speech, Delegate, DeveloperUnlock };
+enum class Edit { None, Key, Persona, Speech, SoundSearch, Delegate, DeveloperUnlock };
 struct Snapshot {
     bool chat_ready = false, enabled = false, has_key = false, busy = false, cool = true;
     bool developer_unlocked = false; int developer_attempts_left = 5;

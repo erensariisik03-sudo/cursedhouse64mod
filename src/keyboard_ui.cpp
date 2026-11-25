@@ -580,7 +580,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
         ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
-    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)?9:-1);InvalidateKeys();});
+    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8||g_bot_page==14)?u8"< Sesli AI":((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8||g_bot_page==14)?1:((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)?9:-1);InvalidateKeys();});
     switch(g_bot_page){
     case 9:{
         if(!s.developer_unlocked){
@@ -739,6 +739,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
     case 1:{
         ImGui::TextWrapped("SESLİ AI | Aynı anda yalnızca bir konuşmacı dinlenir.");
         ImGui::TextWrapped("%s",v.status.c_str());
+        if(!v.heard.empty())ImGui::TextWrapped("Anlaşılan: %s",v.heard.c_str());
         ImGui::BeginDisabled(!v.ready||!s.has_key);
         ActionKey(v.settings.enabled?"Sesli AI: AÇIK - kapat":"Sesli AI: KAPALI - aç",content,key_height,[enabled=!v.settings.enabled]{
             if(enabled)chat_bot_bridge::Enable(false);
@@ -749,13 +750,29 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ActionKey("Konuşmayı durdur",content,key_height,[]{voice_ai_bridge::Stop();InvalidateKeys();});
         ActionKey("Yanıt türünü seç",content,key_height,[]{g_bot_page=8;InvalidateKeys();});
         ActionKey(v.settings.manual_keywords?"Manuel kelime seçimi: AÇIK":"Manuel kelime seçimi: KAPALI",content,key_height,[enabled=!v.settings.manual_keywords]{voice_ai_bridge::ManualKeywords(enabled);InvalidateKeys();},v.settings.manual_keywords);
-        {int tone=voice_ai_bridge::tone.load();ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##voice_tone",&tone,0,100,"Ses tonu: %d%%"))voice_ai_bridge::SetTone(tone);TrackSlider();}
+        {int tone=voice_ai_bridge::tone.load();ImGui::SetNextItemWidth(content);if(ImGui::SliderInt("##voice_tone",&tone,0,100,"Ses tonu (50 doğal): %d%%"))voice_ai_bridge::SetTone(tone);TrackSlider();}
+        {auto voices=voice_ai_bridge::Voices();auto preferred=voice_ai_bridge::PreferredVoice();
+         ImGui::TextWrapped("TTS: %s",voices.second.empty()?"hazırlanıyor":voices.second.c_str());
+         if(ImGui::BeginCombo("##tts_voice",preferred.empty()?"Otomatik (erkek varsa)":preferred.c_str())){
+          if(ImGui::Selectable("Otomatik (erkek varsa)",preferred.empty()))voice_ai_bridge::ChooseVoice({});
+          for(const auto& name:voices.first)if(ImGui::Selectable(name.c_str(),name==preferred))voice_ai_bridge::ChooseVoice(name);
+          ImGui::EndCombo();}}
+        ActionKey("Myinstants sesleri",content,key_height,[]{g_bot_page=14;InvalidateKeys();});
         ActionKey("Kendi mesajımı yaz",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Speech);InvalidateKeys();});
         const auto saved=voice_ai_bridge::SpeechText();if(!saved.empty()){
             ImGui::TextWrapped("Metin: %s",chat_bot_core::PrefixScalars(saved,110).c_str());
             ImGui::BeginDisabled(!v.settings.enabled);ActionKey("Mesajı seslendir",content,key_height,[saved]{voice_ai_bridge::Speak(saved);InvalidateKeys();});ImGui::EndDisabled();
         }
         ImGui::TextWrapped("Sesli AI yanıtı aynı zamanda sohbete yazılır. İsim filtresi Sesli AI için kapalıdır.");break;
+    }
+    case 14:{
+        const auto sounds=voice_ai_bridge::ReadSounds();
+        ActionKey(sounds.query.empty()?"Meme sesi ara":("Ara: "+sounds.query).c_str(),content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::SoundSearch);InvalidateKeys();});
+        ImGui::TextWrapped("%s",sounds.status.c_str());
+        ImGui::TextWrapped("Odaya yalnızca seçtiğin ses gönderilir; mikrofon geçici olarak kapatılır.");
+        ImGui::BeginDisabled(!v.settings.enabled||!v.network_ready||v.settings.destination!=0||sounds.loading);
+        for(size_t i=0;i<sounds.results.size();++i){const auto& sound=sounds.results[i];ImGui::PushID(int(i));ActionKey(sound.title.c_str(),content,key_height,[path=sound.path]{voice_ai_bridge::PlaySound(path);InvalidateKeys();});ImGui::PopID();}
+        ImGui::EndDisabled();break;
     }
     case 2:{
         ImGui::TextWrapped("ORTAK KİŞİLİK | Sesli AI ve Metin AI aynı ayarı kullanır.");

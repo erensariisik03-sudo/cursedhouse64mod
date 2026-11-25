@@ -534,11 +534,11 @@ class Controller {
     }
     void BeginEdit(Edit e) {
         editing = e;
-        const std::string initial = e == Edit::Persona ? custom : e == Edit::Speech ? voice_ai_bridge::SpeechText() : std::string();
+        const std::string initial = e == Edit::Persona ? custom : e == Edit::Speech ? voice_ai_bridge::SpeechText() : e == Edit::SoundSearch ? voice_ai_bridge::ReadSounds().query : std::string();
         const bool secret=e==Edit::Key||e==Edit::DeveloperUnlock;
         native_input = text_input.Open(initial,secret); // Android's own keyboard
         if (!native_input) keyboard_bridge::OpenNative(initial.c_str(),secret); // fallback: ImGui keyboard
-        Status(e == Edit::DeveloperUnlock ? u8"GMM | Geliştirici şifresini gir." : e == Edit::Key ? u8"AI | API anahtarını yaz, Enter'a bas." : e == Edit::Speech ? u8"AI | Seslendirilecek mesajı yaz, Enter'a bas." : e == Edit::Delegate ? u8"AI | Seçili oyuncu için mesaj yaz, Enter'a bas." : u8"AI | Kişiliği yaz, Enter'a bas.");
+        Status(e == Edit::DeveloperUnlock ? u8"GMM | Geliştirici şifresini gir." : e == Edit::Key ? u8"AI | API anahtarını yaz, Enter'a bas." : e == Edit::SoundSearch ? u8"Myinstants | Ses ara, Enter'a bas." : e == Edit::Speech ? u8"AI | Seslendirilecek mesajı yaz, Enter'a bas." : e == Edit::Delegate ? u8"AI | Seçili oyuncu için mesaj yaz, Enter'a bas." : u8"AI | Kişiliği yaz, Enter'a bas.");
     }
     void FinishEdit(const std::string& raw) {
         const std::string value = chat_bot_core::Trim(chat_bot_core::PrefixScalars(raw, 1024));
@@ -555,6 +555,7 @@ class Controller {
                 Status(u8"AI | Mesaj gönderim için sıraya alındı.");
             }else Status(u8"AI | Oyuncu veya mesaj seçilmedi.");
         }
+        else if(editing==Edit::SoundSearch){voice_ai_bridge::SearchSounds(chat_bot_core::PrefixScalars(value,80));Status(u8"Myinstants | Arama sıraya alındı.");}
         else if (editing == Edit::Speech) { voice_ai_bridge::SaveSpeech(chat_bot_core::PrefixScalars(value, 300)); Status(value.empty() ? u8"AI | Mesaj silindi." : u8"AI | Mesaj kaydedildi; okutmak için 'Mesajı seslendir' düğmesine bas."); }
         else { custom = value; mode = value.empty() ? 0 : chat_bot_core::kPersonaCount; SaveConfig(); InvalidateReplies(); history.clear(); QueueStatus(chat_bot_fx::Event::Profile,chat_bot_core::PersonaName(mode));Status(u8"AI | Özel kişilik kaydedildi, hafıza sıfırlandı."); }
         editing = Edit::None;

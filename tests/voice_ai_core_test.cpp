@@ -63,14 +63,17 @@ int main(){
   const double hz=Pitch(baby,rate,220*kBabyRatio*.8,220*kBabyRatio*1.2);assert(hz>220*kBabyRatio*.92&&hz<220*kBabyRatio*1.08); // ~418 Hz: far higher than the 220 Hz input
   auto mid=v;DeepRobot(mid,rate,.5);const double hm=Pitch(mid,rate,220*.7,220*1.6);assert(hm>220*ToneRatio(.5)*.92&&hm<220*ToneRatio(.5)*1.08);
   auto same=v;DeepRobot(same,rate,0);assert(same.size()>=v.size()*.95);}
+ // Myinstants parser: fixed host, traversal rejected.
+ {auto sounds=myinstants::Parse(R"HTML(<button onclick="play('/media/sounds/vine.mp3','x')"></button><a class="instant-link">Vine &amp; Boom</a><button onclick="play('/media/sounds/%2e%2e.mp3')"></button>)HTML");assert(sounds.size()==1&&sounds[0].title=="Vine & Boom"&&myinstants::Encode("a b")=="a%20b"&&!myinstants::ValidPath("https://evil.example/a.mp3"));}
  // --- Own message: spoken directly (TTS + tone), zero HTTP / AI requests -------------------------------------------
  {Request m;m.epoch=3;m.room=5;m.speak=true;m.voice=true;m.name="Ben";m.text="Merhaba herkese!";m.tone=100;calls=0;auto r=Run(Http,m);assert(r.speak&&calls==0&&r.epoch==3&&r.room==5&&r.reply=="Merhaba herkese!"&&!r.audio.samples.empty()&&r.audio.rate==22050);
-  m.tone=0;auto d=Run(Http,m);assert(d.audio.samples.size()>=1&&calls==0);
+  m.tone=0;auto d=Run(Http,m);assert(d.audio.samples.size()==2400&&calls==0&&std::fabs(d.audio.samples[0]-.1f)<.001f);
   m.text="   ";r=Run(Http,m);assert(r.skipped&&r.audio.samples.empty()&&calls==0);
   m.text="Merhaba";fail_tts=true;r=Run(Http,m);assert(r.speak&&r.audio.samples.empty()&&calls==0);fail_tts=false;}
  Request q;q.epoch=7;q.room=12;q.name="Ali";q.key="secret";q.system="Türkçe cevapla.";q.own_name="Bot";q.voice=true;q.pcm=std::vector<float>(6400,.15f);
+ {auto stage=q;stage.asr_only=true;calls=0;auto heard=Run(Http,stage);assert(heard.heard=="Bot kapı nerede?"&&heard.reply.empty()&&heard.audio.samples.empty()&&calls==0);stage.partial=true;stage.manual_keywords=true;heard=Run(Http,stage);assert(heard.partial&&!heard.await_selection&&heard.reply.empty()&&calls==0);}
  auto r=Run(Http,q);assert(r.epoch==7&&r.room==12&&r.heard=="Bot kapı nerede?"&&!r.reply.empty()&&!r.audio.samples.empty()&&r.audio.rate==22050&&calls==1);
- assert(requests.back().find("Bot kapı nerede?")!=std::string::npos);
+ assert(requests.back().find("Bot kapı nerede?")!=std::string::npos&&requests.back().find("\"maxOutputTokens\":256")!=std::string::npos&&requests.back().find("MINIMAL")!=std::string::npos);
  {auto u=q;u.all_mode=true;u.name_filter=true;asr_text="başka birine soruyorum";calls=0;auto ru=Run(Http,u);assert(ru.skipped&&ru.reply.empty()&&calls==0&&ru.gate_reason==message_gate::Reason::NameRequired);}
  {auto u=q;u.all_mode=true;u.name_filter=true;asr_text="Zeka merhaba";calls=0;auto ru=Run(Http,u);assert(!ru.reply.empty()&&calls==0&&ru.reply.find("merhaba")!=std::string::npos);}
  {auto u=q;u.general_filter=true;u.name_filter=false;asr_text="ahahahah";calls=0;auto ru=Run(Http,u);assert(ru.skipped&&calls==0&&ru.gate_reason==message_gate::Reason::Noise);}

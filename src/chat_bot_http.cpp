@@ -1,4 +1,14 @@
 #include "chat_bot_http.h"
+#include "voice_ai_bridge.h"
+#include <cctype>
+#if defined(__ANDROID__)
+#include "voice_ai_core.h"
+#include <media/NdkMediaExtractor.h>
+#include <media/NdkMediaCodec.h>
+#include <media/NdkMediaFormat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 #include <jni.h>
 #include <dlfcn.h>
 #include <android/log.h>
@@ -142,7 +152,7 @@ bool ReadClipboard(std::string& out) {
     return true;
 }
 
-bool Post(const std::string& url, const std::string& key, const std::string& body, int& code, std::string& response) {
+static bool PostWithTimeout(const std::string& url, const std::string& key, const std::string& body, int& code, std::string& response,int connect_ms,int read_ms) {
     code = 0; response.clear();
     if(body.size()>6u*1024u*1024u)return false;
     JavaVM* vm = FindVM();
@@ -185,8 +195,8 @@ bool Post(const std::string& url, const std::string& key, const std::string& bod
     env->CallVoidMethod(conn, set_prop, str("Content-Type"), str("application/json; charset=utf-8"));
     env->CallVoidMethod(conn, set_prop, str("x-goog-api-key"), str(key.c_str()));
     if(url.find("/interactions")!=std::string::npos)env->CallVoidMethod(conn,set_prop,str("Api-Revision"),str("2026-05-20"));
-    env->CallVoidMethod(conn, set_ct, 8000);
-    env->CallVoidMethod(conn, set_rt, 25000);
+    env->CallVoidMethod(conn, set_ct, connect_ms);
+    env->CallVoidMethod(conn, set_rt, read_ms);
     env->CallVoidMethod(conn, set_out, JNI_TRUE);
     if (Bad(env)) return false;
 
@@ -221,6 +231,9 @@ bool Post(const std::string& url, const std::string& key, const std::string& bod
     env->CallVoidMethod(conn, disconnect); Bad(env);
     return true;
 }
+
+bool Post(const std::string& url,const std::string& key,const std::string& body,int& code,std::string& response){return PostWithTimeout(url,key,body,code,response,8000,25000);}
+bool PostVoice(const std::string& url,const std::string& key,const std::string& body,int& code,std::string& response){return PostWithTimeout(url,key,body,code,response,3500,8000);}
 
 // GET without response-body parsing. The HTTPS certificate is verified by
 // Android's platform trust store via HttpURLConnection.
@@ -270,14 +283,15 @@ bool GetStatus(const std::string& url, int& code) {
 namespace {
 std::mutex g_tts_mutex;
 jobject g_tts = nullptr;                 // global ref: TextToSpeech
-bool g_tts_ready = false, g_voice_done = false;
+bool g_tts_ready = false;
+std::string g_selected_voice="\x01";
 long long g_tts_retry_ms = 0;            // başarısız başlatmadan sonra bu ana kadar tekrar deneme
 long long MsNow() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 #define TTS_LOG(...) __android_log_print(ANDROID_LOG_INFO, "multiplayermod", __VA_ARGS__)
 }
 bool Speak(const std::string& text, std::string& wav) {
     wav.clear();
-    if (text.empty() || text.size() > 2000) return false;
+    if (text.size() > 2000) return false;
     std::lock_guard<std::mutex> lock(g_tts_mutex);
     if (!g_tts_ready && MsNow() < g_tts_retry_ms) return false;
     JavaVM* vm = FindVM();
@@ -327,14 +341,43 @@ bool Speak(const std::string& text, std::string& wav) {
         TTS_LOG("GMM_DIAG tts language-tr=%d", code);
         if (code < 0) { env->DeleteGlobalRef(g_tts); g_tts = nullptr; g_tts_retry_ms = MsNow() + 30000; return false; } // motor yok / Türkçe yüklü değil / paket görünürlüğü
         env->CallIntMethod(g_tts, set_lang, locale); Bad(env);
-        // Erkek ton: Android'de cinsiyet alanı yok; perdeyi düşür, hızı biraz yavaşlat.
-        env->CallIntMethod(g_tts, set_pitch, 0.6f); Bad(env);
-        env->CallIntMethod(g_tts, set_rate, 0.95f); Bad(env);
+        g_selected_voice="\x01";
         g_tts_ready = true;
     }
 
+    const auto preferred=voice_ai_bridge::PreferredVoice();
+    if(g_selected_voice!=preferred){
+        g_selected_voice=preferred;
+        std::vector<std::string> names;std::string actual;
+        jclass vc=env->FindClass("android/speech/tts/Voice"),sc=env->FindClass("java/util/Set"),ic=env->FindClass("java/util/Iterator");
+        if(!Bad(env)&&vc&&sc&&ic){
+            auto voices=env->GetMethodID(tts_cls,"getVoices","()Ljava/util/Set;");auto get_voice=env->GetMethodID(tts_cls,"getVoice","()Landroid/speech/tts/Voice;");auto set_voice=env->GetMethodID(tts_cls,"setVoice","(Landroid/speech/tts/Voice;)I");
+            auto iter=env->GetMethodID(sc,"iterator","()Ljava/util/Iterator;");auto more=env->GetMethodID(ic,"hasNext","()Z");auto next=env->GetMethodID(ic,"next","()Ljava/lang/Object;");
+            auto name_id=env->GetMethodID(vc,"getName","()Ljava/lang/String;");auto loc_id=env->GetMethodID(vc,"getLocale","()Ljava/util/Locale;");auto lang_id=env->GetMethodID(loc_cls,"getLanguage","()Ljava/lang/String;");auto network_id=env->GetMethodID(vc,"isNetworkConnectionRequired","()Z");
+            if(!Bad(env)&&voices&&get_voice&&set_voice&&iter&&more&&next&&name_id&&loc_id&&lang_id&&network_id){
+                auto strval=[&](jstring v){std::string out;if(v){const char* p=env->GetStringUTFChars(v,nullptr);if(p){out=p;env->ReleaseStringUTFChars(v,p);}env->DeleteLocalRef(v);}Bad(env);return out;};
+                env->CallIntMethod(g_tts,set_lang,locale);Bad(env);
+                jobject set=env->CallObjectMethod(g_tts,voices);jobject it=(!Bad(env)&&set)?env->CallObjectMethod(set,iter):nullptr;
+                int best=-1; jobject picked=nullptr;
+                for(int n=0;it&&n<500;++n){if(!env->CallBooleanMethod(it,more)||Bad(env))break;jobject v=env->CallObjectMethod(it,next);if(Bad(env)||!v)break;
+                    jobject loc=env->CallObjectMethod(v,loc_id);std::string lang=loc?strval(static_cast<jstring>(env->CallObjectMethod(loc,lang_id))):"";if(loc)env->DeleteLocalRef(loc);
+                    if(lang=="tr"){
+                        const auto name=strval(static_cast<jstring>(env->CallObjectMethod(v,name_id)));bool network=env->CallBooleanMethod(v,network_id);Bad(env);
+                        if(!name.empty()&&!network){names.push_back(name);auto lower=name;for(char& c:lower)c=char(std::tolower(static_cast<unsigned char>(c)));bool male=(lower.find("male")!=std::string::npos&&lower.find("female")==std::string::npos)||lower.find("erkek")!=std::string::npos;int score=(!preferred.empty()&&name==preferred)?3:(preferred.empty()&&male?2:0);if(score>best){if(picked)env->DeleteLocalRef(picked);picked=env->NewLocalRef(v);best=score;}}
+                    }env->DeleteLocalRef(v);
+                }
+                if(picked){env->CallIntMethod(g_tts,set_voice,picked);Bad(env);env->DeleteLocalRef(picked);}
+                jobject voice=env->CallObjectMethod(g_tts,get_voice);if(!Bad(env)&&voice)actual=strval(static_cast<jstring>(env->CallObjectMethod(voice,name_id)));
+            }
+        }
+        voice_ai_bridge::PublishVoices(std::move(names),actual);
+    }
+    env->CallIntMethod(g_tts,set_pitch,.75f+.005f*voice_ai_bridge::tone.load());Bad(env);
+    env->CallIntMethod(g_tts,set_rate,1.05f);Bad(env);
+    if(text.empty())return true; // prewarm / refresh voice catalogue only
     jobject dir = env->CallObjectMethod(app, cache_dir);
-    jstring name = env->NewStringUTF("gmm_tts.wav");
+    const std::string unique="gmm_tts_"+std::to_string(MsNow())+".wav";
+    jstring name = env->NewStringUTF(unique.c_str());
     jobject file = (!Bad(env) && dir) ? env->NewObject(file_cls, file_new, dir, name) : nullptr;
     if (Bad(env) || !file) return false;
     jstring jpath = static_cast<jstring>(env->CallObjectMethod(file, file_path));
@@ -344,23 +387,26 @@ bool Speak(const std::string& text, std::string& wav) {
     if (c_path) env->ReleaseStringUTFChars(jpath, c_path);
     if (path.empty()) return false;
     env->CallBooleanMethod(file, file_del); Bad(env);
-    jstring jtext = env->NewStringUTF(text.c_str());
-    jstring utt = env->NewStringUTF("gmm");
+    const auto wide=Utf8ToUtf16(text);
+    jstring jtext = env->NewString(reinterpret_cast<const jchar*>(wide.data()),static_cast<jsize>(wide.size()));
+    jstring utt = env->NewStringUTF(unique.c_str());
     if (Bad(env) || !jtext) return false;
     const jint queued = env->CallIntMethod(g_tts, synth, jtext, static_cast<jobject>(nullptr), file, utt);
     if (Bad(env) || queued != 0) { TTS_LOG("GMM_DIAG tts synth-rejected=%d", queued); g_tts_ready = false; return false; }
-    // Tamamlanma: dosya var, >44 bayt ve 350 ms boyunca büyümüyor. En çok 20 sn.
+    // Tam WAV başlığı + sabit boyut; tamamlanmamış dosyayı okumayız. En çok 12 sn.
     long long last_size = -1, stable_since = 0; const long long start = MsNow();
-    while (MsNow() - start < 20000) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    while (MsNow() - start < 12000) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
         std::ifstream in(path, std::ios::binary | std::ios::ate);
         if (!in) continue;
         const long long size = static_cast<long long>(in.tellg());
-        if (size > 44 && size == last_size) { if (!stable_since) stable_since = MsNow(); if (MsNow() - stable_since >= 350) break; }
+        if (size > 44 && size == last_size) { if (!stable_since) stable_since = MsNow(); if (MsNow() - stable_since >= 150){unsigned char h[12]{};in.seekg(0);in.read(reinterpret_cast<char*>(h),12);uint64_t total=8ull+h[4]+(uint64_t(h[5])<<8)+(uint64_t(h[6])<<16)+(uint64_t(h[7])<<24);if(in&&h[0]=='R'&&h[1]=='I'&&h[2]=='F'&&h[3]=='F'&&total==uint64_t(size))break;} }
         else { stable_since = 0; last_size = size; }
     }
+    const bool completed=MsNow()-start<12000;
+    if(!completed){auto stop=env->GetMethodID(tts_cls,"stop","()I");if(!Bad(env)&&stop){env->CallIntMethod(g_tts,stop);Bad(env);}}
     std::ifstream in(path, std::ios::binary);
-    if (in) {
+    if (completed&&in) {
         std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         if (data.size() > 44 && data.size() < 6u * 1024u * 1024u) wav = std::move(data);
     }
@@ -368,4 +414,66 @@ bool Speak(const std::string& text, std::string& wav) {
     TTS_LOG("GMM_DIAG tts wav_bytes=%zu", wav.size());
     return !wav.empty();
 }
+#if defined(__ANDROID__)
+namespace {
+bool GetMedia(const std::string& url,size_t limit,std::string& bytes){
+ bytes.clear();if(url.rfind("https://www.myinstants.com/",0)!=0)return false;
+ auto* vm=FindVM();if(!vm)return false;Attach thread(vm);auto* env=thread.env;if(!env||env->PushLocalFrame(32)!=0)return false;
+ struct Frame{JNIEnv* e;~Frame(){e->PopLocalFrame(nullptr);}} frame{env};
+ auto uc=env->FindClass("java/net/URL"),hc=env->FindClass("java/net/HttpURLConnection"),ic=env->FindClass("java/io/InputStream");if(Bad(env)||!uc||!hc||!ic)return false;
+ auto uctor=env->GetMethodID(uc,"<init>","(Ljava/lang/String;)V"),open=env->GetMethodID(uc,"openConnection","()Ljava/net/URLConnection;");
+ auto ct=env->GetMethodID(hc,"setConnectTimeout","(I)V"),rt=env->GetMethodID(hc,"setReadTimeout","(I)V"),redirect=env->GetMethodID(hc,"setInstanceFollowRedirects","(Z)V"),header=env->GetMethodID(hc,"setRequestProperty","(Ljava/lang/String;Ljava/lang/String;)V"),code=env->GetMethodID(hc,"getResponseCode","()I"),input=env->GetMethodID(hc,"getInputStream","()Ljava/io/InputStream;"),disc=env->GetMethodID(hc,"disconnect","()V");
+ auto read=env->GetMethodID(ic,"read","([B)I"),close=env->GetMethodID(ic,"close","()V");if(Bad(env)||!uctor||!open||!ct||!rt||!redirect||!header||!code||!input||!disc||!read||!close)return false;
+ auto u=env->NewObject(uc,uctor,env->NewStringUTF(url.c_str()));if(Bad(env)||!u)return false;auto con=env->CallObjectMethod(u,open);if(Bad(env)||!con)return false;
+ env->CallVoidMethod(con,ct,4000);env->CallVoidMethod(con,rt,5000);env->CallVoidMethod(con,redirect,JNI_FALSE);env->CallVoidMethod(con,header,env->NewStringUTF("User-Agent"),env->NewStringUTF("Mozilla/5.0 (Android)"));
+ bool ok=false;auto until=MsNow()+12000;
+ if(!Bad(env)&&env->CallIntMethod(con,code)==200&&!Bad(env)){
+  auto in=env->CallObjectMethod(con,input);if(!Bad(env)&&in){auto buf=env->NewByteArray(8192);std::vector<jbyte> chunk(8192);
+   while(buf&&MsNow()<until){jint n=env->CallIntMethod(in,read,buf);if(Bad(env))break;if(n<0){ok=true;break;}if(n==0)continue;if(n>8192||bytes.size()+size_t(n)>limit)break;env->GetByteArrayRegion(buf,0,n,chunk.data());if(Bad(env))break;bytes.append(reinterpret_cast<char*>(chunk.data()),size_t(n));}
+   env->CallVoidMethod(in,close);Bad(env);
+  }
+ }Bad(env);env->CallVoidMethod(con,disc);Bad(env);if(!ok)bytes.clear();return ok&&!bytes.empty();
+}
+struct Fd{int fd=-1;~Fd(){if(fd>=0)::close(fd);}};
+int TemporaryAudioFd(){
+#if defined(SYS_memfd_create)
+ int fd=int(syscall(SYS_memfd_create,"gmm_sound",1u));if(fd>=0)return fd;
+#endif
+ auto* vm=FindVM();if(!vm)return -1;Attach thread(vm);auto* env=thread.env;if(!env||env->PushLocalFrame(16)!=0)return -1;
+ struct Frame{JNIEnv* e;~Frame(){e->PopLocalFrame(nullptr);}} frame{env};
+ auto at=env->FindClass("android/app/ActivityThread"),ctx=env->FindClass("android/content/Context"),file=env->FindClass("java/io/File");if(Bad(env)||!at||!ctx||!file)return -1;
+ auto current=env->GetStaticMethodID(at,"currentApplication","()Landroid/app/Application;"),cache=env->GetMethodID(ctx,"getCacheDir","()Ljava/io/File;"),path=env->GetMethodID(file,"getAbsolutePath","()Ljava/lang/String;");if(Bad(env)||!current||!cache||!path)return -1;
+ auto app=env->CallStaticObjectMethod(at,current);if(Bad(env)||!app)return -1;auto dir=env->CallObjectMethod(app,cache);if(Bad(env)||!dir)return -1;auto jpath=static_cast<jstring>(env->CallObjectMethod(dir,path));if(Bad(env)||!jpath)return -1;
+ const char* chars=env->GetStringUTFChars(jpath,nullptr);if(!chars)return -1;std::string pattern=std::string(chars)+"/gmm_sound_XXXXXX";env->ReleaseStringUTFChars(jpath,chars);std::vector<char> name(pattern.begin(),pattern.end());name.push_back(0);int result=mkstemp(name.data());if(result>=0)unlink(name.data());return result;
+}
+struct Extractor{AMediaExtractor* p=AMediaExtractor_new();~Extractor(){if(p)AMediaExtractor_delete(p);}};
+struct Format{AMediaFormat* p=nullptr;~Format(){if(p)AMediaFormat_delete(p);}};
+struct Codec{AMediaCodec* p=nullptr;bool started=false;~Codec(){if(p){if(started)AMediaCodec_stop(p);AMediaCodec_delete(p);}}};
+bool DecodeMp3(const std::string& bytes,std::string& wav){
+ // The file lives in RAM; Android's decoder reads only this file descriptor.
+ Fd f;f.fd=TemporaryAudioFd();if(f.fd<0)return false;
+ size_t offset=0;while(offset<bytes.size()){ssize_t n=::write(f.fd,bytes.data()+offset,bytes.size()-offset);if(n<=0)return false;offset+=size_t(n);}
+ Extractor ex;if(!ex.p||AMediaExtractor_setDataSourceFd(ex.p,f.fd,0,bytes.size())!=AMEDIA_OK)return false;
+ Codec decoder;Format selected;int32_t rate=0,channels=0;
+ for(size_t i=0;i<AMediaExtractor_getTrackCount(ex.p);++i){Format fmt{AMediaExtractor_getTrackFormat(ex.p,i)};const char* mime=nullptr;if(!fmt.p||!AMediaFormat_getString(fmt.p,"mime",&mime)||!mime||std::string(mime)!="audio/mpeg")continue;
+  if(AMediaExtractor_selectTrack(ex.p,i)!=AMEDIA_OK)return false;decoder.p=AMediaCodec_createDecoderByType(mime);selected.p=fmt.p;fmt.p=nullptr;break;}
+ if(!decoder.p||!selected.p||AMediaCodec_configure(decoder.p,selected.p,nullptr,nullptr,0)!=AMEDIA_OK||AMediaCodec_start(decoder.p)!=AMEDIA_OK)return false;decoder.started=true;
+ AMediaFormat_getInt32(selected.p,"sample-rate",&rate);AMediaFormat_getInt32(selected.p,"channel-count",&channels);
+ bool input_end=false,output_end=false;std::vector<float> pcm;const auto deadline=MsNow()+10000;
+ while(!output_end&&MsNow()<deadline){
+  if(!input_end){ssize_t index=AMediaCodec_dequeueInputBuffer(decoder.p,5000);if(index>=0){size_t cap=0;auto* buf=AMediaCodec_getInputBuffer(decoder.p,size_t(index),&cap);if(!buf)return false;ssize_t size=AMediaExtractor_readSampleData(ex.p,buf,cap);if(size<0){if(AMediaCodec_queueInputBuffer(decoder.p,size_t(index),0,0,0,AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM)!=AMEDIA_OK)return false;input_end=true;}else{if(size_t(size)>cap||AMediaCodec_queueInputBuffer(decoder.p,size_t(index),0,size_t(size),std::max<int64_t>(0,AMediaExtractor_getSampleTime(ex.p)),0)!=AMEDIA_OK)return false;AMediaExtractor_advance(ex.p);}}}
+  AMediaCodecBufferInfo info{};ssize_t index=AMediaCodec_dequeueOutputBuffer(decoder.p,&info,5000);
+  if(index==AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED){Format fmt{AMediaCodec_getOutputFormat(decoder.p)};if(!fmt.p)return false;AMediaFormat_getInt32(fmt.p,"sample-rate",&rate);AMediaFormat_getInt32(fmt.p,"channel-count",&channels);int32_t encoding=2;if(AMediaFormat_getInt32(fmt.p,"pcm-encoding",&encoding)&&encoding!=2)return false;}
+  else if(index>=0){size_t cap=0;auto* buf=AMediaCodec_getOutputBuffer(decoder.p,size_t(index),&cap);if(rate<8000||rate>48000||channels<1||channels>2||info.offset<0||info.size<0||size_t(info.offset)>cap||size_t(info.size)>cap-size_t(info.offset)||(info.size&&!buf)||info.size%(channels*2))return false;
+   const auto* b=buf?buf+info.offset:nullptr;for(size_t i=0;i<size_t(info.size)&&pcm.size()<size_t(rate)*15;i+=channels*2){float x=0;for(int c=0;c<channels;++c){size_t j=i+c*2;uint16_t u=uint16_t(b[j])|(uint16_t(b[j+1])<<8);x+=int16_t(u)/32768.f;}pcm.push_back(x/channels*.65f);}
+   output_end=(info.flags&AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM)||pcm.size()>=size_t(rate)*15;AMediaCodec_releaseOutputBuffer(decoder.p,size_t(index),false);
+  }
+ }
+ if(!output_end||pcm.empty())return false;wav=voice_ai_core::Wav(pcm,rate);return true;
+}
+}
+std::vector<myinstants::Sound> SearchSounds(const std::string& query){std::string html;if(query.empty()||query.size()>240||!GetMedia("https://www.myinstants.com/en/search/?name="+myinstants::Encode(query),2u<<20,html))return {};return myinstants::Parse(html);}
+bool DownloadSound(const std::string& path,std::string& wav){std::string bytes;return myinstants::ValidPath(path)&&GetMedia("https://www.myinstants.com"+path,4u<<20,bytes)&&DecodeMp3(bytes,wav);}
+#endif
+
 }

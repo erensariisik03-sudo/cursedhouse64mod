@@ -32,7 +32,7 @@ add_library(multiplayermod SHARED src/keyboard_api.cpp src/keyboard_ui.cpp
 target_include_directories(multiplayermod PRIVATE include src)
 target_compile_definitions(multiplayermod PRIVATE MM_AUTO_UNITY=$<BOOL:${MM_AUTO_UNITY}>)
 target_compile_options(multiplayermod PRIVATE -Wall -Wextra -Wno-unused-parameter -fexceptions)
-target_link_libraries(multiplayermod PRIVATE imgui dobby_static dl)
+target_link_libraries(multiplayermod PRIVATE imgui dobby_static dl mediandk)
 
 # SEDA model weights are bundled in APK assets/gmm_seda and extracted on demand
 # to Context.getFilesDir()/gmm_seda by native code. The ONNX runtime and C API

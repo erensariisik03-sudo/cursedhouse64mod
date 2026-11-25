@@ -60,7 +60,12 @@ struct Runtime {
  const Api& a;std::thread::id unity=std::this_thread::get_id();bool initialized=false,valid=false,hooks=false,lease=false,network_play=false;unsigned revision=0;uint64_t epoch=1;uintptr_t room_id=0;double next_discovery=0,next_request=0,playing_until=0,text_deadline=0,text_next=0;
  voice_ai_bridge::Snapshot snap;voice_ai_bridge::Settings settings;voice_ai_bridge::Config cfg;
  Root room_root,manager,recorder,lease_owner,old_clip,clip,local_go,local_source;bool old_loop=false,old_detection=false;
- Worker worker;std::deque<Request> requests;std::deque<std::string> text_out;
+ #if defined(__ANDROID__)
+ struct SoundLoad {std::mutex mutex;bool done=false;Audio audio;uint64_t epoch=0;};
+ std::shared_ptr<SoundLoad> sound_job;Audio sound_ready;
+#endif
+ Worker worker,asr_worker,tts_worker;
+ double asr_started=0,ai_started=0,tts_started=0,next_preview=0;size_t preview_samples=0;std::deque<Request> requests,asr_queue,tts_queue;std::deque<Audio> audio_out;std::deque<std::string> text_out;
  Request awaiting_selection;bool selection_active=false;int active_actor=0;std::vector<chat_bot_core::Turn> history;
  std::unordered_map<std::string,double> engaged_voice,side_talk_voice;
  std::unordered_map<int,std::string> verified_speakers;
@@ -109,8 +114,12 @@ struct Runtime {
   __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice hooks decoded=%d mic_guards=%d",f,hooks);return f;
  }
  void Reset(bool disable){
-  worker.Cancel();capture=false;++capture_epoch;std::atomic_store(&streams,std::shared_ptr<const Streams>(std::make_shared<Streams>()));{std::lock_guard<std::mutex> l(segments_mutex);segments.Clear();}
-  StopAudio();++epoch;requests.clear();text_out.clear();selection_active=false;active_actor=0;awaiting_selection=Request{};snap.selection_text.clear();snap.selection_name.clear();snap.players.clear();verified_speakers.clear();history.clear();engaged_voice.clear();side_talk_voice.clear();next_request=Now()+.6;snap.heard.clear();snap.reply.clear();if(disable){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;voice_ai_bridge::texts.clear();}
+  worker.Cancel();asr_worker.Cancel();tts_worker.Cancel();
+#if defined(__ANDROID__)
+  sound_job.reset();sound_ready=Audio{};{std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::soundboard.play_pending.clear();voice_ai_bridge::soundboard.loading=false;}
+#endif
+  capture=false;++capture_epoch;std::atomic_store(&streams,std::shared_ptr<const Streams>(std::make_shared<Streams>()));{std::lock_guard<std::mutex> l(segments_mutex);segments.Clear();}
+  StopAudio();++epoch;requests.clear();asr_queue.clear();tts_queue.clear();audio_out.clear();text_out.clear();selection_active=false;active_actor=0;awaiting_selection=Request{};snap.selection_text.clear();snap.selection_name.clear();snap.players.clear();verified_speakers.clear();history.clear();engaged_voice.clear();side_talk_voice.clear();next_request=Now();next_preview=0;preview_samples=0;snap.heard.clear();snap.reply.clear();if(disable){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;voice_ai_bridge::texts.clear();}
  }
  bool NetworkAllowed(){
   if(!room_id||!room_properties||!hash_item||!voice_client||!voice_joined||!Active(manager.Get())||!a.Value<bool>(available,manager.Get(),false)||!Alive(recorder.Get()))return false;
@@ -188,13 +197,14 @@ struct Runtime {
   leased_recorder=nullptr;lease=false;network_play=false;lease_owner.Set(nullptr);old_clip.Set(nullptr);
   for(auto* root:{&local_go,&clip}){if(Alive(root->Get())){void* args[]={root->Get()};a.Call(destroy,nullptr,args);}root->Set(nullptr);}local_source.Set(nullptr);snap.speaking=snap.mic_blocked=false;playing_until=0;
  }
- bool Play(const Audio& audio,double now){
+ bool Play(const Audio& audio,double now,bool require_network=false){
   if(audio.samples.empty()||audio.rate<8000||audio.rate>48000||audio.samples.size()>size_t(audio.rate)*45)return false;
   StopAudio();std::vector<float> padded(size_t(audio.rate)*.35f,0);padded.insert(padded.end(),audio.samples.begin(),audio.samples.end());padded.resize(padded.size()+size_t(audio.rate)/4);
   Root samples(a,a.array_new(float_class,padded.size()));auto* ptr=ArrayData(a,samples.Get(),padded.size());if(!ptr)return false;std::memcpy(ptr,padded.data(),padded.size()*sizeof(float));
   Root name(a,reinterpret_cast<Object*>(a.string_new("GMM AI voice")));int n=int(padded.size()),channels=1,rate=audio.rate;bool stream=false,ok=false;void* args[]={name.Get(),&n,&channels,&rate,&stream,nullptr};clip.Set(a.Call(clip_create,nullptr,args,&ok));if(!ok||!Alive(clip.Get()))return false;
   int offset=0;void* put[]={samples.Get(),&offset};Root written(a,a.Call(clip_data,clip.Get(),put,&ok));if(!ok||!written.Get()||!*static_cast<bool*>(a.object_unbox(written.Get())))return false;
   snap.network_ready=NetworkAllowed();network_play=snap.network_ready&&settings.destination==0;
+  if(require_network&&!network_play){StopAudio();return false;}
   if(!AcquireMic(network_play,true)||!MuteExtraMics()){StopAudio();return false;}
   {
    local_go.Set(a.object_new(a.Find("UnityEngine","GameObject")));a.Call(go_ctor,local_go.Get(),nullptr,&ok);if(!ok||!Alive(local_go.Get())){StopAudio();return false;}
@@ -207,7 +217,7 @@ struct Runtime {
    }
    a.Call(audio_play,local_source.Get(),nullptr,&ok);if(!ok){StopAudio();return false;}
   }
-  snap.speaking=true;playing_until=now+double(n)/rate+.6;snap.status=network_play?"AI ses kanalında konuşuyor; mikrofon devre dışı.":"AI bu cihazda konuşuyor; oda ses kanalı kullanılmıyor.";
+  snap.speaking=true;playing_until=now+double(n)/rate+.15;snap.status=network_play?"AI ses kanalında konuşuyor; mikrofon devre dışı.":"AI bu cihazda konuşuyor; oda ses kanalı kullanılmıyor.";
   __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice play network=%d mic_blocked=%d samples=%d rate=%d",network_play,snap.mic_blocked,n,rate);return true;
  }
  bool SendText(const std::string& line){
@@ -229,10 +239,26 @@ struct Runtime {
   const auto side=side_talk_voice.find(q.name);q.side_conversation=side!=side_talk_voice.end()&&now<side->second;
   // Speech has one selected speaker; never reject speech because of a typed nickname.
   q.others.clear();
-  if(!requests.empty()&&Merge(requests.back(),q))return;
-  if(requests.size()>=3) requests.pop_front();
-  requests.push_back(std::move(q));
+  auto& queue=q.pcm.empty()?requests:asr_queue;
+  if(!queue.empty()&&Merge(queue.back(),q))return;
+  if(queue.size()>=6) queue.pop_front();
+  queue.push_back(std::move(q));
  }
+#if defined(__ANDROID__)
+ void PumpSoundboard(double now){
+  using namespace voice_ai_bridge;
+  std::string query,path;unsigned generation=0;
+  {std::lock_guard<std::mutex> l(mutex);query.swap(soundboard.search_pending);generation=soundboard.generation;if(!sound_job&&sound_ready.samples.empty())path.swap(soundboard.play_pending);}
+  if(!query.empty())std::thread([query=std::move(query),generation]{std::vector<myinstants::Sound> found;try{found=chat_bot_http::SearchSounds(query);}catch(...){}std::lock_guard<std::mutex> l(mutex);if(soundboard.generation==generation){soundboard.results=std::move(found);soundboard.searching=false;soundboard.status=soundboard.results.empty()?"Sonuç yok veya Myinstants erişilemedi.":std::to_string(soundboard.results.size())+" ses bulundu.";}}).detach();
+  auto status=[](const std::string& msg,bool busy){std::lock_guard<std::mutex> l(mutex);soundboard.status=msg;soundboard.loading=busy;};
+  if(!path.empty()){
+   if(!settings.enabled||settings.destination!=0||!NetworkAllowed())status("Sesli odaya bağlanmadın.",false);
+   else {sound_job=std::make_shared<SoundLoad>();sound_job->epoch=epoch;auto target=sound_job;std::thread([target,path=std::move(path)]{Audio audio;try{std::string wav;if(chat_bot_http::DownloadSound(path,wav))DecodeAudio(wav,"audio/wav",audio);}catch(...){}std::lock_guard<std::mutex> l(target->mutex);target->audio=std::move(audio);target->done=true;}).detach();}
+  }
+  if(sound_job){bool done=false;{std::lock_guard<std::mutex> l(sound_job->mutex);done=sound_job->done;if(done&&sound_job->epoch==epoch)sound_ready=std::move(sound_job->audio);}if(done){sound_job.reset();if(sound_ready.samples.empty())status("MP3 indirilemedi veya çözülemedi.",false);else status("Ses hazır; yayın sırası bekleniyor.",true);}}
+  if(!sound_ready.samples.empty()&&!snap.speaking){Audio audio=std::move(sound_ready);sound_ready=Audio{};bool ok=settings.enabled&&Play(audio,now,true);status(ok?"Ses odaya gönderiliyor.":"Ses kanalı kullanılamadı.",false);}
+ }
+#endif
 public:
  void Abort(){Reset(true);valid=false;}
  explicit Runtime(const Api& api):a(api),room_root(a),manager(a),recorder(a),lease_owner(a),old_clip(a),clip(a),local_go(a),local_source(a){}
@@ -249,14 +275,21 @@ public:
   Root observed_room(a,paused?nullptr:a.Call(current_room));uintptr_t next_room=reinterpret_cast<uintptr_t>(observed_room.Get());
   if(next_room!=room_id){Reset(room_id!=0);room_root.Set(observed_room.Get());room_id=next_room;wanted.enabled=false;{std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;}next_discovery=0;}
   bool config_changed=next_cfg.key!=cfg.key||next_cfg.system!=cfg.system||next_cfg.own_name!=cfg.own_name||next_cfg.all!=cfg.all||next_cfg.strict!=cfg.strict||next_cfg.selected!=cfg.selected||next_cfg.message_filter!=cfg.message_filter;
-  if(next_rev!=revision||config_changed||cancel){Reset(false);revision=next_rev;settings=wanted;cfg=std::move(next_cfg);if(settings.enabled)seda_asr::WarmAsync();texts.clear();speaks.clear();next_discovery=0;snap.status=settings.enabled?"Sesli AI hazır; yeni ses veya mesaj bekleniyor.":"Sesli AI kapalı.";}
+  if(next_rev!=revision||config_changed||cancel){Reset(false);revision=next_rev;settings=wanted;cfg=std::move(next_cfg);if(settings.enabled){seda_asr::WarmAsync();
+#if defined(__ANDROID__)
+   static std::atomic<bool> warming{false};if(!warming.exchange(true))std::thread([]{std::string ignored;try{chat_bot_http::Speak("",ignored);}catch(...){}warming=false;}).detach();
+#endif
+  }texts.clear();speaks.clear();next_discovery=0;snap.status=settings.enabled?"Sesli AI hazır; yeni ses veya mesaj bekleniyor.":"Sesli AI kapalı.";}
   if(settings.enabled&&(cfg.key.empty()||!room_id)){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;snap.status=cfg.key.empty()?"Önce AI bölümünden API anahtarı gir.":"Bir odaya gir.";}
   if(now>=next_discovery){next_discovery=now+1;Discover();}
   if(snap.speaking){
    bool invalid=now>=playing_until||!settings.enabled;
    if(network_play){int source=-1;invalid=invalid||!NetworkAllowed()||!Alive(lease_owner.Get())||!Read(get_source,lease_owner.Get(),source)||source!=1||a.Call(get_clip,lease_owner.Get())!=clip.Get();}
-   if(invalid){StopAudio();next_request=now+.6;}
+   if(invalid){StopAudio();next_request=now;}
   }
+#if defined(__ANDROID__)
+  PumpSoundboard(now);
+#endif
   if(selection_active&&(selection_submit||selection_skip)){
    if(selection_submit){
     const auto& spoken=awaiting_selection.text;
@@ -277,13 +310,38 @@ public:
    }
    selection_active=false;awaiting_selection=Request{};snap.selection_text.clear();snap.selection_name.clear();
   }
-  capture=valid&&settings.enabled&&settings.input!=1&&!snap.speaking&&!selection_active&&!worker.Busy()&&requests.empty()&&now>=next_request&&room_id;
-  {std::lock_guard<std::mutex> l(segments_mutex);segments.Flush(now);Utterance utterance;while(segments.Take(utterance)){Request q;q.actor=utterance.actor;q.name=utterance.name;q.pcm=std::move(utterance.samples);Queue(std::move(q));}}
+  capture=valid&&settings.enabled&&settings.input!=1&&room_id;
+  {std::lock_guard<std::mutex> l(segments_mutex);segments.Flush(now);Utterance utterance;while(segments.Take(utterance)){preview_samples=0;if(!settings.enabled||settings.input==1)continue;Request q;q.actor=utterance.actor;q.name=utterance.name;q.pcm=std::move(utterance.samples);Queue(std::move(q));}}
   if(settings.enabled&&settings.input!=0)for(auto& t:texts)if(t.room==room_id&&t.name!=cfg.own_name){Request q;q.name=std::move(t.name);q.text=std::move(t.text);q.gate_checked=true;q.instant=t.instant;q.instant_reply=std::move(t.instant_reply);Queue(std::move(q));}
-  if(settings.enabled&&room_id)for(auto& t:speaks){Request q;q.speak=true;q.voice=true;q.text=chat_bot_core::PrefixScalars(t,300);q.epoch=epoch;q.room=room_id;q.name=cfg.own_name;q.tone=voice_ai_bridge::tone.load();while(requests.size()>=3)requests.pop_back();requests.push_front(std::move(q));}
+  if(settings.enabled&&room_id)for(auto& t:speaks){Request q;q.speak=true;q.voice=true;q.text=chat_bot_core::PrefixScalars(t,300);q.epoch=epoch;q.room=room_id;q.name=cfg.own_name;q.tone=voice_ai_bridge::tone.load();if(tts_queue.size()<6)tts_queue.push_back(std::move(q));}
+  Result recognized;
+  if(asr_worker.Poll(recognized)&&recognized.epoch==epoch&&recognized.room==room_id&&settings.enabled){
+   __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice ASR ms=%d",int((now-asr_started)*1000));
+   if(!recognized.heard.empty())snap.heard=chat_bot_core::PrefixScalars(recognized.heard,160);
+   if(recognized.partial){/* Intermediate words are UI only, never sent to Gemini. */}
+   else if(recognized.await_selection&&!selection_active){awaiting_selection=Request{};awaiting_selection.actor=recognized.actor;awaiting_selection.name=recognized.name;awaiting_selection.text=recognized.heard;awaiting_selection.epoch=epoch;awaiting_selection.room=room_id;selection_active=true;snap.selection_text=recognized.heard;snap.selection_name=recognized.name;}
+   else if(!recognized.skipped&&!recognized.await_selection&&!recognized.heard.empty()){Request q;q.actor=recognized.actor;q.name=recognized.name;q.text=recognized.heard;Queue(std::move(q));}
+  }
+  if(settings.enabled&&!asr_worker.Busy()&&!asr_queue.empty()&&(!settings.manual_keywords||!selection_active)){
+   Request q=std::move(asr_queue.front());asr_queue.pop_front();q.asr_only=true;asr_started=now;asr_worker.Start(&chat_bot_http::Post,std::move(q));
+  }
+  // When no final utterance is waiting, refresh the visible words at a bounded cadence.
+  if(settings.enabled&&settings.input!=1&&!asr_worker.Busy()&&asr_queue.empty()&&now>=next_preview&&!selection_active){
+   Utterance partial;bool ready=false;{std::lock_guard<std::mutex> l(segments_mutex);ready=segments.Preview(partial,preview_samples);}
+   if(ready){preview_samples=partial.samples.size();next_preview=now+1.0;Request q;q.epoch=epoch;q.room=room_id;q.actor=partial.actor;q.name=partial.name;q.pcm=std::move(partial.samples);q.asr_only=true;q.partial=true;asr_started=now;asr_worker.Start(&chat_bot_http::Post,std::move(q));}
+  }
+  Result voiced;
+  if(tts_worker.Poll(voiced)&&voiced.epoch==epoch&&voiced.room==room_id&&settings.enabled){__android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice TTS ms=%d",int((now-tts_started)*1000));if(!voiced.audio.samples.empty()&&audio_out.size()<6)audio_out.push_back(std::move(voiced.audio));else if(voiced.audio.samples.empty())snap.status="Ses üretilemedi; metin sohbette.";}
+  if(settings.enabled&&!tts_worker.Busy()&&!tts_queue.empty()&&audio_out.size()<6){Request q=std::move(tts_queue.front());tts_queue.pop_front();tts_started=now;tts_worker.Start(&chat_bot_http::Post,std::move(q));}
+  if(settings.enabled&&!snap.speaking&&!audio_out.empty()
+#if defined(__ANDROID__)
+     &&sound_ready.samples.empty()
+#endif
+    ){Audio a=std::move(audio_out.front());audio_out.pop_front();if(!Play(a,now))snap.status="Ses oynatılamadı.";}
   Result result;if(worker.Poll(result)&&result.epoch==epoch&&result.room==room_id&&settings.enabled){
-   __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice result actor=%d http=%d skipped=%d audio_samples=%zu",result.actor,result.code,result.skipped,result.audio.samples.size());
-   snap.heard=chat_bot_core::PrefixScalars(result.heard,120);snap.reply=chat_bot_core::PrefixScalars(result.reply,160);snap.status=result.status;
+   __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice result actor=%d http=%d skipped=%d audio_samples=%zu AI_ms=%d",result.actor,result.code,result.skipped,result.audio.samples.size(),int((now-ai_started)*1000));
+   if(result.actor==0||snap.heard.empty())snap.heard=chat_bot_core::PrefixScalars(result.heard,120);
+   snap.reply=chat_bot_core::PrefixScalars(result.reply,160);snap.status=result.status;
    if(result.await_selection){
     if(!selection_active){awaiting_selection=Request{};awaiting_selection.actor=result.actor;awaiting_selection.name=result.name;
      awaiting_selection.text=result.heard;awaiting_selection.epoch=epoch;awaiting_selection.room=room_id;
@@ -294,16 +352,21 @@ public:
    if(!result.reply.empty()){
     // Tüm AI yanıtları (ses başarılı olsa bile) sohbete de yazılır.
     if(!result.speak){for(auto& part:chat_bot_core::SplitChunks(result.reply,200,8))text_out.push_back(part);text_deadline=now+45;text_next=now;}
-    if(!result.speak){history.push_back({false,result.name+": "+result.heard});history.push_back({true,result.reply});chat_bot_core::TrimHistory(history,12);}
-    if(result.audio.samples.empty()||!Play(result.audio,now)){
-     if(result.speak)snap.status="Ses üretilemedi.";
-    }
-   }next_request=now+2;
+    if(!result.speak){history.push_back({false,result.name+": "+result.heard});history.push_back({true,result.reply});chat_bot_core::TrimHistory(history,6);}
+    if(settings.output==1&&tts_queue.size()<6){Request q;q.speak=true;q.text=result.reply;q.epoch=epoch;q.room=room_id;q.tone=voice_ai_bridge::tone.load();tts_queue.push_back(std::move(q));}
+   }next_request=now;
   }
   if(!text_out.empty()&&now>text_deadline)text_out.clear();
   if(settings.enabled&&!text_out.empty()&&now>=text_next){text_next=now+1.2;if(SendText(text_out.front()))text_out.pop_front();}
-  if(settings.enabled&&!selection_active&&!worker.Busy()&&!snap.speaking&&text_out.empty()&&!requests.empty()&&now>=next_request){Request q=std::move(requests.front());requests.pop_front();if(q.epoch==epoch){q.history=history;worker.Start(&chat_bot_http::Post,std::move(q));snap.status="Sesli AI işliyor...";}}
-  snap.settings=settings;snap.busy=worker.Busy();if(!settings.enabled&&!snap.speaking&&snap.status.empty())snap.status="Sesli AI kapalı.";voice_ai_bridge::Publish(snap);
+  if(settings.enabled&&!selection_active&&!worker.Busy()&&!requests.empty()&&text_out.size()<16&&tts_queue.size()<6&&now>=next_request){Request q=std::move(requests.front());requests.pop_front();if(q.epoch==epoch){q.history=history;q.voice=false;ai_started=now;
+#if defined(__ANDROID__)
+   worker.Start(&chat_bot_http::PostVoice,std::move(q));
+#else
+   worker.Start(&chat_bot_http::Post,std::move(q));
+#endif
+   snap.status="AI yanıt hazırlıyor...";}}
+  if(settings.enabled&&settings.input!=1&&!snap.speaking&&!worker.Busy()&&!tts_worker.Busy())snap.status=snap.heard.empty()?"AI dinliyor...":"AI dinliyor | Son anlaşılan: "+snap.heard;
+  snap.settings=settings;snap.busy=worker.Busy()||asr_worker.Busy()||tts_worker.Busy();if(!settings.enabled&&!snap.speaking&&snap.status.empty())snap.status="Sesli AI kapalı.";voice_ai_bridge::Publish(snap);
  }
 };Runtime* runtime=nullptr;
 }
