@@ -1,0 +1,8 @@
+/build/
+/.cxx/
+/.idea/
+/.vscode/
+reference/dump.cs
+*.so
+*.o
+*.zip

@@ -1,0 +1,151 @@
+name: Build Android .so (ARM64)
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Android arm64-v8a
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Test native editor and shared AI filters
+        run: bash tests/run.sh
+
+      - name: Verify patched SEDA CMake integration
+        shell: bash
+        run: |
+          if ! grep -q "SEDA_CMAKE_DIRECT_PATH_CHECK_V2" CMakeLists.txt; then
+            echo "::error::This checkout still has the old sherpa find_path/find_library logic. Replace the project files with the CMake root-path fix v2 package."
+            exit 1
+          fi
+          echo "SEDA CMake direct-path fix v2 is present."
+
+      - name: Build sherpa-onnx C API for Android ARM64
+        shell: bash
+        run: |
+          git clone --depth 1 --branch v2.0.3 https://github.com/k2-fsa/sherpa-onnx.git "$RUNNER_TEMP/sherpa-onnx"
+          cd "$RUNNER_TEMP/sherpa-onnx"
+          # The C API is used from native C++; JNI, TTS, diarization and websocket
+          # support are not needed by this mod. sherpa-onnx v2.0.3 itself adds the
+          # Android 16 KiB max-page-size linker flag in its top-level CMakeLists.
+          export ANDROID_NDK="$ANDROID_NDK_HOME"
+          export BUILD_SHARED_LIBS=ON
+          export SHERPA_ONNX_ENABLE_C_API=ON
+          export SHERPA_ONNX_ENABLE_JNI=OFF
+          export SHERPA_ONNX_ENABLE_TTS=OFF
+          export SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=OFF
+          export SHERPA_ONNX_ENABLE_BINARY=OFF
+          python3 - <<'PY'
+          from pathlib import Path
+          script = Path("build-android-arm64-v8a.sh")
+          lines = script.read_text().splitlines()
+          for index, line in enumerate(lines):
+              if line.strip().startswith("-DSHERPA_ONNX_ENABLE_JNI="):
+                  if index + 1 >= len(lines) or "SHERPA_ONNX_ENABLE_WEBSOCKET" not in lines[index + 1]:
+                      lines.insert(index + 1, "    -DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF " + chr(92))
+                  break
+          else:
+              raise SystemExit("Could not find the sherpa-onnx JNI flag to disable websocket")
+          script.write_text("\n".join(lines) + "\n")
+          PY
+          ./build-android-arm64-v8a.sh
+          SHERPA_INSTALL="$RUNNER_TEMP/sherpa-onnx/build-android-arm64-v8a/install"
+          test -s "$SHERPA_INSTALL/include/sherpa-onnx/c-api/c-api.h"
+          test -s "$SHERPA_INSTALL/lib/libsherpa-onnx-c-api.so"
+          test -s "$SHERPA_INSTALL/lib/libonnxruntime.so"
+          echo "Sherpa install tree verified: $SHERPA_INSTALL"
+          find "$SHERPA_INSTALL/include/sherpa-onnx/c-api" -maxdepth 1 -type f -printf '%p\n' | sort
+          find "$SHERPA_INSTALL/lib" -maxdepth 1 -type f -name '*.so' -printf '%f\n' | sort
+          echo "SHERPA_ONNX_ROOT=$SHERPA_INSTALL" >> "$GITHUB_ENV"
+
+      - name: Stage SEDA model as APK assets
+        shell: bash
+        run: |
+          mkdir -p dist/assets
+          cp -a assets/gmm_seda dist/assets/gmm_seda
+          test -s dist/assets/gmm_seda/asset-version.txt
+          test -s dist/assets/gmm_seda/c32/encoder.int8.onnx
+          # Legacy standalone archive for manual testing; APK packaging uses dist/assets.
+          (cd dist/assets && zip -qr ../seda-v0.2-tiny-c32.zip gmm_seda)
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="arm64-v8a" \
+            -DANDROID_PLATFORM=android-21 \
+            -DANDROID_STL=c++_static \
+            -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
+            -DMM_ENABLE_SEDA=ON \
+            -DSHERPA_ONNX_ROOT="$SHERPA_ONNX_ROOT"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist/arm64-v8a
+          cp build/libmultiplayermod.so dist/arm64-v8a/libmultiplayermod.so
+          # The C API .so has transitive dependencies (sherpa core, fbank,
+          # decoder, FST, etc.). Package every shared library from the install.
+          cp "$SHERPA_ONNX_ROOT"/lib/*.so dist/arm64-v8a/
+          test -f dist/arm64-v8a/libsherpa-onnx-c-api.so
+          test -f dist/arm64-v8a/libonnxruntime.so
+          STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          for library in dist/arm64-v8a/*.so; do
+            "$STRIP" --strip-unneeded "$library"
+            file "$library"
+            "$READELF" -d "$library"
+            load_count=0
+            while IFS= read -r align; do
+              load_count=$((load_count + 1))
+              hex="${align#0x}"
+              if (( 16#$hex < 16384 )); then
+                echo "${library}: LOAD alignment ${align} is below 16 KiB" >&2
+                exit 1
+              fi
+            done < <("$READELF" -lW "$library" | awk '$1 == "LOAD" { print $NF }')
+            if (( load_count == 0 )); then echo "${library}: no LOAD segments found" >&2; exit 1; fi
+          done
+          echo "SEDA model archive:"
+          ls -lh dist/seda-v0.2-tiny-c32.zip
+
+      - name: Upload ARM64 binaries and SEDA model
+        uses: actions/upload-artifact@v4
+        with:
+          name: multiplayermod-arm64-v8a-with-seda-v0.2-tiny
+          path: dist/
+          if-no-files-found: error
+          # Keep storage usage low to avoid hitting the account artifact quota.
+          retention-days: 3
+          compression-level: 9
