@@ -613,6 +613,12 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
                            admin.max_players>0?std::to_string(admin.max_players).c_str():"Bilinmiyor");
         ImGui::TextWrapped("Senin aktorun: #%d | MasterClient: #%d",admin.local_actor,admin.master_actor);
         ImGui::TextWrapped("Host durumu: %s",admin.is_master?"HOST SENSIN":"HOST DEGILSIN");
+        ImGui::TextWrapped("Yerel Host Modu: %s",admin.local_host_enabled?"ACIK":"KAPALI");
+        ImGui::BeginDisabled(!admin.can_use_local_host);
+        ActionKey(admin.local_host_enabled?"Yerel Host Modunu Kapat":"Yerel Host Modunu Ac",
+                  content,key_height,[current=admin.local_host_enabled]{room_admin_bridge::SetLocalHost(!current);InvalidateKeys();});
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("Yerel kontrol: Main.cpp gibi true doner. Gercek Photon hostunu degistirmez. RemovePlayer yok.");
         ImGui::BeginDisabled(!admin.can_take_host||admin.is_master);
         ActionKey("Hostlugu Al",content,key_height,[]{room_admin_bridge::TakeHost();InvalidateKeys();});
         ImGui::EndDisabled();

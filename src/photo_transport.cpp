@@ -12,6 +12,7 @@
 #include "dobby.h"
 #include <android/log.h>
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cctype>
@@ -102,6 +103,27 @@ void EventHook(Object* client,Object* event,const Method* method) {
    }
  } catch(...) {/* bad or reused event must never crash the game */}
  if(original_event)original_event(client,event,method);
+}
+
+// Main(1).cpp ForceMaster: local-only get_IsMasterClient override.
+// Deliberately do NOT port its RemovePlayer call or unverified raw offsets:
+// neither is needed to make this local getter return true, and one would
+// forcibly affect another player. Photon server MasterClient is unchanged.
+using LocalMasterGetter = bool (*)(const Method*);
+LocalMasterGetter original_local_master=nullptr;
+std::atomic<bool> local_master_mode{false};
+bool local_master_installed=false;
+bool LocalMasterCheck(const Method* method) {
+ if(local_master_mode.load(std::memory_order_relaxed))return true;
+ return original_local_master?original_local_master(method):false;
+}
+void InstallLocalMasterHook(const Api& a){
+ const auto* getter=a.FindMethod(a.Find("Photon.Pun","PhotonNetwork"),"get_IsMasterClient",0);
+ void* address=Entry(getter);
+ if(!address){PHOTO_LOG("GMM local host: getter not found");return;}
+ local_master_installed=DobbyHook(address,reinterpret_cast<void*>(LocalMasterCheck),
+      reinterpret_cast<void**>(&original_local_master))==0&&original_local_master;
+ PHOTO_LOG("GMM local host: hook=%d",local_master_installed);
 }
 
 static double Now() {return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();}
@@ -419,6 +441,8 @@ class Session {
  }
  void HandleRoomAdminCommands(){
   const auto c=room_admin_bridge::Take();
+  if((!room_id||!chat_bot_bridge::Read().developer_unlocked)&&local_master_mode.exchange(false))
+   PHOTO_LOG("GMM local host: disabled (room/lock ended)");
   if(c.desired_limit)room_admin_selected_limit=room_admin_bridge::ClampLimit(c.desired_limit);
   room_admin_snapshot.in_room=room_id!=0;
   room_admin_snapshot.local_actor=local_actor;
@@ -426,6 +450,8 @@ class Session {
   room_admin_snapshot.is_master=room_id&&local_actor>0&&local_actor==master_actor;
   room_admin_snapshot.player_count=room_id?static_cast<int>(peers.size())+1:0;
   room_admin_snapshot.can_take_host=room_id&&local_actor>0&&master_actor>0&&(set_master||room_set_master);
+  room_admin_snapshot.can_use_local_host=room_id&&local_master_installed;
+  room_admin_snapshot.local_host_enabled=local_master_mode.load(std::memory_order_relaxed);
   room_admin_snapshot.can_set_limit=room_id&&room_max_set&&limit_kind!=LimitKind::Unsupported;
   room_admin_snapshot.selected_limit=room_admin_selected_limit;
   // Poll MaxPlayers at most once per second; this bridge runs every frame.
@@ -442,10 +468,21 @@ class Session {
    room_admin_snapshot.status=room_admin_snapshot.max_players==expected_limit?"Oyuncu siniri Photon tarafindan dogrulandi.":"Oda limiti dogrulanamadi; oyun/SDK bu degeri desteklemiyor olabilir.";
    limit_check_deadline=0;expected_limit=0;
   }
-  if(!c.take_host&&!c.apply_limit){room_admin_bridge::Publish(room_admin_snapshot);return;}
+  if(!c.take_host&&!c.apply_limit&&!c.set_local_host){room_admin_bridge::Publish(room_admin_snapshot);return;}
   if(!chat_bot_bridge::Read().developer_unlocked){room_admin_snapshot.status="Gelistirici kilidini acmalisin.";}
   else if(!room_id){room_admin_snapshot.status="Oda bulunamadi. Once odaya gir.";}
   else if(Now()<room_admin_next_action){room_admin_snapshot.status="Yeni istek icin biraz bekle.";}
+  else if(c.set_local_host){
+   if(!local_master_installed)room_admin_snapshot.status="Yerel MasterClient getter kancasi bulunamadi.";
+   else {
+    local_master_mode.store(c.local_host_value,std::memory_order_relaxed);
+    room_admin_snapshot.local_host_enabled=c.local_host_value;
+    room_admin_snapshot.status=c.local_host_value?
+     "Yerel Host Modu acik (Photon MasterClient degismez).":"Yerel Host Modu kapatildi.";
+    PHOTO_LOG("GMM local host: enabled=%d real_master=%d local=%d",
+     c.local_host_value,master_actor,local_actor);
+   }
+  }
   else if(c.take_host){
    if(!room_admin_snapshot.can_take_host)room_admin_snapshot.status="Photon hostluk degistirme metodu bulunamadi.";
    else if(room_admin_snapshot.is_master)room_admin_snapshot.status="Zaten odanin MasterClient oyuncususun.";
@@ -484,6 +521,7 @@ class Session {
  void DiscoverRoom(){
   Root room(a,a.Call(current_room));const uintptr_t id=reinterpret_cast<uintptr_t>(room.Get());
   if(room_id&&room_id!=id){
+   if(local_master_mode.exchange(false))PHOTO_LOG("GMM local host: disabled (room changed)");
    ResetSession();ResetBrowse();pending_actor=0;pending_file.clear();seen_kicks.clear();
    kick_snapshot.selected_actor=0;
    host_check_deadline=limit_check_deadline=0;expected_limit=0;room_admin_next_poll=0;
@@ -885,7 +923,7 @@ class Session {
  }
 public:
  explicit Session(const Api& api):a(api){}
- void Install(){valid=Resolve();snap.ready=valid;Note(valid?"Photon GMM fotoğraf kanalı hazır":"Photon sürümü uyumsuz: ağ bağlantısı kurulamadı");PHOTO_LOG("GMM photo transport hook=%d",valid);bridge::Publish(snap);}
+ void Install(){valid=Resolve();InstallLocalMasterHook(a);snap.ready=valid;Note(valid?"Photon GMM fotoğraf kanalı hazır":"Photon sürümü uyumsuz: ağ bağlantısı kurulamadı");PHOTO_LOG("GMM photo transport hook=%d",valid);bridge::Publish(snap);}
  void Pump(bool loading){
   if(!valid)return;
   if(loading){ResetSession();ResetBrowse();bridge::Publish(snap);return;}

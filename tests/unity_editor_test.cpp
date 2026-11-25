@@ -231,7 +231,11 @@ int main(){
  Reset();cooldown=true;editor.text="manual chat";g_chat_send=OriginalChatSend;g_api.field_set_value=WriteChatFlag;
  chat_send_gate::ready=true;SendChat(chat,nullptr);
  assert(chat_sends==1&&sent=="manual chat"&&editor.text=="manual chat"&&cooldown&&roots.empty());
- assert(chat_send_gate::Available(false));chat_send_gate::ready=false;assert(!chat_send_gate::Available(false));
+ // Automated bot text clears normally, while the player's typed draft is kept.
+ Reset();editor.text="AI reply";
+ {chat_send_gate::AutomatedSend automated;SendChat(chat,nullptr);}
+ assert(chat_sends==1&&sent=="AI reply"&&editor.text.empty());
+ assert(!chat_send_gate::Available(false));chat_send_gate::ready=false;assert(!chat_send_gate::Available(false));
  g_api.field_set_value=nullptr;
  // Status alias affects only the synchronous chat scope, never the stored nick.
  g_chat_nick=+[](const Method*)->String*{static String name{u"Bot"};return &name;};

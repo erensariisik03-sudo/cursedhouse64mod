@@ -156,7 +156,7 @@ class Controller {
             bool permitted=false;api.field_get_value(owner.Get(),allowed_field,&permitted);
             if(permitted){
                 chat_send_gate::StatusAlias display(alias.handle);
-                api.Call(send,owner.Get(),nullptr,&sent);
+                {chat_send_gate::AutomatedSend automated;api.Call(send,owner.Get(),nullptr,&sent);}
             }
         }
         bool read_ok=false;const auto after=ReadString(input_text,input.Get(),read_ok);
@@ -474,7 +474,7 @@ class Controller {
         void* args[] = {text.Get()};
         api.Call(input_set, input.Get(), args, &ok);
         if (!ok) return false;
-        api.Call(send, owner.Get(), nullptr, &ok);
+        {chat_send_gate::AutomatedSend automated;api.Call(send, owner.Get(), nullptr, &ok);}
         const std::string after = ReadString(input_text, input.Get(), ok);
         if (ok && after == outbox.front()) { // gönderilmedi (alan temizlenmedi): taslağı geri al
             Root empty(api, reinterpret_cast<Object*>(api.string_new(""))); void* a2[] = {empty.Get()};
@@ -509,7 +509,7 @@ class Controller {
         Root text(api,reinterpret_cast<Object*>(api.string_new(next.second.c_str())));
         if(!alias.Get()||!text.Get())return false;
         void* args[]={text.Get()};api.Call(input_set,input.Get(),args,&ok);if(!ok)return false;
-        {chat_send_gate::StatusAlias guard(alias.handle);api.Call(send,owner.Get(),nullptr,&ok);}
+        {chat_send_gate::StatusAlias guard(alias.handle);chat_send_gate::AutomatedSend automated;api.Call(send,owner.Get(),nullptr,&ok);}
         bool read_ok=false;auto after=ReadString(input_text,input.Get(),read_ok);
         if(!ok||!read_ok||after==next.second){
             if(read_ok&&after==next.second){Root empty(api,reinterpret_cast<Object*>(api.string_new("")));void* reset[]={empty.Get()};if(empty.Get())api.Call(input_set,input.Get(),reset);}
