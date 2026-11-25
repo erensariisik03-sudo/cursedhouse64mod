@@ -618,7 +618,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ActionKey(admin.local_host_enabled?"Yerel Host Modunu Kapat":"Yerel Host Modunu Ac",
                   content,key_height,[current=admin.local_host_enabled]{room_admin_bridge::SetLocalHost(!current);InvalidateKeys();});
         ImGui::EndDisabled();
-        ImGui::TextWrapped("Main.cpp testi: yerel host kontrolu + launcher host penceresi (desteklenirse). RemovePlayer ve ham bellek yamasi yok.");
+        ImGui::TextWrapped("Main.cpp testi: yerel host kontrolu + launcher.isMasterAuthority statik bool (dogrulanir) + host penceresi. Photon host degismez; RemovePlayer ve ham ofset yazimi yok.");
         ImGui::BeginDisabled(!admin.can_take_host||admin.is_master);
         ActionKey("Hostlugu Al",content,key_height,[]{room_admin_bridge::TakeHost();InvalidateKeys();});
         ImGui::EndDisabled();

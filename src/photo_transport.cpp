@@ -109,6 +109,83 @@ void EventHook(Object* client,Object* event,const Method* method) {
 // Deliberately do NOT port its RemovePlayer call or unverified raw offsets:
 // neither is needed to make this local getter return true, and one would
 // forcibly affect another player. Photon server MasterClient is unchanged.
+// Verified against the supplied IL2CPP dump (2026-11-15):
+// Photon.Realtime.RoomInfo.masterClientId is an INSTANCE Int32 at +0x48.
+// launcher.isMasterAuthority is a STATIC Boolean (dump static-field offset 0x1E).
+// launcher.gameModeValueStatic at static offset 0x24 is a game MODE, not master.
+// Never reinterpret static-field offsets as launcher-object offsets. The
+// managed field APIs handle actual storage and class initialization safely.
+struct HostFieldState {
+ const Api* a=nullptr;
+ Field* launcher_authority=nullptr;
+ Field* launcher_mode=nullptr; // diagnostics only, never written
+ Field* room_master=nullptr; // diagnostics only, never written
+ bool saved=false,previous=false;
+ static bool VerifyType(const Api& api,Field* field,const char* type,bool want_static){
+  if(!field||!api.field_get_flags||!api.field_get_type||!api.class_from_type||
+     !api.class_get_name||!api.class_get_namespace)return false;
+  const auto flags=api.field_get_flags(field);
+  const bool is_static=(flags&0x10u)!=0; // FIELD_ATTRIBUTE_STATIC
+  if(is_static!=want_static)return false;
+  auto* klass=api.class_from_type(api.field_get_type(field));
+  return klass&&!std::strcmp(api.class_get_namespace(klass),"System")&&
+         !std::strcmp(api.class_get_name(klass),type);
+ }
+ void Init(const Api& api,Class* launcher){
+  a=&api;
+  if(!launcher||!api.class_get_field_from_name||!api.field_static_get_value||
+     !api.field_static_set_value||!api.field_get_value||!api.runtime_class_init){
+    PHOTO_LOG("GMM host fields: managed field API unavailable");return;
+  }
+  api.runtime_class_init(launcher);
+  Field* f=api.class_get_field_from_name(launcher,"isMasterAuthority");
+  if(VerifyType(api,f,"Boolean",true))launcher_authority=f;
+  f=api.class_get_field_from_name(launcher,"gameModeValueStatic");
+  if(VerifyType(api,f,"Int32",true))launcher_mode=f;
+  auto* info=api.Find("Photon.Realtime","RoomInfo");
+  f=info?api.class_get_field_from_name(info,"masterClientId"):nullptr;
+  if(VerifyType(api,f,"Int32",false))room_master=f;
+  PHOTO_LOG("GMM host fields: authority_static=%d game_mode_readonly=%d room_master_readonly=%d",
+            !!launcher_authority,!!launcher_mode,!!room_master);
+ }
+ bool ReadAuthority(bool& value)const{
+  if(!a||!launcher_authority)return false;
+  a->field_static_get_value(launcher_authority,&value);return true;
+ }
+ bool Enable(){
+  bool before=false;
+  if(!ReadAuthority(before))return false;
+  if(!saved){previous=before;saved=true;}
+  bool value=true;
+  a->field_static_set_value(launcher_authority,&value);
+  bool after=false;
+  const bool ok=ReadAuthority(after)&&after;
+  int game_mode=-1;
+  if(launcher_mode)a->field_static_get_value(launcher_mode,&game_mode);
+  PHOTO_LOG("GMM host fields: authority before=%d now=%d verified=%d game_mode_readonly=%d",
+            before,after,ok,game_mode);
+  return ok;
+ }
+ void Restore(bool real_master_now){
+  if(!saved||!a)return;
+  bool now=false;
+  // Never overwrite the game's genuine host state if Photon has meanwhile
+  // promoted this actor. When disabled, restore only our own known mutation.
+  if(!real_master_now&&ReadAuthority(now)&&now!=previous){
+   bool value=previous;
+   a->field_static_set_value(launcher_authority,&value);
+   bool check=false;ReadAuthority(check);
+   PHOTO_LOG("GMM host fields: restore=%d verified=%d",previous,check==previous);
+  }
+  saved=false;
+ }
+ void ReadRoom(Object* room)const{
+  if(!room||!room_master||!a)return;
+  int master=0;a->field_get_value(room,room_master,&master);
+  PHOTO_LOG("GMM host fields: cached_room_master_id=%d (read-only)",master);
+ }
+};
+HostFieldState host_fields;
 using LocalMasterGetter = bool (*)(const Method*);
 LocalMasterGetter original_local_master=nullptr;
 std::atomic<bool> local_master_mode{false};
@@ -145,6 +222,7 @@ void InstallLocalMasterHook(const Api& a){
  // The older Main(1).cpp also called launcher.toggleMasterClientOptionsWindow.
  // Resolve by managed names on the installed build, never by stale IL2CPP RVA.
  auto* launcher=a.Find("","launcher");
+ host_fields.Init(a,launcher);
  const auto* update=a.FindMethod(launcher,"Update",0);
  local_launcher_toggle=a.FindMethod(launcher,"toggleMasterClientOptionsWindow",1);
  if(!local_launcher_toggle)
@@ -475,6 +553,7 @@ class Session {
  void HandleRoomAdminCommands(){
   const auto c=room_admin_bridge::Take();
   if((!room_id||!chat_bot_bridge::Read().developer_unlocked)&&local_master_mode.exchange(false)){
+   host_fields.Restore(local_actor>0&&local_actor==master_actor);
    local_master_ui_pending.store(false,std::memory_order_relaxed);
    PHOTO_LOG("GMM local host: disabled (room/lock ended)");
   }
@@ -510,13 +589,21 @@ class Session {
   else if(c.set_local_host){
    if(!local_master_installed)room_admin_snapshot.status="Yerel MasterClient getter kancasi bulunamadi.";
    else {
+    // The getter controls local UI checks; the additional launcher field is
+    // a verified static bool, not a raw instance-offset write.
+    bool authority_ok=false;
+    if(c.local_host_value)authority_ok=host_fields.Enable();
+    else host_fields.Restore(local_actor>0&&local_actor==master_actor);
     local_master_mode.store(c.local_host_value,std::memory_order_relaxed);
     local_master_ui_pending.store(c.local_host_value&&local_launcher_hooked,std::memory_order_relaxed);
     room_admin_snapshot.local_host_enabled=c.local_host_value;
     room_admin_snapshot.status=c.local_host_value?
-     "Yerel Host Modu acik (Photon MasterClient degismez).":"Yerel Host Modu kapatildi.";
-    PHOTO_LOG("GMM local host: enabled=%d real_master=%d local=%d",
-     c.local_host_value,master_actor,local_actor);
+     (authority_ok?"Yerel Host Modu acik; launcher yetkisi statik alanda acildi (Photon degismez).":
+                   "Yerel Host Modu acik; launcher statik yetki alanina erisilemedi."):
+     "Yerel Host Modu kapatildi; yerel yetki durumu geri yuklendi.";
+    Root read_room(a,a.Call(current_room));host_fields.ReadRoom(read_room.Get());
+    PHOTO_LOG("GMM local host: enabled=%d real_master=%d local=%d authority_static=%d",
+     c.local_host_value,master_actor,local_actor,authority_ok);
    }
   }
   else if(c.take_host){
@@ -559,7 +646,10 @@ class Session {
  void DiscoverRoom(){
   Root room(a,a.Call(current_room));const uintptr_t id=reinterpret_cast<uintptr_t>(room.Get());
   if(room_id&&room_id!=id){
-   if(local_master_mode.exchange(false))PHOTO_LOG("GMM local host: disabled (room changed)");
+   if(local_master_mode.exchange(false)){
+    host_fields.Restore(local_actor>0&&local_actor==master_actor);
+    PHOTO_LOG("GMM local host: disabled (room changed)");
+   }
    local_master_ui_pending.store(false,std::memory_order_relaxed);
    ResetSession();ResetBrowse();pending_actor=0;pending_file.clear();seen_kicks.clear();
    kick_snapshot.selected_actor=0;
