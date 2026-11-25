@@ -11,5 +11,13 @@ int main(){
  SetLocalHost(false);cmd=Take();assert(cmd.set_local_host&&!cmd.local_host_value);
  cmd=Take();assert(!cmd.take_host&&!cmd.apply_limit);
  Snapshot state;state.in_room=true;state.master_actor=2;state.local_actor=1;
+ state.can_set_limit=true;
+ assert(!CanAttemptLimit(state));
+ state.local_host_enabled=true;
+ assert(CanAttemptLimit(state));
+ state.local_host_enabled=false;state.is_master=true;
+ assert(CanAttemptLimit(state));
+ state.in_room=false;
+ assert(!CanAttemptLimit(state));
  Publish(state);assert(Read().master_actor==2);
 }

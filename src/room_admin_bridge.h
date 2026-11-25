@@ -19,6 +19,11 @@ struct Snapshot {
     int max_players=0, selected_limit=20;
     std::string status="Oda yonetimi kontrol ediliyor...";
 };
+// Permit an experimental MaxPlayers write in local host mode, but never
+// claim server acceptance until the value is read back from Photon.
+inline bool CanAttemptLimit(const Snapshot& s){
+    return s.in_room && s.can_set_limit && (s.is_master || s.local_host_enabled);
+}
 struct Commands {int desired_limit=0;bool take_host=false,apply_limit=false;
     bool set_local_host=false,local_host_value=false;};
 inline std::mutex mutex;

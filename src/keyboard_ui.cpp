@@ -618,7 +618,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ActionKey(admin.local_host_enabled?"Yerel Host Modunu Kapat":"Yerel Host Modunu Ac",
                   content,key_height,[current=admin.local_host_enabled]{room_admin_bridge::SetLocalHost(!current);InvalidateKeys();});
         ImGui::EndDisabled();
-        ImGui::TextWrapped("Yerel kontrol: Main.cpp gibi true doner. Gercek Photon hostunu degistirmez. RemovePlayer yok.");
+        ImGui::TextWrapped("Main.cpp testi: yerel host kontrolu + launcher host penceresi (desteklenirse). RemovePlayer ve ham bellek yamasi yok.");
         ImGui::BeginDisabled(!admin.can_take_host||admin.is_master);
         ActionKey("Hostlugu Al",content,key_height,[]{room_admin_bridge::TakeHost();InvalidateKeys();});
         ImGui::EndDisabled();
@@ -629,11 +629,12 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         if(ImGui::SliderInt("##room_max_players",&chosen,room_admin_bridge::kMinPlayers,
                             room_admin_bridge::kMaxPlayers,"%d oyuncu"))room_admin_bridge::ChooseLimit(chosen);
         TrackSlider();
-        ImGui::BeginDisabled(!admin.can_set_limit||!admin.is_master||chosen<admin.player_count);
+        ImGui::BeginDisabled(!room_admin_bridge::CanAttemptLimit(admin)||chosen<admin.player_count);
         ActionKey("Oyuncu Sinirini Uygula",content,key_height,[]{room_admin_bridge::ApplyLimit();InvalidateKeys();});
         ImGui::EndDisabled();
         if(!admin.can_set_limit)ImGui::TextWrapped("Photon SDK limiti degistirme metodunu desteklemiyor.");
-        else if(!admin.is_master)ImGui::TextWrapped("Limit degistirmek icin MasterClient olmalisin.");
+        else if(!room_admin_bridge::CanAttemptLimit(admin))ImGui::TextWrapped("Limit icin Host Modunu ac veya gercek MasterClient ol.");
+        else if(!admin.is_master)ImGui::TextWrapped("Yerel host testi: istegin sunucu tarafinda kabul edilecegi garanti degil.");
         ImGui::TextWrapped("255 Photon'un eski protokol siniridir; oyunun gercek kapasitesi farkli olabilir.");
         break;
     }

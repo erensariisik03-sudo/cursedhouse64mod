@@ -112,7 +112,25 @@ void EventHook(Object* client,Object* event,const Method* method) {
 using LocalMasterGetter = bool (*)(const Method*);
 LocalMasterGetter original_local_master=nullptr;
 std::atomic<bool> local_master_mode{false};
+// Main(1).cpp also opens the launcher's local MasterClient control window.
+// Request that UI once on the Unity Update thread when local host mode is enabled.
+// Do not port its raw writes or RemovePlayer: the old offsets are build-specific.
+std::atomic<bool> local_master_ui_pending{false};
 bool local_master_installed=false;
+using LauncherUpdateFn = void (*)(Object*, const Method*);
+LauncherUpdateFn original_launcher_update=nullptr;
+const Api* local_launcher_api=nullptr;
+const Method* local_launcher_toggle=nullptr;
+bool local_launcher_hooked=false;
+void LocalLauncherUpdate(Object* instance,const Method* method){
+ if(original_launcher_update)original_launcher_update(instance,method);
+ if(!instance||!local_launcher_api||!local_launcher_toggle||
+    !local_master_mode.load(std::memory_order_relaxed))return;
+ if(!local_master_ui_pending.exchange(false,std::memory_order_relaxed))return;
+ bool on=true;void* args[]={&on};bool ok=false;
+ local_launcher_api->Call(local_launcher_toggle,instance,args,&ok);
+ PHOTO_LOG("GMM local host: launcher options requested=%d",ok);
+}
 bool LocalMasterCheck(const Method* method) {
  if(local_master_mode.load(std::memory_order_relaxed))return true;
  return original_local_master?original_local_master(method):false;
@@ -124,6 +142,21 @@ void InstallLocalMasterHook(const Api& a){
  local_master_installed=DobbyHook(address,reinterpret_cast<void*>(LocalMasterCheck),
       reinterpret_cast<void**>(&original_local_master))==0&&original_local_master;
  PHOTO_LOG("GMM local host: hook=%d",local_master_installed);
+ // The older Main(1).cpp also called launcher.toggleMasterClientOptionsWindow.
+ // Resolve by managed names on the installed build, never by stale IL2CPP RVA.
+ auto* launcher=a.Find("","launcher");
+ const auto* update=a.FindMethod(launcher,"Update",0);
+ local_launcher_toggle=a.FindMethod(launcher,"toggleMasterClientOptionsWindow",1);
+ if(!local_launcher_toggle)
+  local_launcher_toggle=a.FindMethod(launcher,"ToggleMasterClientOptionsWindow",1);
+ const auto* update_entry=Entry(update);
+ if(update_entry&&local_launcher_toggle){
+  local_launcher_api=&a;
+  local_launcher_hooked=DobbyHook(const_cast<void*>(update_entry),
+     reinterpret_cast<void*>(LocalLauncherUpdate),
+     reinterpret_cast<void**>(&original_launcher_update))==0&&original_launcher_update;
+ }
+ PHOTO_LOG("GMM local host: launcher_ui=%d update_hook=%d",!!local_launcher_toggle,local_launcher_hooked);
 }
 
 static double Now() {return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();}
@@ -441,8 +474,10 @@ class Session {
  }
  void HandleRoomAdminCommands(){
   const auto c=room_admin_bridge::Take();
-  if((!room_id||!chat_bot_bridge::Read().developer_unlocked)&&local_master_mode.exchange(false))
+  if((!room_id||!chat_bot_bridge::Read().developer_unlocked)&&local_master_mode.exchange(false)){
+   local_master_ui_pending.store(false,std::memory_order_relaxed);
    PHOTO_LOG("GMM local host: disabled (room/lock ended)");
+  }
   if(c.desired_limit)room_admin_selected_limit=room_admin_bridge::ClampLimit(c.desired_limit);
   room_admin_snapshot.in_room=room_id!=0;
   room_admin_snapshot.local_actor=local_actor;
@@ -476,6 +511,7 @@ class Session {
    if(!local_master_installed)room_admin_snapshot.status="Yerel MasterClient getter kancasi bulunamadi.";
    else {
     local_master_mode.store(c.local_host_value,std::memory_order_relaxed);
+    local_master_ui_pending.store(c.local_host_value&&local_launcher_hooked,std::memory_order_relaxed);
     room_admin_snapshot.local_host_enabled=c.local_host_value;
     room_admin_snapshot.status=c.local_host_value?
      "Yerel Host Modu acik (Photon MasterClient degismez).":"Yerel Host Modu kapatildi.";
@@ -505,13 +541,15 @@ class Session {
   }
   else if(c.apply_limit){
    if(!room_admin_snapshot.can_set_limit)room_admin_snapshot.status="Bu Photon surumunde MaxPlayers ayarlanamiyor.";
-   else if(!room_admin_snapshot.is_master)room_admin_snapshot.status="Oyuncu siniri icin oda yoneticisi olmalisin.";
+   else if(!room_admin_bridge::CanAttemptLimit(room_admin_snapshot))
+    room_admin_snapshot.status="Limit icin gercek veya yerel host modu acik olmali.";
    else if(room_admin_selected_limit<room_admin_snapshot.player_count)
     room_admin_snapshot.status="Limit odadaki mevcut oyuncu sayisindan kucuk olamaz.";
    else{Root room(a,a.Call(current_room));
     const bool ok=WriteRoomLimit(room.Get(),room_admin_selected_limit);
     room_admin_snapshot.status=ok?"Oyuncu siniri istendi; Photon sonucu bekleniyor.":"Oyuncu siniri gonderilemedi.";
-    PHOTO_LOG("GMM room admin: set_limit requested=%d accepted=%d",room_admin_selected_limit,ok);
+    PHOTO_LOG("GMM room admin: set_limit requested=%d accepted=%d real_master=%d local_host=%d",
+     room_admin_selected_limit,ok,room_admin_snapshot.is_master,room_admin_snapshot.local_host_enabled);
     if(ok){expected_limit=room_admin_selected_limit;limit_check_deadline=Now()+3.0;}
     room_admin_next_action=Now()+2.0;
    }
@@ -522,6 +560,7 @@ class Session {
   Root room(a,a.Call(current_room));const uintptr_t id=reinterpret_cast<uintptr_t>(room.Get());
   if(room_id&&room_id!=id){
    if(local_master_mode.exchange(false))PHOTO_LOG("GMM local host: disabled (room changed)");
+   local_master_ui_pending.store(false,std::memory_order_relaxed);
    ResetSession();ResetBrowse();pending_actor=0;pending_file.clear();seen_kicks.clear();
    kick_snapshot.selected_actor=0;
    host_check_deadline=limit_check_deadline=0;expected_limit=0;room_admin_next_poll=0;
