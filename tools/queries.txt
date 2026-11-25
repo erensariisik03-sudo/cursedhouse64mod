@@ -1,8 +1,0 @@
-TouchScreenKeyboard
-TouchScreenTextEditorEventHandler
-TMP_InputField
-InputField
-UnityEngine.InputSystem.Keyboard
-InputAction
-PlayerInput
-EventSystem

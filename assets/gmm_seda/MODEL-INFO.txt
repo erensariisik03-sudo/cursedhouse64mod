@@ -1,9 +1,0 @@
-Model: atasoglu/seda-v0.2-tiny
-Variant: c32 (0.64-second streaming chunks)
-Language: Turkish (tr-TR), 16 kHz mono PCM
-Runtime: sherpa-onnx C API / ONNX Runtime, Android arm64-v8a
-Decoder: greedy_search, one CPU thread
-License: CC BY-SA 4.0
-Source: https://huggingface.co/atasoglu/seda-v0.2-tiny
-
-The model is loaded locally. Audio is not uploaded to the ASR provider.
