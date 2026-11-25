@@ -1,6 +1,7 @@
 #include "chat_bot_bridge.h"
 #include "photo_transport_bridge.h"
 #include "kick_bridge.h"
+#include "room_admin_bridge.h"
 #include "github_repo_status.h"
 #include "voice_ai_bridge.h"
 #include "keyboard_ui.h"
@@ -257,6 +258,18 @@ int main() {
     Click(u8"< Geliştirici");Frame();Frame();
     assert(Reveal("GitHub Kontrol"));Direct("GitHub Kontrol");Frame();Frame();
     assert(Reveal("Repo durumunu kontrol et"));Direct("Repo durumunu kontrol et");Frame();
+    Click(u8"< Geliştirici");Frame();Frame();
+    // Oda Yonetimi is only exposed inside the authenticated developer menu.
+    room_admin_bridge::Snapshot rm;
+    rm.in_room=true;rm.can_take_host=true;rm.can_set_limit=true;
+    rm.local_actor=1;rm.master_actor=2;rm.player_count=2;rm.max_players=12;
+    room_admin_bridge::Publish(rm);
+    assert(Reveal("Oda Yonetimi"));Direct("Oda Yonetimi");Frame();Frame();
+    assert(Reveal("Hostlugu Al"));Direct("Hostlugu Al");
+    auto room_command=room_admin_bridge::Take();assert(room_command.take_host);
+    rm.is_master=true;room_admin_bridge::Publish(rm);Frame();Frame();
+    assert(Reveal("Oyuncu Sinirini Uygula"));Direct("Oyuncu Sinirini Uygula");
+    room_command=room_admin_bridge::Take();assert(room_command.apply_limit);
     Click(u8"< Geliştirici");Frame();Frame();
     // Closing developer authentication must automatically hide the receiver screen.
     bot.developer_unlocked=false;chat_bot_bridge::Publish(bot);

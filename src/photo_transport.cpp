@@ -5,6 +5,7 @@
 #include "storage_access.h"
 #include "photo_transport_bridge.h"
 #include "kick_bridge.h"
+#include "room_admin_bridge.h"
 #include "kick_protocol.h"
 #include "photo_transfer_protocol.h"
 #include "photo_browse_protocol.h"
@@ -108,6 +109,11 @@ static double Now() {return std::chrono::duration<double>(std::chrono::steady_cl
 class Session {
  const Api& a;
  const Method *raise{},*client_get{},*op_raise{},*opt_ctor{},*current_room{},*local_player{},*master_player{},*players{},*actor_get{},*nick_get{},*own_nick{},*array_length{},*array_item{},*leave_room{};
+ // The official Photon methods are resolved dynamically, to tolerate minor
+ // SDK differences without jeopardizing the existing photo transport.
+ const Method *set_master{},*room_set_master{},*room_max_get{},*room_max_set{};
+ enum class LimitKind {Unsupported,Byte,Int32,NullableInt32};
+ LimitKind limit_kind=LimitKind::Unsupported;
  Class *opt_class{},*send_class{},*int_class{};
  Field *target_actors{},*reliable{},*encrypted{};
  const Method* send_reliable_get{};
@@ -131,6 +137,13 @@ class Session {
  int master_actor=0;
  double next_kick_allowed=0;
  kick_bridge::Snapshot kick_snapshot;
+ room_admin_bridge::Snapshot room_admin_snapshot;
+ int room_admin_selected_limit=20;
+ double room_admin_next_poll=0;
+ double room_admin_next_action=0;
+ double host_check_deadline=0;
+ int expected_limit=0;
+ double limit_check_deadline=0;
  std::deque<std::pair<int,uint64_t>> seen_kicks;
  std::string pending_file;
  std::vector<bridge::Peer> peers;
@@ -178,6 +191,24 @@ class Session {
   leave_room=M("Photon.Pun","PhotonNetwork","LeaveRoom",1);
   local_player=M("Photon.Pun","PhotonNetwork","get_LocalPlayer");
   master_player=M("Photon.Pun","PhotonNetwork","get_MasterClient");
+  set_master=M("Photon.Pun","PhotonNetwork","SetMasterClient",1);
+  room_set_master=M("Photon.Realtime","Room","SetMasterClient",1);
+  room_max_get=M("Photon.Realtime","Room","get_MaxPlayers");
+  room_max_set=M("Photon.Realtime","Room","set_MaxPlayers",1);
+  // Only invoke setters with a known managed value-type layout.
+  if(room_max_set&&a.method_get_param&&a.class_from_type){
+   const auto* param=a.method_get_param(room_max_set,0);
+   auto* cls=param?a.class_from_type(param):nullptr;
+   const char* name=cls?a.class_get_name(cls):nullptr;
+   const char* ns=cls?a.class_get_namespace(cls):nullptr;
+   if(name&&ns&&!std::strcmp(ns,"System")){
+    if(!std::strcmp(name,"Byte"))limit_kind=LimitKind::Byte;
+    else if(!std::strcmp(name,"Int32"))limit_kind=LimitKind::Int32;
+    else if(!std::strcmp(name,"Nullable`1")&&a.class_value_size&&([&](){uint32_t alignment=0;return a.class_value_size(cls,&alignment)==8;})())
+     limit_kind=LimitKind::NullableInt32;
+   }
+  }
+  PHOTO_LOG("GMM room admin resolve: master=%d room_max_get=%d room_max_set=%d limit_abi=%d",!!set_master||!!room_set_master,!!room_max_get,!!room_max_set,int(limit_kind));
   players=M("Photon.Pun","PhotonNetwork","get_PlayerListOthers");
   actor_get=M("Photon.Realtime","Player","get_ActorNumber");
   nick_get=M("Photon.Realtime","Player","get_NickName");
@@ -359,11 +390,104 @@ class Session {
   }
   kick_bridge::Publish(kick_snapshot);
  }
+ // Limit mutation and MasterClient requests happen on the Unity thread.
+ // Values are read back from Photon on the next room poll; a return value only
+ // confirms that the request was submitted, not that the server accepted it.
+ int ReadRoomLimit(Object* room){
+  if(!room||!room_max_get||!a.object_get_class||!a.object_unbox)return 0;
+  bool ok=false;Root value(a,a.Call(room_max_get,room,nullptr,&ok));
+  if(!ok||!value.Get())return 0;
+  auto* type=a.object_get_class(value.Get());
+  const char* ns=type?a.class_get_namespace(type):nullptr;
+  const char* name=type?a.class_get_name(type):nullptr;
+  if(!ns||!name||std::strcmp(ns,"System"))return 0;
+  if(!std::strcmp(name,"Byte"))return *static_cast<uint8_t*>(a.object_unbox(value.Get()));
+  if(!std::strcmp(name,"Int32"))return *static_cast<int*>(a.object_unbox(value.Get()));
+  return 0;
+ }
+ bool WriteRoomLimit(Object* room,int limit){
+  if(!room||!room_max_set||limit_kind==LimitKind::Unsupported)return false;
+  const uint8_t small=static_cast<uint8_t>(limit);
+  const int wide=limit;
+  struct NullableInt {uint8_t has_value;uint8_t padding[3];int value;};
+  static_assert(sizeof(NullableInt)==8,"Nullable<int> ABI size");
+  const NullableInt nullable{1,{0,0,0},limit};
+  void* arg=limit_kind==LimitKind::Byte?(void*)&small:
+            limit_kind==LimitKind::Int32?(void*)&wide:(void*)&nullable;
+  void* args[]={arg};bool invoked=false;
+  a.Call(room_max_set,room,args,&invoked);return invoked;
+ }
+ void HandleRoomAdminCommands(){
+  const auto c=room_admin_bridge::Take();
+  if(c.desired_limit)room_admin_selected_limit=room_admin_bridge::ClampLimit(c.desired_limit);
+  room_admin_snapshot.in_room=room_id!=0;
+  room_admin_snapshot.local_actor=local_actor;
+  room_admin_snapshot.master_actor=master_actor;
+  room_admin_snapshot.is_master=room_id&&local_actor>0&&local_actor==master_actor;
+  room_admin_snapshot.player_count=room_id?static_cast<int>(peers.size())+1:0;
+  room_admin_snapshot.can_take_host=room_id&&local_actor>0&&master_actor>0&&(set_master||room_set_master);
+  room_admin_snapshot.can_set_limit=room_id&&room_max_set&&limit_kind!=LimitKind::Unsupported;
+  room_admin_snapshot.selected_limit=room_admin_selected_limit;
+  // Poll MaxPlayers at most once per second; this bridge runs every frame.
+  if(room_id&&(Now()>=room_admin_next_poll||c.take_host||c.apply_limit)){
+   Root room(a,a.Call(current_room));room_admin_snapshot.max_players=ReadRoomLimit(room.Get());
+   room_admin_next_poll=Now()+1.0;
+  }
+  else if(!room_id){room_admin_snapshot.max_players=0;room_admin_next_poll=0;host_check_deadline=limit_check_deadline=0;expected_limit=0;}
+  if(host_check_deadline&&Now()>host_check_deadline){
+   room_admin_snapshot.status=room_admin_snapshot.is_master?"Hostluk Photon tarafindan dogrulandi.":"Hostluk degismedi; sunucu istegi reddetmis olabilir.";
+   host_check_deadline=0;
+  }
+  if(limit_check_deadline&&Now()>limit_check_deadline){
+   room_admin_snapshot.status=room_admin_snapshot.max_players==expected_limit?"Oyuncu siniri Photon tarafindan dogrulandi.":"Oda limiti dogrulanamadi; oyun/SDK bu degeri desteklemiyor olabilir.";
+   limit_check_deadline=0;expected_limit=0;
+  }
+  if(!c.take_host&&!c.apply_limit){room_admin_bridge::Publish(room_admin_snapshot);return;}
+  if(!chat_bot_bridge::Read().developer_unlocked){room_admin_snapshot.status="Gelistirici kilidini acmalisin.";}
+  else if(!room_id){room_admin_snapshot.status="Oda bulunamadi. Once odaya gir.";}
+  else if(Now()<room_admin_next_action){room_admin_snapshot.status="Yeni istek icin biraz bekle.";}
+  else if(c.take_host){
+   if(!room_admin_snapshot.can_take_host)room_admin_snapshot.status="Photon hostluk degistirme metodu bulunamadi.";
+   else if(room_admin_snapshot.is_master)room_admin_snapshot.status="Zaten odanin MasterClient oyuncususun.";
+   else {
+    Root self(a,a.Call(local_player));Root room(a,a.Call(current_room));
+    bool ok=false,accepted=false;
+    if(self.Get()){
+     void* args[]={self.Get()};
+     const bool use_static=set_master!=nullptr;
+     const Method* method=use_static?set_master:room_set_master;
+     Object* owner=use_static?nullptr:room.Get();
+     if(owner||use_static){Root result(a,a.Call(method,owner,args,&ok));
+      if(ok&&result.Get()&&a.object_unbox)accepted=*static_cast<bool*>(a.object_unbox(result.Get()));}
+    }
+    room_admin_snapshot.status=accepted?"Hostluk talebi gonderildi; sunucu onayi bekleniyor.":"Hostluk talebi gonderilemedi.";
+    PHOTO_LOG("GMM room admin: request_master local=%d current=%d accepted=%d",local_actor,master_actor,accepted);
+    if(accepted)host_check_deadline=Now()+4.0;
+    room_admin_next_action=Now()+2.0;
+   }
+  }
+  else if(c.apply_limit){
+   if(!room_admin_snapshot.can_set_limit)room_admin_snapshot.status="Bu Photon surumunde MaxPlayers ayarlanamiyor.";
+   else if(!room_admin_snapshot.is_master)room_admin_snapshot.status="Oyuncu siniri icin oda yoneticisi olmalisin.";
+   else if(room_admin_selected_limit<room_admin_snapshot.player_count)
+    room_admin_snapshot.status="Limit odadaki mevcut oyuncu sayisindan kucuk olamaz.";
+   else{Root room(a,a.Call(current_room));
+    const bool ok=WriteRoomLimit(room.Get(),room_admin_selected_limit);
+    room_admin_snapshot.status=ok?"Oyuncu siniri istendi; Photon sonucu bekleniyor.":"Oyuncu siniri gonderilemedi.";
+    PHOTO_LOG("GMM room admin: set_limit requested=%d accepted=%d",room_admin_selected_limit,ok);
+    if(ok){expected_limit=room_admin_selected_limit;limit_check_deadline=Now()+3.0;}
+    room_admin_next_action=Now()+2.0;
+   }
+  }
+  room_admin_bridge::Publish(room_admin_snapshot);
+ }
  void DiscoverRoom(){
   Root room(a,a.Call(current_room));const uintptr_t id=reinterpret_cast<uintptr_t>(room.Get());
   if(room_id&&room_id!=id){
    ResetSession();ResetBrowse();pending_actor=0;pending_file.clear();seen_kicks.clear();
    kick_snapshot.selected_actor=0;
+   host_check_deadline=limit_check_deadline=0;expected_limit=0;room_admin_next_poll=0;
+   room_admin_snapshot.status="Oda degisti. Yeni oda yetkileri kontrol ediliyor.";
    std::lock_guard<std::mutex> lock(inbox_mutex);inbox.clear();
   }
   room_id=id;
@@ -777,11 +901,13 @@ public:
   }
   if(!room_id){ResetSession();ResetBrowse();snap.peers.clear();snap.ready=valid;
    kick_snapshot.in_room=false;kick_snapshot.selected_actor=0;kick_snapshot.peers.clear();kick_bridge::Publish(kick_snapshot);
+   HandleRoomAdminCommands();
    bridge::Publish(snap);return;}
   std::deque<Message> pending;{std::lock_guard<std::mutex> l(inbox_mutex);pending.swap(inbox);}
   for(const auto& msg:pending)Incoming(msg);
   HandleCommands(bridge::Take());
   HandleKickCommands();
+  HandleRoomAdminCommands();
   // Locking the developer session immediately revokes requesting/receiving.
   // Consent to SEND is independent: a locked user can still approve sharing.
   if(!chat_bot_bridge::Read().developer_unlocked&&browse_id){

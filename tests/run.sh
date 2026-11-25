@@ -77,6 +77,8 @@ build/tests/navmesh_api_test
 build/tests/room_vote_test
 
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -I src tests/photo_transfer_security_test.cpp -o build/tests/photo_transfer_security_test
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I src tests/room_admin_bridge_test.cpp -o build/tests/room_admin_bridge_test
+build/tests/room_admin_bridge_test
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I src tests/developer_lock_test.cpp -o build/tests/developer_lock_test
 build/tests/developer_lock_test
 build/tests/photo_transfer_security_test

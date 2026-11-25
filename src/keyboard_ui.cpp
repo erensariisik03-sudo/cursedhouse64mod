@@ -9,6 +9,7 @@
 #include "photo_transfer_bridge.h"
 #include "photo_transport_bridge.h"
 #include "kick_bridge.h"
+#include "room_admin_bridge.h"
 #include "github_repo_status.h"
 #include "storage_access.h"
 #include "voice_ai_bridge.h"
@@ -567,7 +568,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
     if(pending&&!had_pending&&g_bot_page==1)g_bot_page=6;
     had_pending=pending;
     // A stale open page must not survive a developer-session lock.
-    if((g_bot_page==10||g_bot_page==11||g_bot_page==12)&&!s.developer_unlocked)g_bot_page=9;
+    if((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)&&!s.developer_unlocked)g_bot_page=9;
     static int previous=-2;if(previous!=g_bot_page){ImGui::SetScrollY(0);previous=g_bot_page;}
     const float half=(content-ImGui::GetStyle().ItemSpacing.x)/2;
     if(g_bot_page<0){
@@ -579,7 +580,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
             ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
         ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
-    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":((g_bot_page==10||g_bot_page==11||g_bot_page==12)?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:((g_bot_page==10||g_bot_page==11||g_bot_page==12)?9:-1);InvalidateKeys();});
+    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)?9:-1);InvalidateKeys();});
     switch(g_bot_page){
     case 9:{
         if(!s.developer_unlocked){
@@ -596,6 +597,38 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ActionKey("GMM Connect",content,key_height,[]{g_bot_page=10;InvalidateKeys();});
         ActionKey("Kickle",content,key_height,[]{g_bot_page=11;InvalidateKeys();});
         ActionKey("GitHub Kontrol",content,key_height,[]{g_bot_page=12;InvalidateKeys();});
+        ActionKey("Oda Yonetimi",content,key_height,[]{g_bot_page=13;InvalidateKeys();});
+        break;
+    }
+    case 13:{
+        if(!s.developer_unlocked){g_bot_page=9;break;}
+        const auto admin=room_admin_bridge::Read();
+        ImGui::TextWrapped("Oda Yonetimi | Photon MasterClient");
+        ImGui::TextWrapped("%s",admin.status.c_str());
+        if(!admin.in_room){
+            ImGui::TextWrapped("Oda bilgisi bulunamadi. Odaya girdikten sonra tekrar ac.");
+            break;
+        }
+        ImGui::TextWrapped("Oyuncular: %d / %s",admin.player_count,
+                           admin.max_players>0?std::to_string(admin.max_players).c_str():"Bilinmiyor");
+        ImGui::TextWrapped("Senin aktorun: #%d | MasterClient: #%d",admin.local_actor,admin.master_actor);
+        ImGui::TextWrapped("Host durumu: %s",admin.is_master?"HOST SENSIN":"HOST DEGILSIN");
+        ImGui::BeginDisabled(!admin.can_take_host||admin.is_master);
+        ActionKey("Hostlugu Al",content,key_height,[]{room_admin_bridge::TakeHost();InvalidateKeys();});
+        ImGui::EndDisabled();
+        ImGui::Separator();
+        int chosen=admin.selected_limit;
+        ImGui::TextWrapped("Oda oyuncu siniri (1 - 255)");
+        ImGui::SetNextItemWidth(content);
+        if(ImGui::SliderInt("##room_max_players",&chosen,room_admin_bridge::kMinPlayers,
+                            room_admin_bridge::kMaxPlayers,"%d oyuncu"))room_admin_bridge::ChooseLimit(chosen);
+        TrackSlider();
+        ImGui::BeginDisabled(!admin.can_set_limit||!admin.is_master||chosen<admin.player_count);
+        ActionKey("Oyuncu Sinirini Uygula",content,key_height,[]{room_admin_bridge::ApplyLimit();InvalidateKeys();});
+        ImGui::EndDisabled();
+        if(!admin.can_set_limit)ImGui::TextWrapped("Photon SDK limiti degistirme metodunu desteklemiyor.");
+        else if(!admin.is_master)ImGui::TextWrapped("Limit degistirmek icin MasterClient olmalisin.");
+        ImGui::TextWrapped("255 Photon'un eski protokol siniridir; oyunun gercek kapasitesi farkli olabilir.");
         break;
     }
     case 12:{
