@@ -215,7 +215,7 @@ struct Runtime {
   Root chat(a);bool ambiguous=false;Each(chat_class,[&](Object* o){if(!Active(o))return;if(chat.Get()&&chat.Get()!=o)ambiguous=true;chat.Set(o);});if(!chat.Get()||ambiguous)return false;
   bool allowed=false;a.field_get_value(chat.Get(),can_send,&allowed);if(!chat_send_gate::Available(allowed))return false;Root input(a,Ref(chat.Get(),"inputField"));if(!Alive(input.Get())||a.Value<bool>(input_focus,input.Get(),true))return false;
   Root old(a,a.Call(input_text,input.Get()));if(!old.Get()||!a.Utf8(reinterpret_cast<String*>(old.Get())).empty())return false;
-  Root text(a,reinterpret_cast<Object*>(a.string_new(line.c_str())));void* args[]={text.Get()};bool ok=false;a.Call(input_set,input.Get(),args,&ok);if(!ok)return false;{chat_send_gate::AutomatedSend automated;a.Call(chat_send,chat.Get(),nullptr,&ok);}bool sent=ok;Root after(a,a.Call(input_text,input.Get()));if(!after.Get())return false;
+  Root text(a,reinterpret_cast<Object*>(a.string_new(line.c_str())));void* args[]={text.Get()};bool ok=false;a.Call(input_set,input.Get(),args,&ok);if(!ok)return false;a.Call(chat_send,chat.Get(),nullptr,&ok);bool sent=ok;Root after(a,a.Call(input_text,input.Get()));if(!after.Get())return false;
   std::string current=a.Utf8(reinterpret_cast<String*>(after.Get()));if(current==line){void* restore[]={old.Get()};a.Call(input_set,input.Get(),restore);return false;}return sent&&current.empty()&&reinterpret_cast<uintptr_t>(a.Call(current_room))==room_id;
  }
  void Queue(Request q){

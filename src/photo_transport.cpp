@@ -5,14 +5,12 @@
 #include "storage_access.h"
 #include "photo_transport_bridge.h"
 #include "kick_bridge.h"
-#include "room_admin_bridge.h"
 #include "kick_protocol.h"
 #include "photo_transfer_protocol.h"
 #include "photo_browse_protocol.h"
 #include "dobby.h"
 #include <android/log.h>
 #include <algorithm>
-#include <atomic>
 #include <array>
 #include <chrono>
 #include <cctype>
@@ -105,148 +103,11 @@ void EventHook(Object* client,Object* event,const Method* method) {
  if(original_event)original_event(client,event,method);
 }
 
-// Main(1).cpp ForceMaster: local-only get_IsMasterClient override.
-// Deliberately do NOT port its RemovePlayer call or unverified raw offsets:
-// neither is needed to make this local getter return true, and one would
-// forcibly affect another player. Photon server MasterClient is unchanged.
-// Verified against the supplied IL2CPP dump (2026-11-15):
-// Photon.Realtime.RoomInfo.masterClientId is an INSTANCE Int32 at +0x48.
-// launcher.isMasterAuthority is a STATIC Boolean (dump static-field offset 0x1E).
-// launcher.gameModeValueStatic at static offset 0x24 is a game MODE, not master.
-// Never reinterpret static-field offsets as launcher-object offsets. The
-// managed field APIs handle actual storage and class initialization safely.
-struct HostFieldState {
- const Api* a=nullptr;
- Field* launcher_authority=nullptr;
- Field* launcher_mode=nullptr; // diagnostics only, never written
- Field* room_master=nullptr; // diagnostics only, never written
- bool saved=false,previous=false;
- static bool VerifyType(const Api& api,Field* field,const char* type,bool want_static){
-  if(!field||!api.field_get_flags||!api.field_get_type||!api.class_from_type||
-     !api.class_get_name||!api.class_get_namespace)return false;
-  const auto flags=api.field_get_flags(field);
-  const bool is_static=(flags&0x10u)!=0; // FIELD_ATTRIBUTE_STATIC
-  if(is_static!=want_static)return false;
-  auto* klass=api.class_from_type(api.field_get_type(field));
-  return klass&&!std::strcmp(api.class_get_namespace(klass),"System")&&
-         !std::strcmp(api.class_get_name(klass),type);
- }
- void Init(const Api& api,Class* launcher){
-  a=&api;
-  if(!launcher||!api.class_get_field_from_name||!api.field_static_get_value||
-     !api.field_static_set_value||!api.field_get_value||!api.runtime_class_init){
-    PHOTO_LOG("GMM host fields: managed field API unavailable");return;
-  }
-  api.runtime_class_init(launcher);
-  Field* f=api.class_get_field_from_name(launcher,"isMasterAuthority");
-  if(VerifyType(api,f,"Boolean",true))launcher_authority=f;
-  f=api.class_get_field_from_name(launcher,"gameModeValueStatic");
-  if(VerifyType(api,f,"Int32",true))launcher_mode=f;
-  auto* info=api.Find("Photon.Realtime","RoomInfo");
-  f=info?api.class_get_field_from_name(info,"masterClientId"):nullptr;
-  if(VerifyType(api,f,"Int32",false))room_master=f;
-  PHOTO_LOG("GMM host fields: authority_static=%d game_mode_readonly=%d room_master_readonly=%d",
-            !!launcher_authority,!!launcher_mode,!!room_master);
- }
- bool ReadAuthority(bool& value)const{
-  if(!a||!launcher_authority)return false;
-  a->field_static_get_value(launcher_authority,&value);return true;
- }
- bool Enable(){
-  bool before=false;
-  if(!ReadAuthority(before))return false;
-  if(!saved){previous=before;saved=true;}
-  bool value=true;
-  a->field_static_set_value(launcher_authority,&value);
-  bool after=false;
-  const bool ok=ReadAuthority(after)&&after;
-  int game_mode=-1;
-  if(launcher_mode)a->field_static_get_value(launcher_mode,&game_mode);
-  PHOTO_LOG("GMM host fields: authority before=%d now=%d verified=%d game_mode_readonly=%d",
-            before,after,ok,game_mode);
-  return ok;
- }
- void Restore(bool real_master_now){
-  if(!saved||!a)return;
-  bool now=false;
-  // Never overwrite the game's genuine host state if Photon has meanwhile
-  // promoted this actor. When disabled, restore only our own known mutation.
-  if(!real_master_now&&ReadAuthority(now)&&now!=previous){
-   bool value=previous;
-   a->field_static_set_value(launcher_authority,&value);
-   bool check=false;ReadAuthority(check);
-   PHOTO_LOG("GMM host fields: restore=%d verified=%d",previous,check==previous);
-  }
-  saved=false;
- }
- void ReadRoom(Object* room)const{
-  if(!room||!room_master||!a)return;
-  int master=0;a->field_get_value(room,room_master,&master);
-  PHOTO_LOG("GMM host fields: cached_room_master_id=%d (read-only)",master);
- }
-};
-HostFieldState host_fields;
-using LocalMasterGetter = bool (*)(const Method*);
-LocalMasterGetter original_local_master=nullptr;
-std::atomic<bool> local_master_mode{false};
-// Main(1).cpp also opens the launcher's local MasterClient control window.
-// Request that UI once on the Unity Update thread when local host mode is enabled.
-// Do not port its raw writes or RemovePlayer: the old offsets are build-specific.
-std::atomic<bool> local_master_ui_pending{false};
-bool local_master_installed=false;
-using LauncherUpdateFn = void (*)(Object*, const Method*);
-LauncherUpdateFn original_launcher_update=nullptr;
-const Api* local_launcher_api=nullptr;
-const Method* local_launcher_toggle=nullptr;
-bool local_launcher_hooked=false;
-void LocalLauncherUpdate(Object* instance,const Method* method){
- if(original_launcher_update)original_launcher_update(instance,method);
- if(!instance||!local_launcher_api||!local_launcher_toggle||
-    !local_master_mode.load(std::memory_order_relaxed))return;
- if(!local_master_ui_pending.exchange(false,std::memory_order_relaxed))return;
- bool on=true;void* args[]={&on};bool ok=false;
- local_launcher_api->Call(local_launcher_toggle,instance,args,&ok);
- PHOTO_LOG("GMM local host: launcher options requested=%d",ok);
-}
-bool LocalMasterCheck(const Method* method) {
- if(local_master_mode.load(std::memory_order_relaxed))return true;
- return original_local_master?original_local_master(method):false;
-}
-void InstallLocalMasterHook(const Api& a){
- const auto* getter=a.FindMethod(a.Find("Photon.Pun","PhotonNetwork"),"get_IsMasterClient",0);
- void* address=Entry(getter);
- if(!address){PHOTO_LOG("GMM local host: getter not found");return;}
- local_master_installed=DobbyHook(address,reinterpret_cast<void*>(LocalMasterCheck),
-      reinterpret_cast<void**>(&original_local_master))==0&&original_local_master;
- PHOTO_LOG("GMM local host: hook=%d",local_master_installed);
- // The older Main(1).cpp also called launcher.toggleMasterClientOptionsWindow.
- // Resolve by managed names on the installed build, never by stale IL2CPP RVA.
- auto* launcher=a.Find("","launcher");
- host_fields.Init(a,launcher);
- const auto* update=a.FindMethod(launcher,"Update",0);
- local_launcher_toggle=a.FindMethod(launcher,"toggleMasterClientOptionsWindow",1);
- if(!local_launcher_toggle)
-  local_launcher_toggle=a.FindMethod(launcher,"ToggleMasterClientOptionsWindow",1);
- const auto* update_entry=Entry(update);
- if(update_entry&&local_launcher_toggle){
-  local_launcher_api=&a;
-  local_launcher_hooked=DobbyHook(const_cast<void*>(update_entry),
-     reinterpret_cast<void*>(LocalLauncherUpdate),
-     reinterpret_cast<void**>(&original_launcher_update))==0&&original_launcher_update;
- }
- PHOTO_LOG("GMM local host: launcher_ui=%d update_hook=%d",!!local_launcher_toggle,local_launcher_hooked);
-}
-
 static double Now() {return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 
 class Session {
  const Api& a;
  const Method *raise{},*client_get{},*op_raise{},*opt_ctor{},*current_room{},*local_player{},*master_player{},*players{},*actor_get{},*nick_get{},*own_nick{},*array_length{},*array_item{},*leave_room{};
- // The official Photon methods are resolved dynamically, to tolerate minor
- // SDK differences without jeopardizing the existing photo transport.
- const Method *set_master{},*room_set_master{},*room_max_get{},*room_max_set{};
- enum class LimitKind {Unsupported,Byte,Int32,NullableInt32};
- LimitKind limit_kind=LimitKind::Unsupported;
  Class *opt_class{},*send_class{},*int_class{};
  Field *target_actors{},*reliable{},*encrypted{};
  const Method* send_reliable_get{};
@@ -270,13 +131,6 @@ class Session {
  int master_actor=0;
  double next_kick_allowed=0;
  kick_bridge::Snapshot kick_snapshot;
- room_admin_bridge::Snapshot room_admin_snapshot;
- int room_admin_selected_limit=20;
- double room_admin_next_poll=0;
- double room_admin_next_action=0;
- double host_check_deadline=0;
- int expected_limit=0;
- double limit_check_deadline=0;
  std::deque<std::pair<int,uint64_t>> seen_kicks;
  std::string pending_file;
  std::vector<bridge::Peer> peers;
@@ -324,24 +178,6 @@ class Session {
   leave_room=M("Photon.Pun","PhotonNetwork","LeaveRoom",1);
   local_player=M("Photon.Pun","PhotonNetwork","get_LocalPlayer");
   master_player=M("Photon.Pun","PhotonNetwork","get_MasterClient");
-  set_master=M("Photon.Pun","PhotonNetwork","SetMasterClient",1);
-  room_set_master=M("Photon.Realtime","Room","SetMasterClient",1);
-  room_max_get=M("Photon.Realtime","Room","get_MaxPlayers");
-  room_max_set=M("Photon.Realtime","Room","set_MaxPlayers",1);
-  // Only invoke setters with a known managed value-type layout.
-  if(room_max_set&&a.method_get_param&&a.class_from_type){
-   const auto* param=a.method_get_param(room_max_set,0);
-   auto* cls=param?a.class_from_type(param):nullptr;
-   const char* name=cls?a.class_get_name(cls):nullptr;
-   const char* ns=cls?a.class_get_namespace(cls):nullptr;
-   if(name&&ns&&!std::strcmp(ns,"System")){
-    if(!std::strcmp(name,"Byte"))limit_kind=LimitKind::Byte;
-    else if(!std::strcmp(name,"Int32"))limit_kind=LimitKind::Int32;
-    else if(!std::strcmp(name,"Nullable`1")&&a.class_value_size&&([&](){uint32_t alignment=0;return a.class_value_size(cls,&alignment)==8;})())
-     limit_kind=LimitKind::NullableInt32;
-   }
-  }
-  PHOTO_LOG("GMM room admin resolve: master=%d room_max_get=%d room_max_set=%d limit_abi=%d",!!set_master||!!room_set_master,!!room_max_get,!!room_max_set,int(limit_kind));
   players=M("Photon.Pun","PhotonNetwork","get_PlayerListOthers");
   actor_get=M("Photon.Realtime","Player","get_ActorNumber");
   nick_get=M("Photon.Realtime","Player","get_NickName");
@@ -523,138 +359,11 @@ class Session {
   }
   kick_bridge::Publish(kick_snapshot);
  }
- // Limit mutation and MasterClient requests happen on the Unity thread.
- // Values are read back from Photon on the next room poll; a return value only
- // confirms that the request was submitted, not that the server accepted it.
- int ReadRoomLimit(Object* room){
-  if(!room||!room_max_get||!a.object_get_class||!a.object_unbox)return 0;
-  bool ok=false;Root value(a,a.Call(room_max_get,room,nullptr,&ok));
-  if(!ok||!value.Get())return 0;
-  auto* type=a.object_get_class(value.Get());
-  const char* ns=type?a.class_get_namespace(type):nullptr;
-  const char* name=type?a.class_get_name(type):nullptr;
-  if(!ns||!name||std::strcmp(ns,"System"))return 0;
-  if(!std::strcmp(name,"Byte"))return *static_cast<uint8_t*>(a.object_unbox(value.Get()));
-  if(!std::strcmp(name,"Int32"))return *static_cast<int*>(a.object_unbox(value.Get()));
-  return 0;
- }
- bool WriteRoomLimit(Object* room,int limit){
-  if(!room||!room_max_set||limit_kind==LimitKind::Unsupported)return false;
-  const uint8_t small=static_cast<uint8_t>(limit);
-  const int wide=limit;
-  struct NullableInt {uint8_t has_value;uint8_t padding[3];int value;};
-  static_assert(sizeof(NullableInt)==8,"Nullable<int> ABI size");
-  const NullableInt nullable{1,{0,0,0},limit};
-  void* arg=limit_kind==LimitKind::Byte?(void*)&small:
-            limit_kind==LimitKind::Int32?(void*)&wide:(void*)&nullable;
-  void* args[]={arg};bool invoked=false;
-  a.Call(room_max_set,room,args,&invoked);return invoked;
- }
- void HandleRoomAdminCommands(){
-  const auto c=room_admin_bridge::Take();
-  if((!room_id||!chat_bot_bridge::Read().developer_unlocked)&&local_master_mode.exchange(false)){
-   host_fields.Restore(local_actor>0&&local_actor==master_actor);
-   local_master_ui_pending.store(false,std::memory_order_relaxed);
-   PHOTO_LOG("GMM local host: disabled (room/lock ended)");
-  }
-  if(c.desired_limit)room_admin_selected_limit=room_admin_bridge::ClampLimit(c.desired_limit);
-  room_admin_snapshot.in_room=room_id!=0;
-  room_admin_snapshot.local_actor=local_actor;
-  room_admin_snapshot.master_actor=master_actor;
-  room_admin_snapshot.is_master=room_id&&local_actor>0&&local_actor==master_actor;
-  room_admin_snapshot.player_count=room_id?static_cast<int>(peers.size())+1:0;
-  room_admin_snapshot.can_take_host=room_id&&local_actor>0&&master_actor>0&&(set_master||room_set_master);
-  room_admin_snapshot.can_use_local_host=room_id&&local_master_installed;
-  room_admin_snapshot.local_host_enabled=local_master_mode.load(std::memory_order_relaxed);
-  room_admin_snapshot.can_set_limit=room_id&&room_max_set&&limit_kind!=LimitKind::Unsupported;
-  room_admin_snapshot.selected_limit=room_admin_selected_limit;
-  // Poll MaxPlayers at most once per second; this bridge runs every frame.
-  if(room_id&&(Now()>=room_admin_next_poll||c.take_host||c.apply_limit)){
-   Root room(a,a.Call(current_room));room_admin_snapshot.max_players=ReadRoomLimit(room.Get());
-   room_admin_next_poll=Now()+1.0;
-  }
-  else if(!room_id){room_admin_snapshot.max_players=0;room_admin_next_poll=0;host_check_deadline=limit_check_deadline=0;expected_limit=0;}
-  if(host_check_deadline&&Now()>host_check_deadline){
-   room_admin_snapshot.status=room_admin_snapshot.is_master?"Hostluk Photon tarafindan dogrulandi.":"Hostluk degismedi; sunucu istegi reddetmis olabilir.";
-   host_check_deadline=0;
-  }
-  if(limit_check_deadline&&Now()>limit_check_deadline){
-   room_admin_snapshot.status=room_admin_snapshot.max_players==expected_limit?"Oyuncu siniri Photon tarafindan dogrulandi.":"Oda limiti dogrulanamadi; oyun/SDK bu degeri desteklemiyor olabilir.";
-   limit_check_deadline=0;expected_limit=0;
-  }
-  if(!c.take_host&&!c.apply_limit&&!c.set_local_host){room_admin_bridge::Publish(room_admin_snapshot);return;}
-  if(!chat_bot_bridge::Read().developer_unlocked){room_admin_snapshot.status="Gelistirici kilidini acmalisin.";}
-  else if(!room_id){room_admin_snapshot.status="Oda bulunamadi. Once odaya gir.";}
-  else if(Now()<room_admin_next_action){room_admin_snapshot.status="Yeni istek icin biraz bekle.";}
-  else if(c.set_local_host){
-   if(!local_master_installed)room_admin_snapshot.status="Yerel MasterClient getter kancasi bulunamadi.";
-   else {
-    // The getter controls local UI checks; the additional launcher field is
-    // a verified static bool, not a raw instance-offset write.
-    bool authority_ok=false;
-    if(c.local_host_value)authority_ok=host_fields.Enable();
-    else host_fields.Restore(local_actor>0&&local_actor==master_actor);
-    local_master_mode.store(c.local_host_value,std::memory_order_relaxed);
-    local_master_ui_pending.store(c.local_host_value&&local_launcher_hooked,std::memory_order_relaxed);
-    room_admin_snapshot.local_host_enabled=c.local_host_value;
-    room_admin_snapshot.status=c.local_host_value?
-     (authority_ok?"Yerel Host Modu acik; launcher yetkisi statik alanda acildi (Photon degismez).":
-                   "Yerel Host Modu acik; launcher statik yetki alanina erisilemedi."):
-     "Yerel Host Modu kapatildi; yerel yetki durumu geri yuklendi.";
-    Root read_room(a,a.Call(current_room));host_fields.ReadRoom(read_room.Get());
-    PHOTO_LOG("GMM local host: enabled=%d real_master=%d local=%d authority_static=%d",
-     c.local_host_value,master_actor,local_actor,authority_ok);
-   }
-  }
-  else if(c.take_host){
-   if(!room_admin_snapshot.can_take_host)room_admin_snapshot.status="Photon hostluk degistirme metodu bulunamadi.";
-   else if(room_admin_snapshot.is_master)room_admin_snapshot.status="Zaten odanin MasterClient oyuncususun.";
-   else {
-    Root self(a,a.Call(local_player));Root room(a,a.Call(current_room));
-    bool ok=false,accepted=false;
-    if(self.Get()){
-     void* args[]={self.Get()};
-     const bool use_static=set_master!=nullptr;
-     const Method* method=use_static?set_master:room_set_master;
-     Object* owner=use_static?nullptr:room.Get();
-     if(owner||use_static){Root result(a,a.Call(method,owner,args,&ok));
-      if(ok&&result.Get()&&a.object_unbox)accepted=*static_cast<bool*>(a.object_unbox(result.Get()));}
-    }
-    room_admin_snapshot.status=accepted?"Hostluk talebi gonderildi; sunucu onayi bekleniyor.":"Hostluk talebi gonderilemedi.";
-    PHOTO_LOG("GMM room admin: request_master local=%d current=%d accepted=%d",local_actor,master_actor,accepted);
-    if(accepted)host_check_deadline=Now()+4.0;
-    room_admin_next_action=Now()+2.0;
-   }
-  }
-  else if(c.apply_limit){
-   if(!room_admin_snapshot.can_set_limit)room_admin_snapshot.status="Bu Photon surumunde MaxPlayers ayarlanamiyor.";
-   else if(!room_admin_bridge::CanAttemptLimit(room_admin_snapshot))
-    room_admin_snapshot.status="Limit icin gercek veya yerel host modu acik olmali.";
-   else if(room_admin_selected_limit<room_admin_snapshot.player_count)
-    room_admin_snapshot.status="Limit odadaki mevcut oyuncu sayisindan kucuk olamaz.";
-   else{Root room(a,a.Call(current_room));
-    const bool ok=WriteRoomLimit(room.Get(),room_admin_selected_limit);
-    room_admin_snapshot.status=ok?"Oyuncu siniri istendi; Photon sonucu bekleniyor.":"Oyuncu siniri gonderilemedi.";
-    PHOTO_LOG("GMM room admin: set_limit requested=%d accepted=%d real_master=%d local_host=%d",
-     room_admin_selected_limit,ok,room_admin_snapshot.is_master,room_admin_snapshot.local_host_enabled);
-    if(ok){expected_limit=room_admin_selected_limit;limit_check_deadline=Now()+3.0;}
-    room_admin_next_action=Now()+2.0;
-   }
-  }
-  room_admin_bridge::Publish(room_admin_snapshot);
- }
  void DiscoverRoom(){
   Root room(a,a.Call(current_room));const uintptr_t id=reinterpret_cast<uintptr_t>(room.Get());
   if(room_id&&room_id!=id){
-   if(local_master_mode.exchange(false)){
-    host_fields.Restore(local_actor>0&&local_actor==master_actor);
-    PHOTO_LOG("GMM local host: disabled (room changed)");
-   }
-   local_master_ui_pending.store(false,std::memory_order_relaxed);
    ResetSession();ResetBrowse();pending_actor=0;pending_file.clear();seen_kicks.clear();
    kick_snapshot.selected_actor=0;
-   host_check_deadline=limit_check_deadline=0;expected_limit=0;room_admin_next_poll=0;
-   room_admin_snapshot.status="Oda degisti. Yeni oda yetkileri kontrol ediliyor.";
    std::lock_guard<std::mutex> lock(inbox_mutex);inbox.clear();
   }
   room_id=id;
@@ -1052,7 +761,7 @@ class Session {
  }
 public:
  explicit Session(const Api& api):a(api){}
- void Install(){valid=Resolve();InstallLocalMasterHook(a);snap.ready=valid;Note(valid?"Photon GMM fotoğraf kanalı hazır":"Photon sürümü uyumsuz: ağ bağlantısı kurulamadı");PHOTO_LOG("GMM photo transport hook=%d",valid);bridge::Publish(snap);}
+ void Install(){valid=Resolve();snap.ready=valid;Note(valid?"Photon GMM fotoğraf kanalı hazır":"Photon sürümü uyumsuz: ağ bağlantısı kurulamadı");PHOTO_LOG("GMM photo transport hook=%d",valid);bridge::Publish(snap);}
  void Pump(bool loading){
   if(!valid)return;
   if(loading){ResetSession();ResetBrowse();bridge::Publish(snap);return;}
@@ -1068,13 +777,11 @@ public:
   }
   if(!room_id){ResetSession();ResetBrowse();snap.peers.clear();snap.ready=valid;
    kick_snapshot.in_room=false;kick_snapshot.selected_actor=0;kick_snapshot.peers.clear();kick_bridge::Publish(kick_snapshot);
-   HandleRoomAdminCommands();
    bridge::Publish(snap);return;}
   std::deque<Message> pending;{std::lock_guard<std::mutex> l(inbox_mutex);pending.swap(inbox);}
   for(const auto& msg:pending)Incoming(msg);
   HandleCommands(bridge::Take());
   HandleKickCommands();
-  HandleRoomAdminCommands();
   // Locking the developer session immediately revokes requesting/receiving.
   // Consent to SEND is independent: a locked user can still approve sharing.
   if(!chat_bot_bridge::Read().developer_unlocked&&browse_id){

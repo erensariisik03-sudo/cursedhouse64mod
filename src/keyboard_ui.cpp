@@ -9,7 +9,7 @@
 #include "photo_transfer_bridge.h"
 #include "photo_transport_bridge.h"
 #include "kick_bridge.h"
-#include "room_admin_bridge.h"
+#include "room_limit_bridge.h"
 #include "github_repo_status.h"
 #include "storage_access.h"
 #include "voice_ai_bridge.h"
@@ -597,45 +597,22 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ActionKey("GMM Connect",content,key_height,[]{g_bot_page=10;InvalidateKeys();});
         ActionKey("Kickle",content,key_height,[]{g_bot_page=11;InvalidateKeys();});
         ActionKey("GitHub Kontrol",content,key_height,[]{g_bot_page=12;InvalidateKeys();});
-        ActionKey("Oda Yonetimi",content,key_height,[]{g_bot_page=13;InvalidateKeys();});
+        ActionKey("Oyuncu Siniri",content,key_height,[]{g_bot_page=13;InvalidateKeys();});
         break;
     }
     case 13:{
         if(!s.developer_unlocked){g_bot_page=9;break;}
-        const auto admin=room_admin_bridge::Read();
-        ImGui::TextWrapped("Oda Yonetimi | Photon MasterClient");
-        ImGui::TextWrapped("%s",admin.status.c_str());
-        if(!admin.in_room){
-            ImGui::TextWrapped("Oda bilgisi bulunamadi. Odaya girdikten sonra tekrar ac.");
-            break;
-        }
-        ImGui::TextWrapped("Oyuncular: %d / %s",admin.player_count,
-                           admin.max_players>0?std::to_string(admin.max_players).c_str():"Bilinmiyor");
-        ImGui::TextWrapped("Senin aktorun: #%d | MasterClient: #%d",admin.local_actor,admin.master_actor);
-        ImGui::TextWrapped("Host durumu: %s",admin.is_master?"HOST SENSIN":"HOST DEGILSIN");
-        ImGui::TextWrapped("Yerel Host Modu: %s",admin.local_host_enabled?"ACIK":"KAPALI");
-        ImGui::BeginDisabled(!admin.can_use_local_host);
-        ActionKey(admin.local_host_enabled?"Yerel Host Modunu Kapat":"Yerel Host Modunu Ac",
-                  content,key_height,[current=admin.local_host_enabled]{room_admin_bridge::SetLocalHost(!current);InvalidateKeys();});
+        const auto r=room_limit_bridge::Read();
+        static uint64_t generation=~uint64_t(0);static int limit=20;
+        if(generation!=r.generation){generation=r.generation;limit=r.limit>=1&&r.limit<=255?r.limit:20;}
+        ImGui::TextWrapped("Oyuncu Siniri | 1-255");
+        if(r.in_room)ImGui::TextWrapped("Oyuncu: %d / %d | Host: #%d | Sen: #%d",r.count,r.limit,r.master_actor,r.local_actor);
+        ImGui::TextWrapped("%s",r.status.c_str());
+        if(!r.is_host)ImGui::TextWrapped("Yalniz gercek Photon MasterClient uygulayabilir.");
+        ImGui::SetNextItemWidth(content);ImGui::SliderInt("##room_limit_stable",&limit,1,255,"%d oyuncu");TrackSlider();
+        ImGui::BeginDisabled(!r.ready||!r.in_room||!r.is_host||r.busy||limit<r.count);
+        ActionKey("Oyuncu sinirini uygula",content,key_height,[chosen=limit,generation=r.generation]{room_limit_bridge::Apply(chosen,generation);InvalidateKeys();});
         ImGui::EndDisabled();
-        ImGui::TextWrapped("Main.cpp testi: yerel host kontrolu + launcher.isMasterAuthority statik bool (dogrulanir) + host penceresi. Photon host degismez; RemovePlayer ve ham ofset yazimi yok.");
-        ImGui::BeginDisabled(!admin.can_take_host||admin.is_master);
-        ActionKey("Hostlugu Al",content,key_height,[]{room_admin_bridge::TakeHost();InvalidateKeys();});
-        ImGui::EndDisabled();
-        ImGui::Separator();
-        int chosen=admin.selected_limit;
-        ImGui::TextWrapped("Oda oyuncu siniri (1 - 255)");
-        ImGui::SetNextItemWidth(content);
-        if(ImGui::SliderInt("##room_max_players",&chosen,room_admin_bridge::kMinPlayers,
-                            room_admin_bridge::kMaxPlayers,"%d oyuncu"))room_admin_bridge::ChooseLimit(chosen);
-        TrackSlider();
-        ImGui::BeginDisabled(!room_admin_bridge::CanAttemptLimit(admin)||chosen<admin.player_count);
-        ActionKey("Oyuncu Sinirini Uygula",content,key_height,[]{room_admin_bridge::ApplyLimit();InvalidateKeys();});
-        ImGui::EndDisabled();
-        if(!admin.can_set_limit)ImGui::TextWrapped("Photon SDK limiti degistirme metodunu desteklemiyor.");
-        else if(!room_admin_bridge::CanAttemptLimit(admin))ImGui::TextWrapped("Limit icin Host Modunu ac veya gercek MasterClient ol.");
-        else if(!admin.is_master)ImGui::TextWrapped("Yerel host testi: istegin sunucu tarafinda kabul edilecegi garanti degil.");
-        ImGui::TextWrapped("255 Photon'un eski protokol siniridir; oyunun gercek kapasitesi farkli olabilir.");
         break;
     }
     case 12:{

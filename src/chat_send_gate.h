@@ -22,18 +22,7 @@ struct StatusSend {
     ~StatusSend(){active_status_alias=previous;}
     StatusSend(const StatusSend&)=delete;
 };
-// Thread-local tag for chat sent by AI, vote notices, voice responses or status
-// messages. Only a genuine player Send button/IME Done preserves its draft.
-inline thread_local unsigned automated_send_depth=0;
-struct AutomatedSend {
-    AutomatedSend(){++automated_send_depth;}
-    ~AutomatedSend(){--automated_send_depth;}
-    AutomatedSend(const AutomatedSend&)=delete;
-};
-inline bool IsAutomated(){return automated_send_depth!=0;}
-// Keep the game's normal cooldown for AI. The previous `ready || allowed`
-// returned true for every AI tick once the hook was installed, causing spam.
 inline bool Available(bool game_allowed) {
-    return game_allowed;
+    return game_allowed||ready.load(std::memory_order_acquire);
 }
 }

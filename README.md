@@ -32,24 +32,6 @@ yüklemeyi doğrular. Manuel kurulum yedeği eskisi gibi çalışır.
 
 # ARM64 Android klavyesi ve oyun panelleri
 
-## Geliştirici → Oda Yönetimi (2026-11-25)
-
-- Geliştirici kilidi açılınca **Oda Yonetimi** sayfasında yerel aktör,
-  Photon **MasterClient** aktörü, oyuncu sayısı ve bildirilen oda limiti görünür.
-- **Hostlugu Al** düğmesi Photon PUN2 `SetMasterClient(LocalPlayer)` talebini
-  sunucuya iletir. Başarı, bir sonraki oda durumunda MasterClient aktörü
-  değişince doğrulanır; oyun içi özel host mekaniğini garanti etmez.
-- **Oyuncu Sinirini Uygula** sürümün desteklediği `Room.set_MaxPlayers` setter'ını
-  kullanır. Arayüz 1..255 aralığındadır (Photon protokolünün eski `byte`
-  üst sınırı); oyunun/sunucunun gerçekten bu kapasiteyi desteklemesi ayrıca
-  gerekir. Geçerli oyuncu sayısının altına düşmeye izin verilmez.
-- SDK beklenmeyen `MaxPlayers` parametre türü kullanırsa setter otomatik
-  devre dışı kalır. Modun kalan işlevleri bundan etkilenmez.
-- Logcat tanıları: `adb logcat -d -s multiplayermod:I | Select-String "GMM room admin"`
-- **Bu kaynak** Android ARM64 `libmultiplayermod.so` için derlenecektir;
-  yerel sözdizimi/arayüz testleri Photon sunucusunun davranışını doğrulamaz.
-
-
 Unity IL2CPP Android modu. Çıktı `libmultiplayermod.so`; yalnız **arm64-v8a**
 hedeflenir. Entegrasyon çalışma anında IL2CPP metadata üzerinden çözülür.
 

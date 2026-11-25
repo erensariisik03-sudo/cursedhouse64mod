@@ -16,6 +16,7 @@
 #include "seda_assets.h"
 #include "storage_access.h"
 #include "photo_transport.h"
+#include "room_limit.h"
 #include "chat_shortcut.h"
 #include "chat_send_gate.h"
 #include "native_shortcuts.h"
@@ -352,14 +353,22 @@ String* ChatNick(const Method* method) {
 }
 void SendChat(Object* self,const Method* method) {
     chat_send_gate::StatusSend display;
-    if(!self||!m.chatAllowed||!g_api.field_get_value){g_chat_send(self,method);return;}
+    if(!self||!m.chatAllowed||!g_api.field_get_value||!g_api.field_set_value){g_chat_send(self,method);return;}
     ScopedRoot owner(self);
     if(!owner.Get()){g_chat_send(self,method);return;}
-    // Never override the game's canSendMessage cooldown. Automated replies
-    // must not inherit the human "keep text after Send" behavior.
-    const bool preserve_human_draft=!chat_send_gate::IsAutomated();
+    bool before=false;g_api.field_get_value(owner.Get(),m.chatAllowed,&before);
+    struct Permit {
+        Object* owner;bool old,changed=false;
+        Permit(Object* o,bool value):owner(o),old(value){
+            if(!old){changed=true;bool yes=true;g_api.field_set_value(owner,m.chatAllowed,&yes);}
+        }
+        ~Permit(){if(changed)g_api.field_set_value(owner,m.chatAllowed,&old);}
+    } permit(owner.Get(),before);
+    // Game ChatManager.SendMessage clears its TMP_InputField. Preserve the
+    // locally typed message after every normal Send button press and IME Done
+    // so repeated taps send the same draft (subject to the game's cooldown).
     Object* input=nullptr;
-    if(preserve_human_draft&&m.chatInput)g_api.field_get_value(owner.Get(),m.chatInput,&input);
+    if(m.chatInput)g_api.field_get_value(owner.Get(),m.chatInput,&input);
     ScopedRoot field(input);
     bool text_ok=false;
     const std::string draft=field.Get()?ReadText(field.Get(),&text_ok):std::string();
@@ -409,7 +418,7 @@ bool QuickSend(Object* object,uint64_t generation) {
     // SendMessage was inspected in this exact game's native binary: it uses
     // the regular chat RPC, clears inputField and starts the normal cooldown.
     struct Guard{Object* prior;explicit Guard(Object* v):prior(g_quick_target){g_quick_target=v;}~Guard(){g_quick_target=prior;}}guard(object);
-    {chat_send_gate::AutomatedSend automated;g_api.Call(m.chatSend,owner.Get(),nullptr,&ok);}
+    g_api.Call(m.chatSend,owner.Get(),nullptr,&ok);
     if(generation!=g_generation)return true; // OnDisable/new target must still win.
     bool read_ok=false;const auto actual=ReadText(object,&read_ok);
     if(generation!=g_generation)return true;
@@ -521,6 +530,7 @@ void Update(Object* self, const Method* method) {
     if (!captured) g_update(self, method);
     if(!g_editing.load()){chat_bot::Pump(g_api);auto_join::Pump(g_api);}
     photo_transport::Pump(g_api,loading);
+    room_limit::Pump(g_api,loading);
 }
 EGLBoolean SwapBuffers(EGLDisplay display, EGLSurface surface) {
     if (eglGetCurrentContext() != EGL_NO_CONTEXT && eglGetCurrentSurface(EGL_DRAW) == surface) {
