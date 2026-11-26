@@ -73,7 +73,7 @@ int main(){
  Request q;q.epoch=7;q.room=12;q.name="Ali";q.key="secret";q.system="Türkçe cevapla.";q.own_name="Bot";q.voice=true;q.pcm=std::vector<float>(6400,.15f);
  {auto stage=q;stage.asr_only=true;calls=0;auto heard=Run(Http,stage);assert(heard.heard=="Bot kapı nerede?"&&heard.reply.empty()&&heard.audio.samples.empty()&&calls==0);stage.partial=true;stage.manual_keywords=true;heard=Run(Http,stage);assert(heard.partial&&!heard.await_selection&&heard.reply.empty()&&calls==0);}
  auto r=Run(Http,q);assert(r.epoch==7&&r.room==12&&r.heard=="Bot kapı nerede?"&&!r.reply.empty()&&!r.audio.samples.empty()&&r.audio.rate==22050&&calls==1);
- assert(requests.back().find("Bot kapı nerede?")!=std::string::npos&&requests.back().find("\"maxOutputTokens\":256")!=std::string::npos&&requests.back().find("MINIMAL")!=std::string::npos);
+ assert(requests.back().find("Bot kapı nerede?")!=std::string::npos&&requests.back().find("\"maxOutputTokens\":256")!=std::string::npos&&requests.back().find("\"thinkingLevel\":\"MINIMAL\"")!=std::string::npos&&r.model=="gemini-3.5-flash-lite");
  {auto u=q;u.all_mode=true;u.name_filter=true;asr_text="başka birine soruyorum";calls=0;auto ru=Run(Http,u);assert(ru.skipped&&ru.reply.empty()&&calls==0&&ru.gate_reason==message_gate::Reason::NameRequired);}
  {auto u=q;u.all_mode=true;u.name_filter=true;asr_text="Zeka merhaba";calls=0;auto ru=Run(Http,u);assert(!ru.reply.empty()&&calls==0&&ru.reply.find("merhaba")!=std::string::npos);}
  {auto u=q;u.general_filter=true;u.name_filter=false;asr_text="ahahahah";calls=0;auto ru=Run(Http,u);assert(ru.skipped&&calls==0&&ru.gate_reason==message_gate::Reason::Noise);}

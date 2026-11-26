@@ -85,6 +85,7 @@ Object* Invoke(const Method* m,void* self,void** args,Object** error){
  if(name=="get_Length")return fake->I(static_cast<int>(o->items.size()));
  if(name=="GetValueImpl")return o->items.at(*static_cast<int*>(args[0]));
  if(name=="op_Implicit")return fake->B(args[0]!=nullptr);
+ if(name=="get_IsMasterClient")return fake->B(o==fake->others.back());
  if(name=="get_isActiveAndEnabled"||name=="get_IsMessageQueueRunning")return fake->B(true);
  if(name=="GetInstanceID"||name=="GetSiblingIndex")return fake->I(o->number);
  if(name=="get_transform")return o;
@@ -295,16 +296,20 @@ int main(){
   assert(h.f.sent.size()>before);
   for(size_t i=before;i<h.f.sent_names.size();++i)assert(h.f.sent_names[i]=="System");
  }
- // Delegate text uses the chosen visible alias, not a change to Photon actor ID.
+ // Addressed messages keep the true sender.
  {Harness h;
   assert(chat_bot_bridge::Read().room_name=="Deneme Odasi");
   chat_bot_bridge::SelectDelegate("Ali");h.Step();assert(chat_bot_bridge::Read().delegate_name=="Ali");
   h.f.kb_status=1;h.f.kb_text="Merhaba oda";
   chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Delegate);h.Step();
   for(int i=0;i<8&&h.f.sent.empty();++i)h.Step();
-  assert(h.f.sent.size()==1&&h.f.sent.back()=="Merhaba oda"&&h.f.sent_names.back()=="Ali");
+  assert(h.f.sent.size()==1&&h.f.sent.back()=="Merhaba oda"&&h.f.sent_names.back()=="<color=lightblue>Ali</color>");
+  for(int i=0;i<8;++i){h.Step();}
+  assert(h.f.sent.size()==1&&h.f.own=="Bot");
  }
- // Names with multiple rich tags, emoji and special Unicode must be sent verbatim.
+ // Host display alias uses purple; no account property is changed.
+ {Harness h;chat_bot_bridge::SelectDelegate("Veli");h.Step();h.f.kb_status=1;h.f.kb_text="Test";chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Delegate);h.Step();for(int i=0;i<8&&h.f.sent.empty();++i)h.Step();assert(h.f.sent.size()==1&&h.f.sent.back()=="Test"&&h.f.sent_names.back()=="<color=purple>Veli</color>");}
+ // Raw nickname formatting and Unicode are preserved.
  {Harness h;
   const std::string fancy=u8"<color=#00ffaa><size=23><b>𝓐li🎮‍🔥 ★</b></size></color>";
   h.f.others[0]=h.f.S(fancy);
@@ -315,7 +320,7 @@ int main(){
   h.f.kb_status=1;h.f.kb_text="Tekrar merhaba";
   chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Delegate);h.Step();
   for(int i=0;i<8&&h.f.sent.empty();++i)h.Step();
-  assert(h.f.sent.size()==1&&h.f.sent.back()=="Tekrar merhaba"&&h.f.sent_names.back()==fancy);
+  assert(h.f.sent.size()==1&&h.f.sent.back()=="Tekrar merhaba"&&h.f.sent_names.back()=="<color=lightblue>"+fancy+"</color>");
  }
  std::cout<<"Bot controller: zero HTTP for small talk, silent name-prefixed/chunk SKIP, timed strict-only reminders, draft/focus/cooldown/room/name guards and stale-result rejection; local profanity warnings with slang bypass and repeat bounds: PASS\n";
 }

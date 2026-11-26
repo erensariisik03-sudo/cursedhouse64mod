@@ -206,11 +206,62 @@ inline std::optional<std::string> JsonStringAfterKey(const std::string& json, co
     }
     return std::nullopt;
 }
-// candidates[0].content.parts[*].text -- Gemini cevabında ilk "text" alanı.
-inline std::optional<std::string> ExtractText(const std::string& json) {
-    const size_t cand = json.find("\"candidates\"");
-    if (cand == std::string::npos) return std::nullopt;
-    return JsonStringAfterKey(json, "text", cand);
+// Traverse actual JSON values rather than searching for the first text key.
+struct JsonSpan {size_t begin=0,end=0;};
+inline void JsonWs(const std::string& j,size_t& p){while(p<j.size()&&IsSpace(j[p]))++p;}
+inline bool JsonValue(const std::string& j,size_t& p,JsonSpan& span,unsigned depth=0){
+    JsonWs(j,p); span.begin=p; if(p>=j.size()||depth>64)return false;
+    char c=j[p++];
+    if(c=='"'){
+        bool closed=false;while(p<j.size()){char x=j[p++];if(x=='\\'){if(p>=j.size())return false;++p;}else if(x=='"'){closed=true;break;}}
+        if(!closed)return false;
+    }else if(c=='{'||c=='['){
+        const char close=c=='{'?'}':']';JsonWs(j,p);
+        if(p<j.size()&&j[p]==close){++p;span.end=p;return true;}
+        while(p<j.size()){
+            JsonSpan child;
+            if(c=='{'){JsonWs(j,p);if(p>=j.size()||j[p]!='"'||!JsonValue(j,p,child,depth+1))return false;JsonWs(j,p);if(p>=j.size()||j[p++]!=':')return false;}
+            if(!JsonValue(j,p,child,depth+1))return false;
+            JsonWs(j,p);if(p>=j.size())return false;char x=j[p++];if(x==close){span.end=p;return true;}if(x!=',')return false;
+        }return false;
+    }else{
+        while(p<j.size()&&!IsSpace(j[p])&&j[p]!=','&&j[p]!=']'&&j[p]!='}')++p;
+        const auto v=j.substr(span.begin,p-span.begin);
+        if(v!="true"&&v!="false"&&v!="null"&&v.find_first_not_of("0123456789.eE+-")!=std::string::npos)return false;
+    }
+    span.end=p;return true;
+}
+inline std::optional<JsonSpan> JsonMember(const std::string& j,JsonSpan obj,const std::string& key){
+    if(obj.begin>=obj.end||j[obj.begin]!='{')return std::nullopt;
+    size_t p=obj.begin+1;JsonWs(j,p);
+    while(p<obj.end&&j[p]!='}'){
+        JsonSpan k,v;if(!JsonValue(j,p,k)||j[k.begin]!='"')return std::nullopt;
+        JsonWs(j,p);if(p>=obj.end||j[p++]!=':'||!JsonValue(j,p,v))return std::nullopt;
+        if(j.compare(k.begin,k.end-k.begin,"\""+key+"\"")==0)return v;
+        JsonWs(j,p);if(p>=obj.end||j[p++]!=',')break;
+    }return std::nullopt;
+}
+inline std::optional<std::string> ExtractText(const std::string& j){
+    size_t p=0;JsonSpan root;if(!JsonValue(j,p,root))return std::nullopt;JsonWs(j,p);if(p!=j.size())return std::nullopt;
+    auto candidates=JsonMember(j,root,"candidates");if(!candidates||j[candidates->begin]!='[')return std::nullopt;
+    p=candidates->begin+1;JsonWs(j,p);if(p>=candidates->end||j[p]!='{')return std::nullopt;
+    JsonSpan cand;if(!JsonValue(j,p,cand))return std::nullopt;
+    auto content=JsonMember(j,cand,"content");if(!content)return std::nullopt;
+    auto parts=JsonMember(j,*content,"parts");if(!parts||j[parts->begin]!='[')return std::nullopt;
+    p=parts->begin+1;JsonWs(j,p);std::string out;
+    while(p<parts->end&&j[p]!=']'){
+        JsonSpan part;if(!JsonValue(j,p,part))return std::nullopt;
+        auto thought=JsonMember(j,part,"thought"),text=JsonMember(j,part,"text");
+        if(thought&&j.compare(thought->begin,thought->end-thought->begin,"true")==0){}
+        else if(text&&j[text->begin]=='"'){
+            auto decoded=JsonStringAfterKey("{\"text\":"+j.substr(text->begin,text->end-text->begin)+"}","text");
+            if(!decoded)return std::nullopt;
+            out+=*decoded;
+        }
+        JsonWs(j,p);if(p>=parts->end||j[p++]!=',')break;JsonWs(j,p);
+    }
+    if(Trim(out).empty())return std::nullopt;
+    return out;
 }
 inline void TrimHistory(std::vector<Turn>& h, size_t max_turns) {
     if (h.size() > max_turns) h.erase(h.begin(), h.begin() + (h.size() - max_turns));
@@ -235,7 +286,8 @@ inline std::string BuildRequest(const std::string& system, const std::vector<Tur
     }
     flush();
     o += "],\"generationConfig\":{\"maxOutputTokens\":" + std::to_string(max_tokens) + ",\"temperature\":0.9";
-    if (ModelWantsZeroThinking(model)) o += ",\"thinkingConfig\":{\"thinkingBudget\":0}";
+    if (ModelWantsZeroThinking(model)) o += ",\"thinkingConfig\":{\"thinkingBudget\":0,\"includeThoughts\":false}";
+    else if(model.find("gemini-3") == 0 || model=="gemini-flash-lite-latest") o += ",\"thinkingConfig\":{\"thinkingLevel\":\"MINIMAL\",\"includeThoughts\":false}";
     o += "}}";
     return o;
 }

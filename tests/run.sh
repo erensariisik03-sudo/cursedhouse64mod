@@ -105,3 +105,6 @@ build/tests/github_repo_status_test
 
 "${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I src tests/room_limit_test.cpp -o build/tests/room_limit_test
 build/tests/room_limit_test
+
+"${CXX:-g++}" -std=c++17 -Wall -Wextra -Werror -I src -pthread tests/soundboard_favorites_test.cpp -o build/tests/soundboard_favorites_test
+build/tests/soundboard_favorites_test

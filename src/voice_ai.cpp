@@ -57,7 +57,7 @@ void FrameHook(Object* link,Object* frame,const Method* m){
 }
 struct Vec3 {float x=0,y=0,z=0;};
 struct Runtime {
- const Api& a;std::thread::id unity=std::this_thread::get_id();bool initialized=false,valid=false,hooks=false,lease=false,network_play=false;unsigned revision=0;uint64_t epoch=1;uintptr_t room_id=0;double next_discovery=0,next_request=0,playing_until=0,text_deadline=0,text_next=0;
+ const Api& a;std::thread::id unity=std::this_thread::get_id();bool initialized=false,valid=false,hooks=false,lease=false,network_play=false,soundboard_playing=false;unsigned revision=0;uint64_t epoch=1;uintptr_t room_id=0;double next_discovery=0,next_request=0,playing_until=0,text_deadline=0,text_next=0;
  voice_ai_bridge::Snapshot snap;voice_ai_bridge::Settings settings;voice_ai_bridge::Config cfg;
  Root room_root,manager,recorder,lease_owner,old_clip,clip,local_go,local_source;bool old_loop=false,old_detection=false;
  #if defined(__ANDROID__)
@@ -113,13 +113,14 @@ struct Runtime {
   bool r=hook(set_record,reinterpret_cast<void*>(RecordHook),original_record),t=hook(set_transmit,reinterpret_cast<void*>(TransmitHook),original_transmit),s=hook(set_source,reinterpret_cast<void*>(SourceHook),original_source);bool start_hook=hook(a.FindMethod(rec_class,"StartRecording",0),reinterpret_cast<void*>(StartHook),original_start);hooks=r&&t&&s&&start_hook;
   __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice hooks decoded=%d mic_guards=%d",f,hooks);return f;
  }
- void Reset(bool disable){
+ void Reset(bool disable,bool keep_sound=false){
   worker.Cancel();asr_worker.Cancel();tts_worker.Cancel();
 #if defined(__ANDROID__)
-  sound_job.reset();sound_ready=Audio{};{std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::soundboard.play_pending.clear();voice_ai_bridge::soundboard.loading=false;}
+  if(!keep_sound){sound_job.reset();sound_ready=Audio{};std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::soundboard.play_pending.clear();voice_ai_bridge::soundboard.loading=false;}
 #endif
   capture=false;++capture_epoch;std::atomic_store(&streams,std::shared_ptr<const Streams>(std::make_shared<Streams>()));{std::lock_guard<std::mutex> l(segments_mutex);segments.Clear();}
-  StopAudio();++epoch;requests.clear();asr_queue.clear();tts_queue.clear();audio_out.clear();text_out.clear();selection_active=false;active_actor=0;awaiting_selection=Request{};snap.selection_text.clear();snap.selection_name.clear();snap.players.clear();verified_speakers.clear();history.clear();engaged_voice.clear();side_talk_voice.clear();next_request=Now();next_preview=0;preview_samples=0;snap.heard.clear();snap.reply.clear();if(disable){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;voice_ai_bridge::texts.clear();}
+  if(!keep_sound||!soundboard_playing)StopAudio();
+  ++epoch;requests.clear();asr_queue.clear();tts_queue.clear();audio_out.clear();text_out.clear();selection_active=false;active_actor=0;awaiting_selection=Request{};snap.selection_text.clear();snap.selection_name.clear();snap.players.clear();verified_speakers.clear();history.clear();engaged_voice.clear();side_talk_voice.clear();next_request=Now();next_preview=0;preview_samples=0;snap.heard.clear();snap.reply.clear();if(disable){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;voice_ai_bridge::texts.clear();}
  }
  bool NetworkAllowed(){
   if(!room_id||!room_properties||!hash_item||!voice_client||!voice_joined||!Active(manager.Get())||!a.Value<bool>(available,manager.Get(),false)||!Alive(recorder.Get()))return false;
@@ -194,7 +195,7 @@ struct Runtime {
   std::map<Object*,ExtraMic> released;{std::lock_guard<std::mutex> l(extra_mutex);released.swap(extra_mics);}
   bool same_room=room_id&&reinterpret_cast<uintptr_t>(a.Call(current_room))==room_id;
   for(auto& [pointer,mic]:released){auto* o=a.gchandle_get_target(mic.handle);if(same_room&&o!=lease_owner.Get()&&Active(o)){Set(set_record,o,false);Set(set_record,o,mic.wanted);}a.gchandle_free(mic.handle);}
-  leased_recorder=nullptr;lease=false;network_play=false;lease_owner.Set(nullptr);old_clip.Set(nullptr);
+  leased_recorder=nullptr;lease=false;network_play=false;soundboard_playing=false;lease_owner.Set(nullptr);old_clip.Set(nullptr);
   for(auto* root:{&local_go,&clip}){if(Alive(root->Get())){void* args[]={root->Get()};a.Call(destroy,nullptr,args);}root->Set(nullptr);}local_source.Set(nullptr);snap.speaking=snap.mic_blocked=false;playing_until=0;
  }
  bool Play(const Audio& audio,double now,bool require_network=false){
@@ -203,7 +204,7 @@ struct Runtime {
   Root samples(a,a.array_new(float_class,padded.size()));auto* ptr=ArrayData(a,samples.Get(),padded.size());if(!ptr)return false;std::memcpy(ptr,padded.data(),padded.size()*sizeof(float));
   Root name(a,reinterpret_cast<Object*>(a.string_new("GMM AI voice")));int n=int(padded.size()),channels=1,rate=audio.rate;bool stream=false,ok=false;void* args[]={name.Get(),&n,&channels,&rate,&stream,nullptr};clip.Set(a.Call(clip_create,nullptr,args,&ok));if(!ok||!Alive(clip.Get()))return false;
   int offset=0;void* put[]={samples.Get(),&offset};Root written(a,a.Call(clip_data,clip.Get(),put,&ok));if(!ok||!written.Get()||!*static_cast<bool*>(a.object_unbox(written.Get())))return false;
-  snap.network_ready=NetworkAllowed();network_play=snap.network_ready&&settings.destination==0;
+  snap.network_ready=NetworkAllowed();network_play=snap.network_ready&&(require_network||settings.destination==0);
   if(require_network&&!network_play){StopAudio();return false;}
   if(!AcquireMic(network_play,true)||!MuteExtraMics()){StopAudio();return false;}
   {
@@ -252,11 +253,11 @@ struct Runtime {
   if(!query.empty())std::thread([query=std::move(query),generation]{std::vector<myinstants::Sound> found;try{found=chat_bot_http::SearchSounds(query);}catch(...){}std::lock_guard<std::mutex> l(mutex);if(soundboard.generation==generation){soundboard.results=std::move(found);soundboard.searching=false;soundboard.status=soundboard.results.empty()?"Sonuç yok veya Myinstants erişilemedi.":std::to_string(soundboard.results.size())+" ses bulundu.";}}).detach();
   auto status=[](const std::string& msg,bool busy){std::lock_guard<std::mutex> l(mutex);soundboard.status=msg;soundboard.loading=busy;};
   if(!path.empty()){
-   if(!settings.enabled||settings.destination!=0||!NetworkAllowed())status("Sesli odaya bağlanmadın.",false);
-   else {sound_job=std::make_shared<SoundLoad>();sound_job->epoch=epoch;auto target=sound_job;std::thread([target,path=std::move(path)]{Audio audio;try{std::string wav;if(chat_bot_http::DownloadSound(path,wav))DecodeAudio(wav,"audio/wav",audio);}catch(...){}std::lock_guard<std::mutex> l(target->mutex);target->audio=std::move(audio);target->done=true;}).detach();}
+   if(!NetworkAllowed())status("Sesli odaya bağlanmadın.",false);
+   else {sound_job=std::make_shared<SoundLoad>();sound_job->epoch=room_id;auto target=sound_job;std::thread([target,path=std::move(path)]{Audio audio;try{std::string wav;if(chat_bot_http::DownloadSound(path,wav))DecodeAudio(wav,"audio/wav",audio);}catch(...){}std::lock_guard<std::mutex> l(target->mutex);target->audio=std::move(audio);target->done=true;}).detach();}
   }
-  if(sound_job){bool done=false;{std::lock_guard<std::mutex> l(sound_job->mutex);done=sound_job->done;if(done&&sound_job->epoch==epoch)sound_ready=std::move(sound_job->audio);}if(done){sound_job.reset();if(sound_ready.samples.empty())status("MP3 indirilemedi veya çözülemedi.",false);else status("Ses hazır; yayın sırası bekleniyor.",true);}}
-  if(!sound_ready.samples.empty()&&!snap.speaking){Audio audio=std::move(sound_ready);sound_ready=Audio{};bool ok=settings.enabled&&Play(audio,now,true);status(ok?"Ses odaya gönderiliyor.":"Ses kanalı kullanılamadı.",false);}
+  if(sound_job){bool done=false;{std::lock_guard<std::mutex> l(sound_job->mutex);done=sound_job->done;if(done&&sound_job->epoch==room_id)sound_ready=std::move(sound_job->audio);}if(done){sound_job.reset();if(sound_ready.samples.empty())status("MP3 indirilemedi veya çözülemedi.",false);else status("Ses hazır; yayın sırası bekleniyor.",true);}}
+  if(!sound_ready.samples.empty()&&!snap.speaking){Audio audio=std::move(sound_ready);sound_ready=Audio{};bool ok=Play(audio,now,true);soundboard_playing=ok;status(ok?"Ses odaya gönderiliyor.":"Ses kanalı kullanılamadı.",false);}
  }
 #endif
 public:
@@ -275,7 +276,7 @@ public:
   Root observed_room(a,paused?nullptr:a.Call(current_room));uintptr_t next_room=reinterpret_cast<uintptr_t>(observed_room.Get());
   if(next_room!=room_id){Reset(room_id!=0);room_root.Set(observed_room.Get());room_id=next_room;wanted.enabled=false;{std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;}next_discovery=0;}
   bool config_changed=next_cfg.key!=cfg.key||next_cfg.system!=cfg.system||next_cfg.own_name!=cfg.own_name||next_cfg.all!=cfg.all||next_cfg.strict!=cfg.strict||next_cfg.selected!=cfg.selected||next_cfg.message_filter!=cfg.message_filter;
-  if(next_rev!=revision||config_changed||cancel){Reset(false);revision=next_rev;settings=wanted;cfg=std::move(next_cfg);if(settings.enabled){seda_asr::WarmAsync();
+  if(next_rev!=revision||config_changed||cancel){Reset(false,!cancel);revision=next_rev;settings=wanted;cfg=std::move(next_cfg);if(settings.enabled){seda_asr::WarmAsync();
 #if defined(__ANDROID__)
    static std::atomic<bool> warming{false};if(!warming.exchange(true))std::thread([]{std::string ignored;try{chat_bot_http::Speak("",ignored);}catch(...){}warming=false;}).detach();
 #endif
@@ -283,7 +284,7 @@ public:
   if(settings.enabled&&(cfg.key.empty()||!room_id)){settings.enabled=false;std::lock_guard<std::mutex> l(voice_ai_bridge::mutex);voice_ai_bridge::desired.enabled=false;snap.status=cfg.key.empty()?"Önce AI bölümünden API anahtarı gir.":"Bir odaya gir.";}
   if(now>=next_discovery){next_discovery=now+1;Discover();}
   if(snap.speaking){
-   bool invalid=now>=playing_until||!settings.enabled;
+   bool invalid=now>=playing_until||(!settings.enabled&&!soundboard_playing);
    if(network_play){int source=-1;invalid=invalid||!NetworkAllowed()||!Alive(lease_owner.Get())||!Read(get_source,lease_owner.Get(),source)||source!=1||a.Call(get_clip,lease_owner.Get())!=clip.Get();}
    if(invalid){StopAudio();next_request=now;}
   }
@@ -339,7 +340,7 @@ public:
 #endif
     ){Audio a=std::move(audio_out.front());audio_out.pop_front();if(!Play(a,now))snap.status="Ses oynatılamadı.";}
   Result result;if(worker.Poll(result)&&result.epoch==epoch&&result.room==room_id&&settings.enabled){
-   __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice result actor=%d http=%d skipped=%d audio_samples=%zu AI_ms=%d",result.actor,result.code,result.skipped,result.audio.samples.size(),int((now-ai_started)*1000));
+   __android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG voice result actor=%d http=%d skipped=%d audio_samples=%zu AI_ms=%d model=%s",result.actor,result.code,result.skipped,result.audio.samples.size(),int((now-ai_started)*1000),result.model.c_str());
    if(result.actor==0||snap.heard.empty())snap.heard=chat_bot_core::PrefixScalars(result.heard,120);
    snap.reply=chat_bot_core::PrefixScalars(result.reply,160);snap.status=result.status;
    if(result.await_selection){
@@ -354,7 +355,7 @@ public:
     if(!result.speak){for(auto& part:chat_bot_core::SplitChunks(result.reply,200,8))text_out.push_back(part);text_deadline=now+45;text_next=now;}
     if(!result.speak){history.push_back({false,result.name+": "+result.heard});history.push_back({true,result.reply});chat_bot_core::TrimHistory(history,6);}
     if(settings.output==1&&tts_queue.size()<6){Request q;q.speak=true;q.text=result.reply;q.epoch=epoch;q.room=room_id;q.tone=voice_ai_bridge::tone.load();tts_queue.push_back(std::move(q));}
-   }next_request=now;
+   }next_request=now+result.retry_ms/1000.0;
   }
   if(!text_out.empty()&&now>text_deadline)text_out.clear();
   if(settings.enabled&&!text_out.empty()&&now>=text_next){text_next=now+1.2;if(SendText(text_out.front()))text_out.pop_front();}

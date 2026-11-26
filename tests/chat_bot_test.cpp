@@ -76,13 +76,18 @@ int main() {
     assert(ExtractText("{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\\ud83d\\ude00\"}]}}]}").value() == "\xF0\x9F\x98\x80");
     assert(!ExtractText("{\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}"));
     assert(!ExtractText("{\"candidates\":[{\"text\":\"kesik"));
+    assert(ExtractText(R"({"candidates":[{"content":{"parts":[{"text":"private thought","thought":true},{"text":"Merhaba ","thought":false},{"text":"dostum!"}]}}]})").value()=="Merhaba dostum!");
+    assert(ExtractText(R"({"candidates":[{"content":{"parts":[{"thought":true,"text":"private thought"},{"text":"Final"}]}}]})").value()=="Final");
+    assert(ExtractText(R"({"candidates":[{"content":{"parts":[{"text":"<think>private</think>Final"}]}}]})").value()=="<think>private</think>Final");
+    assert(!ExtractText(R"({"candidates":[{"content":{"parts":[{"thought":true,"text":"private"}]}}]})"));
+    assert(!ExtractText(R"({"candidates":[{"content":{"parts":[{"inlineData":{"text":"not an answer"}}]}}]})"));
     // İstek: ardışık aynı rol birleşir, 2.5'te thinking kapalı
     std::vector<Turn> h = {{false, "a"}, {false, "b"}, {true, "c"}, {false, "d"}};
     const auto body = BuildRequest("sis\"tem", h, "gemini-2.5-flash-lite");
     assert(body.find("\"text\":\"a\\nb\"") != std::string::npos);
     assert(body.find("\"role\":\"model\"") != std::string::npos && body.find("sis\\\"tem") != std::string::npos);
     assert(body.find("thinkingBudget\":0") != std::string::npos);
-    assert(BuildRequest("", h, "gemini-3.1-flash-lite").find("thinkingConfig") == std::string::npos);
+    assert(BuildRequest("", h, "gemini-3.1-flash-lite").find("MINIMAL") != std::string::npos);
     // Geçmiş kırpma user ile başlar
     std::vector<Turn> g = {{false, "1"}, {true, "2"}, {false, "3"}, {true, "4"}};
     TrimHistory(g, 3); assert(!g.empty() && !g.front().model && g.size() == 2 && g[0].text == "3");
@@ -98,10 +103,10 @@ int main() {
     e.Reset(); calls = 0; fail_models = 2; fail_code = 429;
     e.Submit("s", {{false, "x"}}, "K");
     assert(Wait(e, r) && r.ok && calls == 3 && r.model == chat_bot_engine::kModels[2] && e.Model() == chat_bot_engine::kModels[2]);
-    // 503 aynı modeli bir kez tekrar dener
+    // 503 aynı modeli tekrar denemeden sonraki modele geçer
     e.Reset(); calls = 0; fail_models = 1; fail_code = 503;
     e.Submit("s", {{false, "x"}}, "K");
-    assert(Wait(e, r) && r.ok && calls == 2 && r.model == chat_bot_engine::kModels[0]);
+    assert(Wait(e, r) && r.ok && calls == 2 && r.model == chat_bot_engine::kModels[1]);
     // Öncelik sırası: hep en iyi model denenir; 429 alan model dinlendirilir ve sonraki istekte atlanır
     e.Reset(); calls = 0; fail_models = 0; fail_code = 429;
     e.Submit("s", {{false, "x"}}, "K"); assert(Wait(e, r) && r.ok && r.model == chat_bot_engine::kModels[0] && calls == 1);
@@ -109,13 +114,46 @@ int main() {
     e.Reset(); calls = 0; fail_models = 1; fail_code = 429;   // model0: 429 (dinlenir), model1 başarılı
     e.Submit("s", {{false, "x"}}, "K"); assert(Wait(e, r) && r.ok && r.model == chat_bot_engine::kModels[1]);
     fail_models = 0; calls = 0;
-    e.Submit("s", {{false, "x"}}, "K"); assert(Wait(e, r) && r.ok && r.model == chat_bot_engine::kModels[1] && calls == 1); // model0 dinleniyor
-    assert(std::string(chat_bot_engine::kModels[0]) == "gemini-3.1-flash-lite");
-    for (const auto* model : chat_bot_engine::kModels) assert(std::string(model).find("gemini-3.5-flash") == std::string::npos);
+    e.Submit("s", {{false, "x"}}, "K"); assert(Wait(e, r) && r.ok && r.model == chat_bot_engine::kModels[1] && calls == 1); // model1 works; keep using it
+    // Voice and text share the same key's rotation pool.
+    calls=0; auto shared=chat_bot_engine::Generate(FakeHttp,chat_bot_engine::PoolFor("K"),"s",{{false,"x"}},"K",256);
+    assert(shared.ok&&shared.model==chat_bot_engine::kModels[1]&&calls==1);
+    assert(chat_bot_engine::kModels.size()==5);
+    { // The current healthy model is sticky even when an earlier model recovers; last wraps to first.
+      auto pool=std::make_shared<chat_bot_engine::Pool>();
+      const std::vector<std::string> expected={"gemini-3.5-flash-lite","gemini-3.1-flash-lite-preview","gemini-3-flash-preview","gemini-flash-lite-latest","gemini-3.1-flash-lite"};
+      for(size_t i=0;i<expected.size();++i)assert(expected[i]==chat_bot_engine::kModels[i]);
+      pool->last=3;calls=0;fail_models=1;fail_code=429;
+      auto last=chat_bot_engine::Generate(FakeHttp,pool,"s",{{false,"x"}},"K");assert(last.ok&&last.model==expected[4]&&calls==2);
+      calls=0;fail_models=0;
+      last=chat_bot_engine::Generate(FakeHttp,pool,"s",{{false,"x"}},"K");assert(last.ok&&last.model==expected[4]&&calls==1);
+      calls=0;fail_models=1;last=chat_bot_engine::Generate(FakeHttp,pool,"s",{{false,"x"}},"K");assert(last.ok&&last.model==expected[0]&&calls==2);
+    }
+    { // A hard deadline skips a stuck model even when no HTTP status has arrived.
+      auto pool=std::make_shared<chat_bot_engine::Pool>();
+      auto slow=+[](const std::string& url,const std::string&,const std::string&,int& code,std::string& response){
+        if(url.find("gemini-3.5-flash-lite:")!=std::string::npos)std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        code=200;response=R"({"candidates":[{"content":{"parts":[{"text":"Final"}]}}]})";return true;
+      };
+      auto t=std::chrono::steady_clock::now();auto out=chat_bot_engine::Generate(slow,pool,"s",{{false,"x"}},"K",256,{},30);
+      assert(out.ok&&out.model==chat_bot_engine::kModels[1]);
+      assert(std::chrono::steady_clock::now()-t<std::chrono::milliseconds(180));
+      std::this_thread::sleep_for(std::chrono::milliseconds(220));
+      assert(!pool->in_flight[0]&&out.text=="Final");
+    }
+    { auto pool=std::make_shared<chat_bot_engine::Pool>();
+      auto thought=+[](const std::string& url,const std::string&,const std::string&,int& code,std::string& response){
+        code=200;response=url.find("gemini-3.5-flash-lite:")!=std::string::npos?R"({"candidates":[{"content":{"parts":[{"text":"<think>hidden</think>"}]}}]})":R"({"candidates":[{"content":{"parts":[{"text":"Final"}]}}]})";return true;
+      };
+      auto out=chat_bot_engine::Generate(thought,pool,"s",{{false,"x"}},"K");
+      assert(out.ok&&out.model==chat_bot_engine::kModels[0]&&out.text=="<think>hidden</think>");
+      pool->last=0;out=chat_bot_engine::Generate(thought,pool,"s",{{false,"x"}},"K");assert(out.ok&&out.model==chat_bot_engine::kModels[0]);
+    }
     // Hepsi hata: all_failed, son kod
     e.Reset(); calls = 0; fail_models = 1000; fail_code = 404;
     e.Submit("s", {{false, "x"}}, "K");
     assert(Wait(e, r) && !r.ok && r.all_failed && r.code == 404 && calls == (int)chat_bot_engine::kModels.size());
+    calls=0; e.Submit("s", {{false,"x"}}, "K"); assert(Wait(e,r)&&r.all_failed&&r.retry_ms==0&&calls==(int)chat_bot_engine::kModels.size());
     // Bağlantı yok (kod 0)
     e.Reset(); calls = 0; fail_models = 1000; fail_code = 0;
     e.Submit("s", {{false, "x"}}, "K");

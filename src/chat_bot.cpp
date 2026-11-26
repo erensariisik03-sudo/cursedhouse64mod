@@ -58,7 +58,7 @@ class Controller {
     Class *chat_message_class{}, *chat_manager_class{}, *player_class{};
     const Method *find{}, *length{}, *item{}, *alive{}, *instance_id{}, *active{}, *get_transform{}, *sibling{},
         *text_get{}, *input_text{}, *input_set{}, *input_focused{}, *send{}, *queue{}, *room{}, *players{},
-        *nick{}, *own_nick{}, *room_name_get{};
+        *nick{}, *own_nick{}, *room_name_get{}, *is_master{};
     Field *message_field{}, *input_field{}, *allowed_field{};
     chat_bot_engine::Engine engine;
     chat_bot_bridge::Snapshot snap;
@@ -74,6 +74,7 @@ class Controller {
     std::deque<Pending> pending;
     std::deque<std::string> outbox, recent_sent; // gönderilecek parçalar; kendi yolladıklarımız (yankı koruması)
     bool enabled = false, baseline = false, voice_routed=false, cool = true;
+    std::unordered_map<std::string,bool> delegate_hosts;
     std::string delegate_name;std::deque<std::pair<std::string,std::string>> delegate_outbox;
     double delegate_since = 0;
     Edit editing = Edit::None;
@@ -179,7 +180,7 @@ class Controller {
         if(status_lines.empty())return;
         if(now>status_deadline){ClearStatus();return;}
         if(now<status_next)return;
-        if(!outbox.empty()&&now>=gap_until)return;
+        if((!outbox.empty()||!delegate_outbox.empty())&&now>=gap_until)return;
         if(!api.Value<bool>(queue,nullptr,false))return;
         Root current(api,api.Call(room));
         const auto id=reinterpret_cast<uintptr_t>(current.Get());
@@ -257,6 +258,7 @@ class Controller {
         player_class = api.Find("Photon.Realtime", "Player");
         own_nick = method("Photon.Pun", "PhotonNetwork", "get_NickName"); // isteğe bağlı: kendi adımız
         nick = api.FindMethod(player_class, "get_NickName", 0);
+        is_master = api.FindMethod(player_class, "get_IsMasterClient", 0);
         if (chat_message_class) message_field = api.class_get_field_from_name(chat_message_class, "myMessage");
         if (chat_manager_class) {
             input_field = api.class_get_field_from_name(chat_manager_class, "inputField");
@@ -282,6 +284,7 @@ class Controller {
         if (own_nick) { bool ok = false; const std::string n = chat_bot_core::Trim(chat_bot_core::StripTags(ReadString(own_nick, nullptr, ok))); if (ok) own_name = n; }
         std::vector<std::string> names;
         std::vector<std::string> aliases;
+        std::unordered_map<std::string,bool> roles;
         Root list(api, api.Call(players));
         const int n = list.Get() ? Count(list.Get()) : -1;
         for (int i = 0; i < n && i < 32; ++i) {
@@ -294,11 +297,11 @@ class Controller {
                 // the entire nickname even if it is only symbols like <3>.
                 if(!name.empty()&&std::find(names.begin(),names.end(),name)==names.end())names.push_back(name);
                 const std::string alias=chat_bot_core::OriginalNickname(original);
-                if(!alias.empty()&&std::find(aliases.begin(),aliases.end(),alias)==aliases.end())aliases.push_back(alias);
+                if(!alias.empty()&&std::find(aliases.begin(),aliases.end(),alias)==aliases.end()){aliases.push_back(alias);roles[alias]=is_master&&api.Value<bool>(is_master,p.Get(),false); }
             }
         }
         if (!list.Get() || n < 0) return; // okunamadı: eski liste ve bot durumu korunur
-        snap.players = names;snap.delegate_players=std::move(aliases);
+        snap.players = names;snap.delegate_players=std::move(aliases);delegate_hosts=std::move(roles);
         if (enabled && !all && !selected.empty()) {
             const bool any = std::any_of(selected.begin(), selected.end(), [&](const std::string& n) { return std::find(names.begin(), names.end(), n) != names.end(); });
             if (!any) { enabled = false; InvalidateReplies(); reminder.Reset(); Status(u8"AI | Seçilen oyuncuların hiçbiri odada değil; bot kapatıldı."); }
@@ -500,11 +503,11 @@ class Controller {
         gap_until = now + kChunkGap;
         return true;
     }
-    // A temporary UI nickname alias: it does NOT change the authenticated Photon actor.
-    // Never bypass normal chat cooldown and never overwrite a user's draft.
+    // Scoped decorative nickname for one send; never change Photon/account properties.
     bool TryDelegate(double now) {
-        if(delegate_outbox.empty()||now-delegate_since>20.0){delegate_outbox.clear();return false;}
-        if(!chat_send_gate::status_alias_ready.load()||!active_room)return false;
+        if(delegate_outbox.empty())return false;
+        if(now-delegate_since>20.0){delegate_outbox.clear();Status(u8"AI | Mesaj zaman aşımına uğradı (taslak/sohbet kapalı).");return false;}
+        if(!active_room||!chat_send_gate::status_alias_ready.load(std::memory_order_acquire))return false;
         const auto& next=delegate_outbox.front();
         if(std::find(snap.delegate_players.begin(),snap.delegate_players.end(),next.first)==snap.delegate_players.end()){delegate_outbox.clear();return false;}
         Root owner(api,ChatOwner());if(!owner.Get())return false;
@@ -515,22 +518,21 @@ class Controller {
         bool ok=false;auto* focus=api.Call(input_focused,input.Get(),nullptr,&ok);
         if(!ok||!focus||*static_cast<bool*>(api.object_unbox(focus)))return false;
         if(!ReadString(input_text,input.Get(),ok).empty()||!ok)return false;
-        // Do not synthesize formatting: the exact nickname is the display alias.
-        Root alias(api,reinterpret_cast<Object*>(api.string_new(next.first.c_str())));
+        const auto role=delegate_hosts.find(next.first);
+        const std::string name=std::string("<color=")+(role!=delegate_hosts.end()&&role->second?"purple":"lightblue")+">"+next.first+"</color>";
+        Root alias(api,reinterpret_cast<Object*>(api.string_new(name.c_str())));
         Root text(api,reinterpret_cast<Object*>(api.string_new(next.second.c_str())));
         if(!alias.Get()||!text.Get())return false;
         void* args[]={text.Get()};api.Call(input_set,input.Get(),args,&ok);if(!ok)return false;
-        {chat_send_gate::AutomaticSend automatic;chat_send_gate::StatusAlias guard(alias.handle);api.Call(send,owner.Get(),nullptr,&ok);}
-        bool read_ok=false;auto after=ReadString(input_text,input.Get(),read_ok);
-        if(!ok||!read_ok||after==next.second){
-            if(read_ok&&after==next.second){Root empty(api,reinterpret_cast<Object*>(api.string_new("")));void* reset[]={empty.Get()};if(empty.Get())api.Call(input_set,input.Get(),reset);}
-            return false;
-        }
+        bool read_ok=false;const auto applied=ReadString(input_text,input.Get(),read_ok);
+        if(!read_ok||applied!=next.second){Root empty(api,reinterpret_cast<Object*>(api.string_new("")));void* reset[]={empty.Get()};if(empty.Get())api.Call(input_set,input.Get(),reset);delegate_outbox.pop_front();Status(u8"AI | Mesaj kutusu metni kabul etmedi.");return false;}
+        {chat_send_gate::AutomaticSend automatic;chat_send_gate::StatusAlias display(alias.handle);api.Call(send,owner.Get(),nullptr,&ok);}
+        const auto after=ReadString(input_text,input.Get(),read_ok);
+        if(read_ok&&after==next.second){Root empty(api,reinterpret_cast<Object*>(api.string_new("")));void* reset[]={empty.Get()};if(empty.Get())api.Call(input_set,input.Get(),reset);}
+        // Once a call has been attempted, consume the item even if delivery is ambiguous.
         recent_sent.push_back(chat_bot_core::StripTags(next.second));while(recent_sent.size()>12)recent_sent.pop_front();
-        snap.last_out=chat_bot_core::PrefixScalars(next.second,60);
-        delegate_outbox.pop_front();gap_until=now+1.2;
-        Status(u8"AI | Seçilen adla mesaj gönderildi (gerçek ağ kimliği değişmez).");
-        return true;
+        snap.last_out=chat_bot_core::PrefixScalars(next.second,60);delegate_outbox.pop_front();gap_until=now+1.2;
+        Status(ok&&read_ok&&after.empty()?u8"AI | Seçilen adla mesaj gönderildi.":u8"AI | Gönderim doğrulanamadı; tekrar denenmedi.");return true;
     }
     void BeginEdit(Edit e) {
         editing = e;
@@ -684,7 +686,7 @@ public:
                         Status(u8"AI | Cevap hazır ("+r.model+").");
                     }
                 } else if (r.empty) { Status(u8"AI | Model cevap vermedi (süzgeç/boş); mesaj atlandı."); next_request = now + kMinGap; }
-                else { Status(u8"AI | Tüm modeller hata verdi (HTTP " + std::to_string(r.code) + u8"). Anahtarı/ağı kontrol et."); next_request = now + 8; }
+                else { Status(u8"AI | Tüm modeller hata verdi (HTTP " + std::to_string(r.code) + u8"). Anahtarı/ağı kontrol et."); next_request = now; }
             }
             if(outbox_reminder&&(!pending.empty()||engine.Busy()))DropOutbox();
             if (!outbox.empty() && now >= gap_until && TrySend(now)) {
@@ -698,7 +700,7 @@ public:
                 } else if(!engine.Busy()&&!key.empty()) {
                     request_sender=pending.front().name;request_generation=reply_generation;
                     history.push_back({false, pending.front().name + ": " + pending.front().text}); pending.pop_front();
-                    chat_bot_core::TrimHistory(history, 16);
+                    chat_bot_core::TrimHistory(history, 8);
                     if (engine.Submit(System(), history, key)) Status(u8"AI | Düşünüyor...");
                 }
             }
@@ -712,7 +714,7 @@ public:
                 }
             }
         }
-        if(status_lines.empty()&&outbox.empty()&&now>=gap_until)TryDelegate(now);
+        if(now>=gap_until)TryDelegate(now);
         PumpStatus(now); // also runs after the bot has been switched OFF
         Publish();
     }

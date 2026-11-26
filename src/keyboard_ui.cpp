@@ -574,13 +574,13 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
     if(g_bot_page<0){
         const float menu_height=std::max(19.f,key_height*.70f);
         ActionKey(s.cool?"Cool Modu: AÇIK":"Cool Modu: KAPALI",content,menu_height,[]{chat_bot_bridge::ToggleCool();InvalidateKeys();},s.cool);
-        const char* labels[]={"API Anahtarı","Metin AI","Sesli AI","Kişilik","Oyuncu mesajı","Geçmiş","Geliştirici"};
-        const int pages[]={3,0,1,2,4,5,9};
-        for(int i=0;i<7;++i){if(i%2)ImGui::SameLine();ImGui::PushID(i+500);
+        const char* labels[]={"API Anahtarı","Metin AI","Sesli AI","Kişilik","Oyuncu mesajı","Geçmiş","Geliştirici","Myinstants"};
+        const int pages[]={3,0,1,2,4,5,9,14};
+        for(int i=0;i<8;++i){if(i%2)ImGui::SameLine();ImGui::PushID(i+500);
             ActionKey(labels[i],half,menu_height,[page=pages[i]]{g_bot_page=page;InvalidateKeys();});ImGui::PopID();}
         ImGui::TextWrapped("%s",chat_bot_core::PrefixScalars(s.status,65).c_str());return;
     }
-    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8||g_bot_page==14)?u8"< Sesli AI":((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8||g_bot_page==14)?1:((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)?9:-1);InvalidateKeys();});
+    ActionKey((g_bot_page==6||g_bot_page==7||g_bot_page==8)?u8"< Sesli AI":((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)?u8"< Geliştirici":u8"< Genel AI menüsü"),content,key_height,[]{g_bot_page=(g_bot_page==6||g_bot_page==7||g_bot_page==8)?1:((g_bot_page==10||g_bot_page==11||g_bot_page==12||g_bot_page==13)?9:-1);InvalidateKeys();});
     switch(g_bot_page){
     case 9:{
         if(!s.developer_unlocked){
@@ -770,9 +770,21 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ActionKey(sounds.query.empty()?"Meme sesi ara":("Ara: "+sounds.query).c_str(),content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::SoundSearch);InvalidateKeys();});
         ImGui::TextWrapped("%s",sounds.status.c_str());
         ImGui::TextWrapped("Odaya yalnızca seçtiğin ses gönderilir; mikrofon geçici olarak kapatılır.");
-        ImGui::BeginDisabled(!v.settings.enabled||!v.network_ready||v.settings.destination!=0||sounds.loading);
-        for(size_t i=0;i<sounds.results.size();++i){const auto& sound=sounds.results[i];ImGui::PushID(int(i));ActionKey(sound.title.c_str(),content,key_height,[path=sound.path]{voice_ai_bridge::PlaySound(path);InvalidateKeys();});ImGui::PopID();}
-        ImGui::EndDisabled();break;
+        static bool favorites_only=true;
+        ActionKey("Favoriler",half,key_height,[]{favorites_only=true;InvalidateKeys();},favorites_only);ImGui::SameLine();
+        ActionKey("Arama sonuçları",half,key_height,[]{favorites_only=false;InvalidateKeys();},!favorites_only);
+        static std::string previous_query;if(previous_query!=sounds.query){previous_query=sounds.query;favorites_only=false;}
+        const auto& list=favorites_only?sounds.favorites:sounds.results;
+        if(list.empty())ImGui::TextWrapped("%s",favorites_only?"Henüz favori yok.":"Ses ara.");
+        for(const auto& sound:list){ImGui::PushID(sound.path.c_str());
+            const float width=ImGui::GetContentRegionAvail().x;const float star=std::min(width*.28f,key_height*1.5f);
+            ImGui::BeginDisabled(!v.network_ready||sounds.loading);
+            ActionKey(sound.title.c_str(),std::max(1.f,width-star-ImGui::GetStyle().ItemSpacing.x),key_height,[path=sound.path]{voice_ai_bridge::PlaySound(path);InvalidateKeys();});
+            ImGui::EndDisabled();ImGui::SameLine();
+            const bool favorite=myinstants::IsFavorite(sounds.favorites,sound.path);
+            ActionKey(favorite?"Sil":"+ Fav",star,key_height,[sound]{voice_ai_bridge::Favorite(sound);InvalidateKeys();},favorite);
+            ImGui::PopID();}
+        break;
     }
     case 2:{
         ImGui::TextWrapped("ORTAK KİŞİLİK | Sesli AI ve Metin AI aynı ayarı kullanır.");
@@ -784,7 +796,7 @@ void BotBody(const ImGuiIO&,float key_height,float content,float max_height){
         ImGui::TextWrapped("API Anahtarı | %s",s.has_key?"Tanımlı":"Henüz tanımlı değil");
         ActionKey("API anahtarı gir / değiştir",content,key_height,[]{chat_bot_bridge::BeginEdit(chat_bot_bridge::Edit::Key);InvalidateKeys();});break;
     case 4:{
-        ImGui::TextWrapped("Oyuncu adını seçip mesaj yaz. Sohbet görünür adı seçili oyuncu adı olabilir, fakat Photon aktör kimliğin kendi hesabın olarak kalır.");
+        ImGui::TextWrapped("Seçilen oyuncunun görünen adıyla tek mesaj gönder. Ağ kimliği değişmez.");
         if(s.delegate_players.empty())ImGui::TextWrapped("Önce odaya gir; oyuncu listesi bekleniyor.");
         BeginTouchList("##delegate_players",key_height*3);
         {

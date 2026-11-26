@@ -215,6 +215,8 @@ static bool PostWithTimeout(const std::string& url, const std::string& key, cons
 
     code = env->CallIntMethod(conn, get_code);
     if (Bad(env)) { code = 0; env->CallVoidMethod(conn, disconnect); Bad(env); return false; }
+    if(code==429){env->CallVoidMethod(conn,disconnect);Bad(env);return true;}
+    bool read_ok=true;
     jobject is = env->CallObjectMethod(conn, code >= 400 ? get_err : get_in);
     if (Bad(env)) is = nullptr;
     if (is) {
@@ -222,18 +224,23 @@ static bool PostWithTimeout(const std::string& url, const std::string& key, cons
         std::vector<jbyte> chunk(4096);
         while (buffer && response.size() < ((url.find("/interactions")!=std::string::npos||url.find("-tts")!=std::string::npos) ? (8u << 20) : (1u << 20))) {
             const jint n = env->CallIntMethod(is, read, buffer);
-            if (Bad(env) || n <= 0) break;
+            if (Bad(env)) {read_ok=false;break;}
+            if (n <= 0) break;
             env->GetByteArrayRegion(buffer, 0, n, chunk.data());
             response.append(reinterpret_cast<const char*>(chunk.data()), static_cast<size_t>(n));
         }
         env->CallVoidMethod(is, in_close); Bad(env);
     }
     env->CallVoidMethod(conn, disconnect); Bad(env);
-    return true;
+    return read_ok;
 }
 
-bool Post(const std::string& url,const std::string& key,const std::string& body,int& code,std::string& response){return PostWithTimeout(url,key,body,code,response,8000,25000);}
-bool PostVoice(const std::string& url,const std::string& key,const std::string& body,int& code,std::string& response){return PostWithTimeout(url,key,body,code,response,3500,8000);}
+bool Post(const std::string& url,const std::string& key,const std::string& body,int& code,std::string& response){
+ const auto start=std::chrono::steady_clock::now();const bool ok=PostWithTimeout(url,key,body,code,response,3500,8000);
+ const auto at=url.find("/models/");const auto end=url.find(':',at);if(at!=std::string::npos&&end!=std::string::npos){auto model=url.substr(at+8,end-at-8);__android_log_print(ANDROID_LOG_INFO,"multiplayermod","GMM_DIAG AI model=%s http=%d ms=%lld",model.c_str(),ok?code:0,(long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-start).count());}
+ return ok;
+}
+bool PostVoice(const std::string& url,const std::string& key,const std::string& body,int& code,std::string& response){return Post(url,key,body,code,response);}
 
 // GET without response-body parsing. The HTTPS certificate is verified by
 // Android's platform trust store via HttpURLConnection.

@@ -25,11 +25,15 @@ inline void SubmitSelected(std::vector<int> words){std::lock_guard<std::mutex> l
 inline void SkipSelected(){std::lock_guard<std::mutex> l(mutex);selection_skip=true;selection_submit=false;}
 inline void Mode(int input,int output){std::lock_guard<std::mutex> l(mutex);desired.input=std::clamp(input,0,2);desired.output=std::clamp(output,0,1);++revision;}
 inline void Destination(int v){std::lock_guard<std::mutex> l(mutex);desired.destination=std::clamp(v,0,1);++revision;}
-struct Soundboard {std::string query,status="Bir ses ara.",search_pending,play_pending;std::vector<myinstants::Sound> results;unsigned generation=0;bool searching=false,loading=false;};
+struct Soundboard {std::string query,status="Bir ses ara.",search_pending,play_pending;std::vector<myinstants::Sound> results,favorites;unsigned generation=0;bool searching=false,loading=false;};
 inline Soundboard soundboard;
-inline Soundboard ReadSounds(){std::lock_guard<std::mutex> l(mutex);return soundboard;}
+inline bool favorites_loaded=false;
+inline void LoadFavoritesLocked(){if(favorites_loaded)return;auto path=myinstants::FavoritesPath();if(path.empty())return;favorites_loaded=true;std::ifstream in(path);soundboard.favorites=myinstants::ParseFavorites(in);}
+inline void Favorite(const myinstants::Sound& sound){std::lock_guard<std::mutex> l(mutex);LoadFavoritesLocked();auto next=soundboard.favorites;if(!myinstants::ToggleFavorite(next,sound)){soundboard.status="Favori listesi dolu veya geçersiz ses.";return;}if(!myinstants::SaveFavorites(myinstants::FavoritesPath(),next)){soundboard.status="Favori kaydedilemedi.";return;}soundboard.favorites=std::move(next);}
+
+inline Soundboard ReadSounds(){std::lock_guard<std::mutex> l(mutex);LoadFavoritesLocked();return soundboard;}
 inline void SearchSounds(std::string text){std::lock_guard<std::mutex> l(mutex);if(text.empty()||text.size()>240)return;soundboard.query=text;soundboard.search_pending=std::move(text);soundboard.results.clear();++soundboard.generation;soundboard.searching=true;soundboard.status="Myinstants aranıyor...";}
-inline void PlaySound(const std::string& path){std::lock_guard<std::mutex> l(mutex);if(!desired.enabled||soundboard.loading||!myinstants::ValidPath(path)||!std::any_of(soundboard.results.begin(),soundboard.results.end(),[&](const auto& s){return s.path==path;}))return;soundboard.play_pending=path;soundboard.loading=true;soundboard.status="Ses indiriliyor...";}
+inline void PlaySound(const std::string& path){std::lock_guard<std::mutex> l(mutex);LoadFavoritesLocked();if(soundboard.loading||!myinstants::ValidPath(path)||(!myinstants::IsFavorite(soundboard.results,path)&&!myinstants::IsFavorite(soundboard.favorites,path)))return;soundboard.play_pending=path;soundboard.loading=true;soundboard.status="Ses indiriliyor...";}
 inline std::string preferred_voice;inline std::vector<std::string> available_voices;inline std::string actual_voice;
 inline std::string PreferredVoice(){std::lock_guard<std::mutex> l(mutex);return preferred_voice;}
 inline void ChooseVoice(std::string name){std::lock_guard<std::mutex> l(mutex);preferred_voice=std::move(name);}
